@@ -3,7 +3,7 @@
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use getopts::Options;
 
@@ -16,7 +16,7 @@ fn main() {
     let mut options = Options::new();
 
     options.optflag("h", "help", "Show this very helpful text");
-    options.optflag("q", "quiet", "Do not output executed commands to stdout"); //TODO
+    options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Do not print commands as they are being run"); //TODO
 
     let matches = match options.parse(env::args().skip(1)) {
         Ok(m) => m,
@@ -25,7 +25,11 @@ fn main() {
 
     if matches.opt_present("help") {
         print!("{}", options.usage("Usage: run [options] target"));
+        return;
     }
+
+    let quiet = matches.opt_present("quiet");
+    let silent = matches.opt_count("quiet") > 1;
 
     let mut runfile_path = env::current_dir().expect("Couldn't get current working directory");
     let run_target: String;
@@ -54,14 +58,32 @@ fn main() {
     match parser::RunFileParser::new().parse(Lexer::new(&mut file.char_indices())) {
         Ok(rf) => {
             for command in rf.global_target.unwrap().commands {
-                println!("{:?}", command); //TODO: Implement Display
-                Command::new(command.target).args(command.args.iter().map(|x| {
-                    if let runfile::ArgPart::Str(s) = &x[0] {
-                        s
-                    } else {
-                        unimplemented!();
+                if !silent {
+                    println!("{:?}", command); //TODO: Implement Display
+                }
+                let status = Command::new(command.target.clone())
+                    .args(
+                        command.args.iter()
+                            .map(|x| {
+                                if let runfile::ArgPart::Str(s) = &x[0] {
+                                    s
+                                } else {
+                                    unimplemented!();
+                                }
+                            }
+                        )
+                    )
+                    .stdin(Stdio::null())
+                    .stdout(if quiet { Stdio::null() } else { Stdio::inherit() })
+                    .stderr(if quiet { Stdio::null() } else { Stdio::inherit() })
+                    .status()
+                    .expect("Failed to execute command"); //TODO
+                if !silent {
+                    match status.code() {
+                        Some(i) => println!("`{:?}` exited with code {}", command, i),
+                        None => println!("`{:?}` terminated by signal", command), //TODO figure out which signal
                     }
-                })).status().expect("Failed to execute command"); //TODO
+                }
             }
         },
         Err(e) => {
