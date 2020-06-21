@@ -61,7 +61,7 @@ Command: Command = {
 //TODO: Figure out what exactly sh accepts in arguments
 Args: Vec<Argument> = {
     <r:Arg> => vec![r],
-    <r:Arg> <mut a:Args> => {
+    <mut a:Args> <r:Arg> => {
         a.push(r);
         a
     }
