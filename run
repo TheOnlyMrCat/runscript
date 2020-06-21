@@ -1,0 +1,6 @@
+Test script
+##
+cargo run -- test/basic:
+#/
+
+The program is tested by an earlier version of itself. Pretty epic
