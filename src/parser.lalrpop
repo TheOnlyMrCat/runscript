@@ -1,0 +1,72 @@
+use crate::runfile::*;
+use crate::lexer::*;
+
+grammar;
+
+extern {
+    type Location = usize;
+    type Error = LexErr;
+
+    enum Tok {
+        "\n" => Tok::Newline,
+        "#"  => Tok::Hash,
+        "##" => Tok::DoubleHash,
+        "#/" => Tok::HashSlash,
+        ARGV => Tok::CommandPart(_),
+    }
+}
+
+pub RunFile: RunFile = {
+    Targets
+}
+
+Targets: RunFile = {
+    "##" "\n" <c:Commands> "#/" <mut t:Targets> => {
+        if let Some(_) = t.global_target {
+            panic!("Only 1 global target allowed in a runfile!");
+        }
+        t.global_target = Some(Target {
+            name: "".to_owned(),
+            commands: c,
+        });
+        t
+    },
+    => RunFile {
+        global_target: None,
+        targets: vec![]
+    }
+}
+
+//TODO
+TargetMeta: () = {
+
+}
+
+Commands: Vec<Command> = {
+    <mut x:Commands> <c:Command> "\n" => {
+        x.push(c);
+        x
+    },
+    <Command> "\n" => vec![<>]
+}
+
+//TODO: Figure out what exactly sh accepts as a command
+Command: Command = {
+    <t:ARGV> <a:Args> => Command {
+        target: t.command_part(),
+        args: a,
+    }
+}
+
+//TODO: Figure out what exactly sh accepts in arguments
+Args: Vec<Argument> = {
+    <r:Arg> => vec![r],
+    <r:Arg> <mut a:Args> => {
+        a.push(r);
+        a
+    }
+}
+
+Arg: Argument = {
+    <t:ARGV> => vec![ArgPart::Str(t.command_part())]
+}
