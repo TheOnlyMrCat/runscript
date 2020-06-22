@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::runfile::*;
 use crate::lexer::*;
 
@@ -12,6 +14,7 @@ extern {
         "#"  => Tok::Hash,
         "##" => Tok::DoubleHash,
         "#/" => Tok::HashSlash,
+        "#-" => Tok::HashDash,
         ARGV => Tok::CommandPart(_),
         NAME => Tok::TargetName(_),
     }
@@ -24,24 +27,32 @@ pub RunFile: RunFile = {
 Targets: RunFile = {
     "##" "\n" <c:Commands> "#/" <mut t:Targets> => {
         if let Some(_) = t.global_target {
-            panic!("Only 1 global target allowed in a runfile!");
+            panic!("Multiple definitions of global target");
         }
         t.global_target = Some(Target {
-            name: "".to_owned(),
+            commands: c,
+        });
+        t
+    },
+    "#-" "\n" <c:Commands> "#/" <mut t:Targets> => {
+        if let Some(_) = t.default_target {
+            panic!("Multiple definitions of default target");
+        }
+        t.default_target = Some(Target {
             commands: c,
         });
         t
     },
     "#" <n:NAME> "\n" <c:Commands> "#/" <mut t:Targets> => {
-        t.targets.push(Target {
-            name: n.target_name(),
+        t.targets.insert(n.target_name(), Target {
             commands: c,
         });
         t
     },
     => RunFile {
         global_target: None,
-        targets: vec![]
+        default_target: None,
+        targets: HashMap::new(),
     }
 }
 

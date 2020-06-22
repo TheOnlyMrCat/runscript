@@ -10,6 +10,7 @@ pub enum Tok {
     Hash,
     DoubleHash,
     HashSlash,
+    HashDash,
     CommandPart(String),
     TargetName(String),
 }
@@ -77,6 +78,11 @@ impl<'input> Iterator for Lexer<'input> {
                                     self.chars.next();
                                     self.state = State::Meta;
                                     return Some(Ok((i, Tok::DoubleHash, i + 2)));
+                                },
+                                Some((_, '-')) => {
+                                    self.chars.next();
+                                    self.state = State::Meta;
+                                    return Some(Ok((i, Tok::HashDash, i + 2)));
                                 },
                                 _ => {
                                     self.state = State::Name;

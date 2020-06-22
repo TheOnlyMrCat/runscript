@@ -20,6 +20,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) {
                     }
                 )
             )
+            .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
             .stdin(Stdio::null())
             .stdout(if config.quiet { Stdio::null() } else { Stdio::inherit() })
             .stderr(if config.quiet { Stdio::null() } else { Stdio::inherit() })
