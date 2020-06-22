@@ -19,7 +19,7 @@ pub struct TargetMeta {
     pub script: ScriptType,
 }
 
-#[derive(Debug,PartialEq,Hash,Eq,Clone)]
+#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
 pub enum ScriptType {
     BuildOnly,   // b!
     Build,       // b

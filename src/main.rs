@@ -15,12 +15,16 @@ use runfile::{TargetMeta, ScriptType};
 use lexer::Lexer;
 lalrpop_mod!(pub parser);
 
+const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
+const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
+const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
+
 fn main() {
     let mut options = Options::new();
 
     options.optflag("h", "help", "Show this very helpful text");
     options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Do not print commands as they are being run");
-    options.optflag("b", "build-only", "Only execute `b` and `b!` scripts");
+    options.optflag("b", "build-only", "Only execute `b!` and `b` scripts");
     options.optflag("", "build-and-run", "Execute `b`, `br`, and `r` scripts (default)");
     options.optflag("r", "run-only", "Only execute `r` and `r!` scripts");
 
@@ -55,6 +59,22 @@ fn main() {
         run_target = String::new();
     }
 
+    let b_pos = matches.opt_positions("build-only")   .iter().fold(0, |acc, &x| if x > acc { x } else { acc });
+    let t_pos = matches.opt_positions("build-and-run").iter().fold(0, |acc, &x| if x > acc { x } else { acc });
+    let r_pos = matches.opt_positions("run-only")     .iter().fold(0, |acc, &x| if x > acc { x } else { acc });
+
+    let phases: &[ScriptType];
+    if b_pos + t_pos + r_pos == 0
+    || t_pos > b_pos && t_pos > r_pos {
+        phases = &PHASES_T;
+    } else if b_pos > t_pos && b_pos > r_pos {
+        phases = &PHASES_B;
+    } else if r_pos > t_pos && r_pos > b_pos {
+        phases = &PHASES_R;
+    } else {
+        panic!("Failed to identify script phases to run")
+    }
+
     let config = Config {
         quiet: matches.opt_present("quiet"),
         silent: matches.opt_count("quiet") > 1,
@@ -66,29 +86,40 @@ fn main() {
 
     match parser::RunFileParser::new().parse(Lexer::new(&mut file.char_indices())) {
         Ok(rf) => {
-            if run_target == "" {
-                match rf.default_target {
+            for &phase in phases {
+                if run_target == "" {
+                    match &rf.default_target {
+                        Some(target) => {
+                            target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
+                                println!("Running default target");
+                                shell(&c, &config);
+                                Some(())
+                            });
+                        },
+                        None => {}
+                    }
+                } else {
+                    match rf.targets.get(&run_target) {
+                        Some(target) => {
+                            target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
+                                println!("Running target {}", run_target);
+                                shell(&c, &config);
+                                Some(())
+                            });
+                        },
+                        None => panic!("No target with name {}", run_target)
+                    }
+                }
+                match &rf.global_target {
                     Some(target) => {
-                        println!("Running default target");
-                        shell(&target.commands[&TargetMeta { script: ScriptType::BuildAndRun }], &config);
+                        target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
+                            println!("Running global target");
+                            shell(&c, &config);
+                            Some(())
+                        });
                     },
                     None => {}
                 }
-            } else {
-                match rf.targets.get(&run_target) {
-                    Some(target) => {
-                        println!("Running target {}", run_target);
-                        shell(&target.commands[&TargetMeta { script: ScriptType::BuildAndRun }], &config);
-                    },
-                    None => panic!("No target with name {}", run_target)
-                }
-            }
-            match rf.global_target {
-                Some(target) => {
-                    println!("Running global target");
-                    shell(&target.commands[&TargetMeta { script: ScriptType::BuildAndRun }], &config);
-                },
-                None => {}
             }
         },
         Err(e) => {
