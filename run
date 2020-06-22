@@ -12,4 +12,7 @@ cargo run -q -- test/build:
 cargo run -q -- test/build: -b
 cargo run -q -- test/build: --build-and-run
 cargo run -q -- test/build: -r
+
+cargo run -q -- test/error:phase
+cargo run -q -- test/error:internal
 #/

@@ -90,33 +90,51 @@ fn main() {
                 if run_target == "" {
                     match &rf.default_target {
                         Some(target) => {
-                            target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
+                            match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                                 println!("{} default", phase);
-                                shell(&c, &config);
-                                Some(())
-                            });
+                                if shell(&c, &config) {
+                                    None
+                                } else {
+                                    Some(())
+                                }
+                            }) {
+                                Some(_) => break,
+                                None => {}
+                            }
                         },
                         None => {}
                     }
                 } else {
                     match rf.targets.get(&run_target) {
                         Some(target) => {
-                            target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
+                            match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                                 println!("{} {}", phase, run_target);
-                                shell(&c, &config);
-                                Some(())
-                            });
+                                if shell(&c, &config) {
+                                    None
+                                } else {
+                                    Some(())
+                                }
+                            }) {
+                                Some(_) => break,
+                                None => {}
+                            }
                         },
                         None => panic!("No target with name '{}'", run_target)
                     }
                 }
                 match &rf.global_target {
                     Some(target) => {
-                        target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
+                        match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                             println!("{} global", phase);
-                            shell(&c, &config);
-                            Some(())
-                        });
+                            if shell(&c, &config) {
+                                None
+                            } else {
+                                Some(())
+                            }
+                        }) {
+                            Some(_) => break,
+                            None => {}
+                        }
                     },
                     None => {}
                 }

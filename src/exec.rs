@@ -43,15 +43,13 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
         */
         let status = child.wait().expect("Command wasn't running properly");
 
-        /*
-        if !config.silent {
-            match status.code() {
-                Some(i) => println!(">> exit {}", i),
-                None => println!(">> {}", signal(&status)),
-            }
-        }
-        */
         if !status.success() {
+            if !config.silent {
+                match status.code() {
+                    Some(i) => println!(">> exit {}", i),
+                    None => println!(">> {}", signal(&status)),
+                }
+            }
             return false;
         }
     }
