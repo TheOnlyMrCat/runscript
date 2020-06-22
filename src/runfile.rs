@@ -1,12 +1,14 @@
+use std::collections::HashMap;
+
 #[derive(Debug)]
 pub struct RunFile {
     pub global_target: Option<Target>,
-    pub targets: Vec<Target>,
+    pub default_target: Option<Target>,
+    pub targets: HashMap<String, Target>,
 }
 
 #[derive(Debug)]
 pub struct Target {
-    pub name: String,
     pub commands: Vec<Command>,
 }
 

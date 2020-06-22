@@ -3,6 +3,7 @@
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
+use std::path::Path;
 
 use getopts::Options;
 
@@ -29,11 +30,6 @@ fn main() {
         return;
     }
 
-    let config = Config {
-        quiet: matches.opt_present("quiet"),
-        silent: matches.opt_count("quiet") > 1,
-    };
-
     let mut runfile_path = env::current_dir().expect("Couldn't get current working directory");
     let run_target: String;
     if let Some(target) = matches.free.get(0) {
@@ -55,17 +51,31 @@ fn main() {
         run_target = String::new();
     }
 
+    let config = Config {
+        quiet: matches.opt_present("quiet"),
+        silent: matches.opt_count("quiet") > 1,
+        file: &runfile_path,
+    };
+
     let mut file = String::new();
-    File::open(runfile_path).expect("Failed to open file").read_to_string(&mut file).expect("Failed to read file");
+    File::open(config.file).expect("Failed to open file").read_to_string(&mut file).expect("Failed to read file");
 
     match parser::RunFileParser::new().parse(Lexer::new(&mut file.char_indices())) {
         Ok(rf) => {
-            if run_target != "" {
-                match rf.targets.iter().find(|t| t.name == run_target) {
+            if run_target == "" {
+                match rf.default_target {
+                    Some(target) => {
+                        println!("Running default target");
+                        shell(&target.commands, &config);
+                    },
+                    None => {}
+                }
+            } else {
+                match rf.targets.get(&run_target) {
                     Some(target) => {
                         println!("Running target {}", run_target);
                         shell(&target.commands, &config);
-                    }
+                    },
                     None => panic!("No target with name {}", run_target)
                 }
             }
@@ -83,7 +93,8 @@ fn main() {
     }
 }
 
-pub struct Config {
+pub struct Config<'a> {
     quiet: bool,
     silent: bool,
+    file: &'a Path,
 }
