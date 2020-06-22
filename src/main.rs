@@ -91,7 +91,7 @@ fn main() {
                     match &rf.default_target {
                         Some(target) => {
                             target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                println!("Running default target");
+                                println!("{} default", phase);
                                 shell(&c, &config);
                                 Some(())
                             });
@@ -102,7 +102,7 @@ fn main() {
                     match rf.targets.get(&run_target) {
                         Some(target) => {
                             target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                println!("Running target '{}'", run_target);
+                                println!("{} {}", phase, run_target);
                                 shell(&c, &config);
                                 Some(())
                             });
@@ -113,7 +113,7 @@ fn main() {
                 match &rf.global_target {
                     Some(target) => {
                         target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                            println!("Running global target");
+                            println!("{} global", phase);
                             shell(&c, &config);
                             Some(())
                         });
