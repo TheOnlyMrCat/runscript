@@ -11,6 +11,7 @@ mod exec;
 mod runfile;
 mod lexer;
 use exec::shell;
+use runfile::{TargetMeta, ScriptType};
 use lexer::Lexer;
 lalrpop_mod!(pub parser);
 
@@ -18,7 +19,10 @@ fn main() {
     let mut options = Options::new();
 
     options.optflag("h", "help", "Show this very helpful text");
-    options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Do not print commands as they are being run"); //TODO
+    options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Do not print commands as they are being run");
+    options.optflag("b", "build-only", "Only execute `b` and `b!` scripts");
+    options.optflag("", "build-and-run", "Execute `b`, `br`, and `r` scripts (default)");
+    options.optflag("r", "run-only", "Only execute `r` and `r!` scripts");
 
     let matches = match options.parse(env::args().skip(1)) {
         Ok(m) => m,
@@ -66,7 +70,7 @@ fn main() {
                 match rf.default_target {
                     Some(target) => {
                         println!("Running default target");
-                        shell(&target.commands, &config);
+                        shell(&target.commands[&TargetMeta { script: ScriptType::BuildAndRun }], &config);
                     },
                     None => {}
                 }
@@ -74,7 +78,7 @@ fn main() {
                 match rf.targets.get(&run_target) {
                     Some(target) => {
                         println!("Running target {}", run_target);
-                        shell(&target.commands, &config);
+                        shell(&target.commands[&TargetMeta { script: ScriptType::BuildAndRun }], &config);
                     },
                     None => panic!("No target with name {}", run_target)
                 }
@@ -82,7 +86,7 @@ fn main() {
             match rf.global_target {
                 Some(target) => {
                     println!("Running global target");
-                    shell(&target.commands, &config);
+                    shell(&target.commands[&TargetMeta { script: ScriptType::BuildAndRun }], &config);
                 },
                 None => {}
             }

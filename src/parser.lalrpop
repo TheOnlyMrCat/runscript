@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::mem::take;
 
 use crate::runfile::*;
 use crate::lexer::*;
@@ -17,6 +18,7 @@ extern {
         "#-" => Tok::HashDash,
         ARGV => Tok::CommandPart(_),
         NAME => Tok::TargetName(_),
+        SCTP  => Tok::MetaScript(_),
     }
 }
 
@@ -25,28 +27,41 @@ pub RunFile: RunFile = {
 }
 
 Targets: RunFile = {
-    "##" "\n" <c:Commands> "#/" <mut t:Targets> => {
-        if let Some(_) = t.global_target {
+    "##" <m:TargetMeta> "\n" <c:Commands> "#/" <mut t:Targets> => {
+        let mut n = match take(&mut t.global_target) {
+            Some(t) => t,
+            None => Target::default()
+        };
+        if let Some(_) = n.commands.get(&m) {
             panic!("Multiple definitions of global target");
         }
-        t.global_target = Some(Target {
-            commands: c,
-        });
+        n.commands.insert(m, c);
+        t.global_target = Some(n);
         t
     },
-    "#-" "\n" <c:Commands> "#/" <mut t:Targets> => {
-        if let Some(_) = t.default_target {
+    "#-" <m:TargetMeta> "\n" <c:Commands> "#/" <mut t:Targets> => {
+        let mut n = match take(&mut t.default_target) {
+            Some(t) => t,
+            None => Target::default()
+        };
+        if let Some(_) = n.commands.get(&m) {
             panic!("Multiple definitions of default target");
         }
-        t.default_target = Some(Target {
-            commands: c,
-        });
+        n.commands.insert(m, c);
+        t.default_target = Some(n);
         t
     },
-    "#" <n:NAME> "\n" <c:Commands> "#/" <mut t:Targets> => {
-        t.targets.insert(n.target_name(), Target {
-            commands: c,
-        });
+    "#" <s:NAME> <m:TargetMeta> "\n" <c:Commands> "#/" <mut t:Targets> => {
+        let target_name = s.target_name();
+        let mut n = match t.targets.remove(&target_name) {
+            Some(t) => t,
+            None => Target::default()
+        };
+        if let Some(_) = n.commands.get(&m) {
+            panic!("Multiple definitions of target {}", target_name);
+        }
+        n.commands.insert(m, c);
+        t.targets.insert(target_name, n);
         t
     },
     => RunFile {
@@ -56,9 +71,9 @@ Targets: RunFile = {
     }
 }
 
-//TODO
-TargetMeta: () = {
-
+TargetMeta: TargetMeta = {
+    SCTP => TargetMeta { script: <>.meta_script() },
+    => TargetMeta { script: ScriptType::BuildAndRun },
 }
 
 Commands: Vec<Command> = {
@@ -66,7 +81,9 @@ Commands: Vec<Command> = {
         x.push(c);
         x
     },
-    <Command> "\n" => vec![<>]
+    <x:Commands> "\n" => x,
+    <Command> "\n" => vec![<>],
+    "\n" => vec![],
 }
 
 //TODO: Figure out what exactly sh accepts as a command
@@ -87,5 +104,5 @@ Args: Vec<Argument> = {
 }
 
 Arg: Argument = {
-    <t:ARGV> => vec![ArgPart::Str(t.command_part())]
+    ARGV => vec![ArgPart::Str(<>.command_part())],
 }

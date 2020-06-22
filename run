@@ -1,10 +1,15 @@
 Test script
 #-
-cargo run -- test
+cargo run -q -- test
 #/
 
 The program is tested by an earlier version of itself. Pretty epic
 
 #test
-cargo run -- test/basic:
+cargo run -q -- test/basic: -q
+
+cargo run -q -- test/build:
+cargo run -q -- test/build: -b
+cargo run -q -- test/build: --build-and-run
+cargo run -q -- test/build: -r
 #/
