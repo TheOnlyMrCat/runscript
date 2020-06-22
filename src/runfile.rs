@@ -28,18 +28,18 @@ pub enum ScriptType {
     RunOnly,     // r!
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Command {
     pub target: String,
     pub args: Vec<Argument>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Argument {
     pub parts: Vec<ArgPart>
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum ArgPart {
     Str(String),
     Var(String),
