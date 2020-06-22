@@ -13,6 +13,7 @@ extern {
         "##" => Tok::DoubleHash,
         "#/" => Tok::HashSlash,
         ARGV => Tok::CommandPart(_),
+        NAME => Tok::TargetName(_),
     }
 }
 
@@ -27,6 +28,13 @@ Targets: RunFile = {
         }
         t.global_target = Some(Target {
             name: "".to_owned(),
+            commands: c,
+        });
+        t
+    },
+    "#" <n:NAME> "\n" <c:Commands> "#/" <mut t:Targets> => {
+        t.targets.push(Target {
+            name: n.target_name(),
             commands: c,
         });
         t
