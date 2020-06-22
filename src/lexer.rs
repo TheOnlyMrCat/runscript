@@ -11,6 +11,7 @@ pub enum Tok {
     DoubleHash,
     HashSlash,
     CommandPart(String),
+    TargetName(String),
 }
 
 impl Tok {
@@ -19,6 +20,14 @@ impl Tok {
             s
         } else {
             panic!("Expected CommandPart");
+        }
+    }
+
+    pub fn target_name(self) -> String {
+        if let Tok::TargetName(s) = self {
+            s
+        } else {
+            panic!("Expected TargetName");
         }
     }
 }
@@ -81,7 +90,32 @@ impl<'input> Iterator for Lexer<'input> {
                     }
                 }
             },
-            State::Name => todo!(),
+            State::Name => {
+                match self.chars.next() {
+                    Some((begindex, chr)) => {
+                        let mut string = String::with_capacity(5);
+                        string.push(chr);
+                        loop {
+                            match self.chars.next() {
+                                Some((i, ' ')) => {
+                                    self.state = State::Meta;
+                                    return Some(Ok((begindex, Tok::TargetName(string), i)));
+                                },
+                                Some((i, '\n')) => {
+                                    self.state = State::Exec;
+                                    self.buftk = Some(Ok((i, Tok::Newline, i + 1)));
+                                    return Some(Ok((begindex, Tok::TargetName(string), i)));
+                                }
+                                Some((_, c)) => {
+                                    string.push(c);
+                                },
+                                None => return None
+                            }
+                        }
+                    },
+                    None => return None,
+                }
+            },
             State::Meta => {
                 loop {
                     match self.chars.next() {

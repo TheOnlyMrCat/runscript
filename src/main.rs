@@ -3,12 +3,13 @@
 use std::env;
 use std::fs::File;
 use std::io::prelude::*;
-use std::process::{Command, Stdio};
 
 use getopts::Options;
 
+mod exec;
 mod runfile;
 mod lexer;
+use exec::shell;
 use lexer::Lexer;
 lalrpop_mod!(pub parser);
 
@@ -28,8 +29,10 @@ fn main() {
         return;
     }
 
-    let quiet = matches.opt_present("quiet");
-    let silent = matches.opt_count("quiet") > 1;
+    let config = Config {
+        quiet: matches.opt_present("quiet"),
+        silent: matches.opt_count("quiet") > 1,
+    };
 
     let mut runfile_path = env::current_dir().expect("Couldn't get current working directory");
     let run_target: String;
@@ -57,37 +60,30 @@ fn main() {
 
     match parser::RunFileParser::new().parse(Lexer::new(&mut file.char_indices())) {
         Ok(rf) => {
-            for command in rf.global_target.unwrap().commands {
-                if !silent {
-                    println!("{:?}", command); //TODO: Implement Display
-                }
-                let status = Command::new(command.target.clone())
-                    .args(
-                        command.args.iter()
-                            .map(|x| {
-                                if let runfile::ArgPart::Str(s) = &x[0] {
-                                    s
-                                } else {
-                                    unimplemented!();
-                                }
-                            }
-                        )
-                    )
-                    .stdin(Stdio::null())
-                    .stdout(if quiet { Stdio::null() } else { Stdio::inherit() })
-                    .stderr(if quiet { Stdio::null() } else { Stdio::inherit() })
-                    .status()
-                    .expect("Failed to execute command"); //TODO
-                if !silent {
-                    match status.code() {
-                        Some(i) => println!("`{:?}` exited with code {}", command, i),
-                        None => println!("`{:?}` terminated by signal", command), //TODO figure out which signal
+            if run_target != "" {
+                match rf.targets.iter().find(|t| t.name == run_target) {
+                    Some(target) => {
+                        println!("Running target {}", run_target);
+                        shell(&target.commands, &config);
                     }
+                    None => panic!("No target with name {}", run_target)
                 }
+            }
+            match rf.global_target {
+                Some(target) => {
+                    println!("Running global target");
+                    shell(&target.commands, &config);
+                },
+                None => {}
             }
         },
         Err(e) => {
             eprintln!("{:#?}", e);
         }
     }
+}
+
+pub struct Config {
+    quiet: bool,
+    silent: bool,
 }
