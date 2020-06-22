@@ -2,6 +2,8 @@ use std::fmt::Debug;
 use std::iter::{Peekable};
 use std::mem::replace;
 
+use crate::runfile::ScriptType;
+
 pub type Spanned<Tok, Loc, Error> = Result<(Loc, Tok, Loc), Error>;
 
 #[derive(Clone, Debug)]
@@ -13,6 +15,7 @@ pub enum Tok {
     HashDash,
     CommandPart(String),
     TargetName(String),
+    MetaScript(ScriptType),
 }
 
 impl Tok {
@@ -29,6 +32,14 @@ impl Tok {
             s
         } else {
             panic!("Expected TargetName");
+        }
+    }
+
+    pub fn meta_script(self) -> ScriptType {
+        if let Tok::MetaScript(b) = self {
+            b
+        } else {
+            panic!("Expected MetaBuild");
         }
     }
 }
@@ -125,6 +136,33 @@ impl<'input> Iterator for Lexer<'input> {
             State::Meta => {
                 loop {
                     match self.chars.next() {
+                        Some((i, 'b')) => {
+                            return Some(Ok(
+                                match self.chars.peek() {
+                                    Some((_, '!')) => {
+                                        self.chars.next();
+                                        (i, Tok::MetaScript(ScriptType::BuildOnly), i + 2)
+                                    },
+                                    Some((_, 'r')) => {
+                                        self.chars.next();
+                                        (i, Tok::MetaScript(ScriptType::BuildAndRun), i + 2)
+                                    },
+                                    _ => {
+                                        (i, Tok::MetaScript(ScriptType::Build), i + 1)
+                                    }
+                                }
+                            ));
+                        },
+                        Some((i, 'r')) => {
+                            return Some(Ok(
+                                if let Some((_, '!')) = self.chars.peek() {
+                                    self.chars.next();
+                                    (i, Tok::MetaScript(ScriptType::RunOnly), i + 2)
+                                } else {
+                                    (i, Tok::MetaScript(ScriptType::Run), i + 1)
+                                }
+                            ));
+                        }
                         Some((i, '\n')) => {
                             self.state = State::Exec;
                             return Some(Ok((i, Tok::Newline, i + 1)))
