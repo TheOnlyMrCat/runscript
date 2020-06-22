@@ -104,5 +104,5 @@ Args: Vec<Argument> = {
 }
 
 Arg: Argument = {
-    ARGV => vec![ArgPart::Str(<>.command_part())],
+    ARGV => Argument { parts: vec![ArgPart::Str(<>.command_part())] },
 }
