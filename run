@@ -6,13 +6,13 @@ cargo run -q -- test
 The program is tested by an earlier version of itself. Pretty epic
 
 #test
-cargo run -q -- test/basic: -q
+run test/basic: -q
 
-cargo run -q -- test/build:
-cargo run -q -- test/build: -b
-cargo run -q -- test/build: --build-and-run
-cargo run -q -- test/build: -r
+run test/build:
+run test/build: -b
+run test/build: --build-and-run
+run test/build: -r
 
-cargo run -q -- test/error:phase
-cargo run -q -- test/error:internal
+run test/error:phase
+run test/error:internal
 #/
