@@ -1,0 +1,23 @@
+## b!
+echo BuildOnly
+#/
+
+## b
+echo Build
+#/
+
+#-
+echo BuildAndRun (Default)
+#/
+
+## br
+echo BuildAndRun (Explicit)
+#/
+
+## r
+echo Run
+#/
+
+## r!
+echo RunOnly
+#/
