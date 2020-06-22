@@ -11,7 +11,21 @@ pub struct RunFile {
 
 #[derive(Debug)]
 pub struct Target {
-    pub commands: Vec<Command>,
+    pub commands: HashMap<TargetMeta, Vec<Command>>,
+}
+
+#[derive(Debug,PartialEq,Hash,Eq)]
+pub struct TargetMeta {
+    pub script: ScriptType,
+}
+
+#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
+pub enum ScriptType {
+    BuildOnly,   // b!
+    Build,       // b
+    BuildAndRun, // br (default)
+    Run,         // r
+    RunOnly,     // r!
 }
 
 #[derive(Debug)]
@@ -30,6 +44,14 @@ pub enum ArgPart {
     Str(String),
     Var(String),
     Cmd(Command),
+}
+
+impl Default for Target {
+    fn default() -> Self {
+        Target {
+            commands: HashMap::default(),
+        }
+    }
 }
 
 impl ArgPart {
