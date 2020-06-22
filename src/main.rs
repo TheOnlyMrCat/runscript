@@ -73,10 +73,10 @@ fn main() {
             } else {
                 match rf.targets.get(&run_target) {
                     Some(target) => {
-                        println!("Running target {}", run_target);
+                        println!("Running target '{}'", run_target);
                         shell(&target.commands, &config);
                     },
-                    None => panic!("No target with name {}", run_target)
+                    None => panic!("No target with name '{}'", run_target)
                 }
             }
             match rf.global_target {
