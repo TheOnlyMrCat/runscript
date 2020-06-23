@@ -14,6 +14,11 @@ pub enum Tok {
     HashSlash,
     HashDash,
     SingleQuote,
+    DoubleQuote,
+    OpenParen,
+    CloseParen,
+    Dollar,
+    Whitespace,
     CommandPart(String),
     TargetName(String),
     MetaScript(ScriptType),
@@ -195,7 +200,11 @@ impl<'input> Iterator for Lexer<'input> {
                                     None => return None,
                                 }
                             },
+                            '$' => return Some(Ok((begindex, Tok::Dollar, begindex + 1))),
+                            '(' => return Some(Ok((begindex, Tok::OpenParen, begindex + 1))),
+                            ')' => return Some(Ok((begindex, Tok::CloseParen, begindex + 1))),
                             '\'' => return Some(Ok((begindex, Tok::SingleQuote, begindex + 1))),
+                            '"' => return Some(Ok((begindex, Tok::SingleQuote, begindex + 1))),
                             '\n' => return Some(Ok((begindex, Tok::Newline, begindex + 1))),
                             _ => {
                                 let mut string = String::with_capacity(5);
@@ -203,11 +212,17 @@ impl<'input> Iterator for Lexer<'input> {
                                 loop {
                                     match self.chars.next() {
                                         Some((i, ' ')) => {
+                                            self.buftk = Some(Ok((i, Tok::Whitespace, i + 1)));
                                             string.shrink_to_fit();
                                             return Some(Ok((begindex, Tok::CommandPart(string), i)));
                                         },
                                         Some((i, '\'')) => {
                                             self.buftk = Some(Ok((i, Tok::SingleQuote, i + 1)));
+                                            string.shrink_to_fit();
+                                            return Some(Ok((begindex, Tok::CommandPart(string), i)));
+                                        },
+                                        Some((i, '"')) => {
+                                            self.buftk = Some(Ok((i, Tok::DoubleQuote, i + 1)));
                                             string.shrink_to_fit();
                                             return Some(Ok((begindex, Tok::CommandPart(string), i)));
                                         },
