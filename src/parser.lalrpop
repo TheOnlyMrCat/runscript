@@ -16,6 +16,7 @@ extern {
         "##" => Tok::DoubleHash,
         "#/" => Tok::HashSlash,
         "#-" => Tok::HashDash,
+        "'"  => Tok::SingleQuote,
         ARGV => Tok::CommandPart(_),
         NAME => Tok::TargetName(_),
         SCTP  => Tok::MetaScript(_),
@@ -104,5 +105,11 @@ Args: Vec<Argument> = {
 }
 
 Arg: Argument = {
+    "'" <QuotedArg> "'" => Argument { parts: vec![ArgPart::Str(<>)] },
     ARGV => Argument { parts: vec![ArgPart::Str(<>.command_part())] },
+}
+
+QuotedArg: String = {
+    <q:QuotedArg> <v:ARGV> => q + " " + &v.command_part(),
+    ARGV => <>.command_part(),
 }
