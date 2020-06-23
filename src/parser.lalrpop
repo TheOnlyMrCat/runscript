@@ -2,30 +2,17 @@ use std::collections::HashMap;
 use std::mem::take;
 
 use crate::runfile::*;
-use crate::lexer::*;
 
 grammar;
 
-extern {
-    type Location = usize;
-    type Error = LexErr;
-
-    enum Tok {
-        "\n" => Tok::Newline,
-        "#"  => Tok::Hash,
-        "##" => Tok::DoubleHash,
-        "#/" => Tok::HashSlash,
-        "#-" => Tok::HashDash,
-        "'"  => Tok::SingleQuote,
-        "\"" => Tok::DoubleQuote,
-        "("  => Tok::OpenParen,
-        ")"  => Tok::CloseParen,
-        "$"  => Tok::Dollar,
-        " "  => Tok::Whitespace,
-        ARGV => Tok::CommandPart(_),
-        NAME => Tok::TargetName(_),
-        SCTP => Tok::MetaScript(_),
-    }
+match {
+    r"![^\n]*\n" => {}, // Defined comments as "!..." so whitespace is lexed by the default lexer
+    r"b(?:!|r)?|r!?" => BFLAGS,
+    r"[ \t]+" => " ",
+} else {
+    r"\s+" => "\n",
+    r"[/\-:()\w]+" => CLARG,
+    _
 }
 
 pub RunFile: RunFile = {
@@ -33,7 +20,7 @@ pub RunFile: RunFile = {
 }
 
 Targets: RunFile = {
-    "##" <m:TargetMeta> "\n" <c:Commands> "#/" <mut t:Targets> => {
+    "##" " "? <m:TargetMeta> "\n" <c:Commands> "#/" "\n"* <mut t:Targets> => {
         let mut n = match take(&mut t.global_target) {
             Some(t) => t,
             None => Target::default()
@@ -45,7 +32,7 @@ Targets: RunFile = {
         t.global_target = Some(n);
         t
     },
-    "#-" <m:TargetMeta> "\n" <c:Commands> "#/" <mut t:Targets> => {
+    "#-" " "? <m:TargetMeta> "\n" <c:Commands> "#/" "\n"* <mut t:Targets> => {
         let mut n = match take(&mut t.default_target) {
             Some(t) => t,
             None => Target::default()
@@ -57,8 +44,8 @@ Targets: RunFile = {
         t.default_target = Some(n);
         t
     },
-    "#" <s:NAME> <m:TargetMeta> "\n" <c:Commands> "#/" <mut t:Targets> => {
-        let target_name = s.target_name();
+    "#" <s:CLARG> " "? <m:TargetMeta> "\n" <c:Commands> "#/" "\n"* <mut t:Targets> => {
+        let target_name = s.to_owned();
         let mut n = match t.targets.remove(&target_name) {
             Some(t) => t,
             None => Target::default()
@@ -78,7 +65,16 @@ Targets: RunFile = {
 }
 
 TargetMeta: TargetMeta = {
-    SCTP => TargetMeta { script: <>.meta_script() },
+    BFLAGS => TargetMeta {
+        script: match <> {
+            "b!" => ScriptType::BuildOnly,
+            "b"  => ScriptType::Build,
+            "br" => ScriptType::BuildAndRun,
+            "r"  => ScriptType::Run,
+            "r!" => ScriptType::RunOnly,
+            _ => unreachable!()
+        }
+    },
     => TargetMeta { script: ScriptType::BuildAndRun },
 }
 
@@ -92,73 +88,55 @@ Commands: Vec<Command> = {
     "\n" => vec![],
 }
 
-//TODO: Figure out what exactly sh accepts as a command
 Command: Command = {
-    <t:ARGV> <a:Args> => Command {
-        target: t.command_part(),
-        args: a,
+    <t:CLARG> <a:(" " <Args>)?> => Command {
+        target: t.to_owned(),
+        args: match a { Some(a) => a, None => vec![] },
     }
 }
 
-//TODO: Figure out what exactly sh accepts in arguments
 Args: Vec<Argument> = {
-    <r:Arg> => vec![r],
-    <mut a:Args> " " <r:Arg> => {
-        a.push(r);
+    <mut a:(<Arg> " ")*> <l:Arg> => {
+        a.push(l);
         a
     }
 }
 
 Arg: Argument = {
-    "\"" <mut d:DoubleQuotedArg> "\"" => Argument { parts: { d.reverse() d } },
-    "'" <QuotedArg> "'" => Argument { parts: vec![ArgPart::Str(<>)] },
-    ARGV => Argument { parts: vec![ArgPart::Str(<>.command_part())] },
-    "$" <ARGV> => Argument { parts: vec![ArgPart::Var(<>.command_part())] }
+    <DoubleQuotedArg> => Argument { parts: <> },
+    <QuotedArg> => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
+    CLARG => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
+    "$" <CLARG> => Argument { parts: vec![ArgPart::Var(<>.to_owned())] }
 }
 
 QuotedArg: String = {
-    <q:QuotedArg> " " <v:ARGV> => q + " " + &v.command_part(),
-    ARGV => <>.command_part(),
+    "'" <a:(<CLARG> " ")*> <l:CLARG> "'" => a.iter().fold("".to_owned(), |acc, x| acc + x + " ") + l
 }
 
 DoubleQuotedArg: Vec<ArgPart> = {
-    <q:QuotedArg> " " <v:DollarEscape> " " <mut d:DoubleQuotedArg> => {
-        d.push(ArgPart::Str(q + " "));
-        d.push(s);
-        d.push(ArgPart::Str(" ".to_owned()));
-        d
-    },
-    <q:QuotedArg> " " <s:DollarEscape> <mut d:DoubleQuotedArg> => {
-        d.push(ArgPart::Str(q + " "));
-        d.push(s);
-        d
-    },
-    <q:QuotedArg> <s:DollarEscape> " " <mut d:DoubleQuotedArg> => {
-        d.push(ArgPart::Str(q));
-        d.push(s);
-        d.push(ArgPart::Str(" ".to_owned()));
-        d
-    },
-    <q:QuotedArg> <s:DollarEscape> <mut d:DoubleQuotedArg> => {
-        d.push(q);
-        d.push(s);
-        d
-    },
-    <s:DollarEscape> " " <mut d:DoubleQuotedArg> => {
-        d.push(s);
-        d.push(ArgPart::Str(" ".to_owned()));
-        d
-    },
-    <s:DollarEscape> <mut d:DoubleQuotedArg> => {
-        d.push(s);
-        d
-    },
-    <q:QuotedArg> => vec![ArgPart::Str(q)],
-    <s:DollarEscape> => vec![s],
-    => vec![]
+    "\"" <a:DoubleQuotedPart*> "\"" => a.iter().fold(Vec::<ArgPart>::new(), |acc, x| {
+        let mut acc = acc;
+        match acc.last_mut() {
+            Some(e) => {
+                match e {
+                    ArgPart::Str(s) => {
+                        match x {
+                            ArgPart::Str(t) => s.push_str(&t),
+                            _ => acc.push(x.clone()),
+                        }
+                    }
+                    _ => acc.push(x.clone()),
+                }
+            },
+            None => acc.push(x.clone()),
+        }
+        acc
+    })
 }
 
-DollarEscape: ArgPart = {
-    "$" <ARGV> => ArgPart::Var(v.command_part()),
+DoubleQuotedPart: ArgPart = {
+    " " => ArgPart::Str(<>.to_owned()),
+    CLARG => ArgPart::Str(<>.to_owned()),
+    "$" <CLARG> => ArgPart::Var(<>.to_owned()),
     "$" "(" <Command> ")" => ArgPart::Cmd(<>),
 }
