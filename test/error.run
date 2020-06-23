@@ -4,7 +4,7 @@ echo SHOULD RUN
 
 #phase
 echo SHOULD ERROR
-exit 1
+sh -c 'exit 1'
 #/
 
 #phase r
@@ -13,6 +13,6 @@ echo SHOULD NOT RUN
 
 #internal
 echo SHOULD RUN
-exit 1
+sh -c 'exit 1'
 echo SHOULD NOT RUN
 #/
