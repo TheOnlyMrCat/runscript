@@ -6,7 +6,6 @@ use std::path::Path;
 
 mod exec;
 mod runfile;
-mod lexer;
 use exec::run;
 
 lalrpop_mod!(pub parser);

@@ -1,11 +1,11 @@
-Test script
+!Test script
 #-
-cargo run -q -- test
+cargo run -q -- test -r
 #/
 
-The program is tested by an earlier version of itself. Pretty epic
+!The program is tested by an earlier version of itself. Pretty epic
 
-#test
+#test r!
 run test/basic: -q
 
 run test/build:

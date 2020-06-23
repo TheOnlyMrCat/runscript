@@ -9,7 +9,6 @@ use getopts::Options;
 use crate::runfile::{self, TargetMeta, ScriptType};
 use crate::Config;
 
-use crate::lexer::Lexer;
 use crate::parser;
 
 const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
@@ -83,7 +82,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
     let mut file = String::new();
     File::open(config.file).expect("Failed to open file").read_to_string(&mut file).expect("Failed to read file");
 
-    match parser::RunFileParser::new().parse(Lexer::new(&mut file.char_indices())) {
+    match parser::RunFileParser::new().parse(&file) {
         Ok(rf) => {
             for &phase in phases {
                 if run_target == "" {
