@@ -1,0 +1,16 @@
+##
+echo single
+echo 'quoted'
+echo "doubled"
+
+echo with spaces
+echo 'quoted with spaces'
+echo "doubled with spaces"
+
+echo $HOME
+echo $(echo -n subcommand)
+
+echo "doubled with $HOME"
+echo "doubled with $(echo -n subcommand)"
+echo "doubled with $HOME and $(echo -n sub)command without spaces"
+#/

@@ -2,7 +2,7 @@
 
 use std::env;
 
-use std::path::Path;
+use std::path::PathBuf;
 
 mod exec;
 mod runfile;
@@ -14,8 +14,9 @@ fn main() {
     run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"))
 }
 
-pub struct Config<'a> {
+#[derive(Clone)]
+pub struct Config {
     quiet: bool,
     silent: bool,
-    file: &'a Path,
+    file: PathBuf,
 }

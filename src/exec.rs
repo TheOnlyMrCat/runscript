@@ -6,7 +6,7 @@ use std::process::{Command, Stdio, ExitStatus};
 
 use getopts::Options;
 
-use crate::runfile::{self, TargetMeta, ScriptType};
+use crate::runfile::{self, TargetMeta, ScriptType, ArgPart};
 use crate::Config;
 
 use crate::parser;
@@ -76,11 +76,11 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
     let config = Config {
         quiet: matches.opt_present("quiet"),
         silent: matches.opt_count("quiet") > 1,
-        file: &runfile_path,
+        file: runfile_path,
     };
 
     let mut file = String::new();
-    File::open(config.file).expect("Failed to open file").read_to_string(&mut file).expect("Failed to read file");
+    File::open(&config.file).expect("Failed to open file").read_to_string(&mut file).expect("Failed to read file");
 
     match parser::RunFileParser::new().parse(&file) {
         Ok(rf) => {
@@ -144,68 +144,70 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
     }
 }
 
-pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
+fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
     for command in commands {
-        if !config.silent {
-            println!("> {}", command);
-        }
-        if command.target == "run" {
-            run(command.args.iter()
-            .map(|x| {
-                if let runfile::ArgPart::Str(s) = &x.parts[0] {
-                    s.clone()
-                } else {
-                    unimplemented!();
-                }
-            }
-        ), config.file.parent().expect("Runfile should have at least one parent"))
-        } else {
-            let mut child = Command::new(command.target.clone())
-                .args(
-                    command.args.iter()
-                        .map(|x| {
-                            if let runfile::ArgPart::Str(s) = &x.parts[0] {
-                                s
-                            } else {
-                                unimplemented!();
-                            }
-                        }
-                    )
-                )
-                .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
-                .stdin(Stdio::null())
-                .stdout(if config.quiet { Stdio::null() } else { Stdio::inherit() })
-                .stderr(if config.quiet { Stdio::null() } else { Stdio::inherit() })
-                .spawn()
-                .expect("Failed to execute command"); //TODO: What if it fails?
-            
-            /*
-            if !config.quiet {
-                //TODO: Might make time-continuous? Also there're some unwraps here
-                println!("  Stdout:");
-                for line in BufReader::new(child.stdout.as_mut().unwrap()).lines() {
-                    println!("    {}", line.unwrap());
-                }
-                println!("  Stderr:");
-                for line in BufReader::new(child.stderr.as_mut().unwrap()).lines() {
-                    println!("    {}", line.unwrap());
-                }
-            }
-            */
-            let status = child.wait().expect("Command wasn't running properly");
-
-            if !status.success() {
-                if !config.silent {
-                    match status.code() {
-                        Some(i) => println!(">> exit {}", i),
-                        None => println!(">> {}", signal(&status)),
-                    }
-                }
-                return false;
-            }
+        if !exec(command, config) {
+            return false;
         }
     }
     return true;
+}
+
+fn exec(command: &runfile::Command, config: &Config) -> bool {
+    if !config.silent {
+        println!("> {}", command);
+    }
+    if command.target == "run" {
+        run(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))), config.file.parent().expect("Runfile should have at least one parent"));
+        return true;
+    } else {
+        let mut child = Command::new(command.target.clone())
+            .args(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))))
+            .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
+            .stdin(Stdio::null())
+            .stdout(if config.quiet { Stdio::null() } else { Stdio::inherit() })
+            .stderr(if config.quiet { Stdio::null() } else { Stdio::inherit() })
+            .spawn()
+            .expect("Failed to execute command"); //TODO: What if it fails?
+        
+        /*
+        if !config.quiet {
+            //TODO: Might make time-continuous? Also there're some unwraps here
+            println!("  Stdout:");
+            for line in BufReader::new(child.stdout.as_mut().unwrap()).lines() {
+                println!("    {}", line.unwrap());
+            }
+            println!("  Stderr:");
+            for line in BufReader::new(child.stderr.as_mut().unwrap()).lines() {
+                println!("    {}", line.unwrap());
+            }
+        }
+        */
+        let status = child.wait().expect("Command wasn't running properly");
+
+        if !status.success() {
+            if !config.silent {
+                match status.code() {
+                    Some(i) => println!(">> exit {}", i),
+                    None => println!(">> {}", signal(&status)),
+                }
+            }
+            return false;
+        }
+        return true;
+    }
+}
+
+fn fold_arg(config: Config) -> Box<dyn Fn(String, &ArgPart) -> String> {
+    Box::new(move |acc, p| match p {
+        ArgPart::Str(s) => acc + s,
+        ArgPart::Var(v) => acc + &std::env::var(v).unwrap_or("".to_owned()),
+        ArgPart::Cmd(c) => acc + &String::from_utf8_lossy(&Command::new(c.target.clone())
+            .args(c.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))))
+            .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
+            .output()
+            .expect("Failed to execute command").stdout),
+    })
 }
 
 #[allow(dead_code)]

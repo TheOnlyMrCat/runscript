@@ -7,11 +7,11 @@ echo Build
 #/
 
 #-
-echo BuildAndRun (Default)
+echo BuildAndRun Default
 #/
 
 ## br
-echo BuildAndRun (Explicit)
+echo BuildAndRun Explicit
 #/
 
 ## r
