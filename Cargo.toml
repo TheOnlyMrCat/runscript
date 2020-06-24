@@ -1,7 +1,11 @@
 [package]
 name = "runscript"
-version = "0.1.0"
-authors = ["TheOnlyMrCat <signupforforums5@gmail.com>"]
+version = "0.6.0"
+description = "Like make, but for running"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/TheOnlyMrCat/runscript"
+authors = ["TheOnlyMrCat <skylifegame@gmail.com>"]
 edition = "2018"
 
 [[bin]]
