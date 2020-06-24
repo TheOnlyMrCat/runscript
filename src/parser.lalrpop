@@ -11,7 +11,7 @@ match {
     r"[ \t]+" => " ",
 } else {
     r"\s+" => "\n",
-    r"[/\-:()\w]+" => CLARG,
+    r"[/\-:\w]+" => CLARG,
     _
 }
 
@@ -106,7 +106,8 @@ Arg: Argument = {
     <DoubleQuotedArg> => Argument { parts: <> },
     <QuotedArg> => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
     CLARG => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
-    "$" <CLARG> => Argument { parts: vec![ArgPart::Var(<>.to_owned())] }
+    "$" <CLARG> => Argument { parts: vec![ArgPart::Var(<>.to_owned())] },
+    "$" "(" <Command> ")" => Argument { parts: vec![ArgPart::Cmd(<>)] },
 }
 
 QuotedArg: String = {

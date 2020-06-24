@@ -8,11 +8,13 @@ cargo run -q -- test -r
 #test r!
 run test/basic: -q
 
-run test/build:
-run test/build: -b
-run test/build: --build-and-run
-run test/build: -r
+run test/phases:
+run test/phases: -b
+run test/phases: --build-and-run
+run test/phases: -r
 
 run test/error:phase
 run test/error:internal
+
+run test/args:
 #/
