@@ -220,6 +220,6 @@ fn signal(status: &ExitStatus) -> String {
 
 #[allow(dead_code)]
 #[cfg(not(unix))]
-fn signal(status: &ExitStatus) -> String {
+fn signal(_status: &ExitStatus) -> String {
     "error".to_owned()
 }
