@@ -4,6 +4,7 @@ version = "0.6.0"
 description = "Like make, but for running"
 license = "MIT"
 readme = "README.md"
+categories = ["command-line-utilities", "development-tools::build-utils"]
 repository = "https://github.com/TheOnlyMrCat/runscript"
 authors = ["TheOnlyMrCat <skylifegame@gmail.com>"]
 edition = "2018"
