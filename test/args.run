@@ -4,8 +4,8 @@ echo 'quoted'
 echo "doubled"
 
 echo with spaces
-echo 'quoted with spaces'
-echo "doubled with spaces"
+echo 'quoted  with   spaces'
+echo "doubled with   spaces"
 
 echo $HOME
 echo $(echo -n subcommand)
