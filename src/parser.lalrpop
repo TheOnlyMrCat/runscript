@@ -11,7 +11,7 @@ match {
     r"[ \t]+" => " ",
 } else {
     r"\s+" => "\n",
-    r"[/\-:\w]+" => CLARG,
+    r"[[:alnum:]%&*-/:<-@\[\]-_{-~]+" => CLARG,
     _
 }
 
@@ -111,7 +111,7 @@ Arg: Argument = {
 }
 
 QuotedArg: String = {
-    "'" <a:(<CLARG> " ")*> <l:CLARG> "'" => a.iter().fold("".to_owned(), |acc, x| acc + x + " ") + l
+    "'" <a:QuotedPart*> "'" => a.iter().fold("".to_owned(), |acc, x| acc + x)
 }
 
 DoubleQuotedArg: Vec<ArgPart> = {
@@ -135,9 +135,13 @@ DoubleQuotedArg: Vec<ArgPart> = {
     })
 }
 
+QuotedPart: String = {
+    " " => <>.to_owned(),
+    CLARG => <>.to_owned(),
+}
+
 DoubleQuotedPart: ArgPart = {
-    " " => ArgPart::Str(<>.to_owned()),
-    CLARG => ArgPart::Str(<>.to_owned()),
+    QuotedPart => ArgPart::Str(<>),
     "$" <CLARG> => ArgPart::Var(<>.to_owned()),
     "$" "(" <Command> ")" => ArgPart::Cmd(<>),
 }

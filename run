@@ -17,4 +17,6 @@ run test/error:phase
 run test/error:internal
 
 run test/args:
+
+run test/chars:
 #/
