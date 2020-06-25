@@ -57,12 +57,12 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
         run_target = String::new();
     }
 
-    let b_pos = matches.opt_positions("build-only")   .iter().fold(0, |acc, &x| if x > acc { x } else { acc });
-    let t_pos = matches.opt_positions("build-and-run").iter().fold(0, |acc, &x| if x > acc { x } else { acc });
-    let r_pos = matches.opt_positions("run-only")     .iter().fold(0, |acc, &x| if x > acc { x } else { acc });
+    let b_pos = matches.opt_positions("build-only")   .iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
+    let t_pos = matches.opt_positions("build-and-run").iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
+    let r_pos = matches.opt_positions("run-only")     .iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
 
     let phases: &[ScriptType];
-    if b_pos + t_pos + r_pos == 0
+    if b_pos + t_pos + r_pos == -3
     || t_pos > b_pos && t_pos > r_pos {
         phases = &PHASES_T;
     } else if b_pos > t_pos && b_pos > r_pos {
