@@ -90,7 +90,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
                     match &rf.default_target {
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                println!("{} default", phase);
+                                eprintln!("{} default", phase);
                                 if shell(&c, &config) {
                                     None
                                 } else {
@@ -107,7 +107,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
                     match rf.targets.get(&run_target) {
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                println!("{} {}", phase, run_target);
+                                eprintln!("{} {}", phase, run_target);
                                 if shell(&c, &config) {
                                     None
                                 } else {
@@ -124,7 +124,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
                 match &rf.global_target {
                     Some(target) => {
                         match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                            println!("{} global", phase);
+                            eprintln!("{} global", phase);
                             if shell(&c, &config) {
                                 None
                             } else {
@@ -156,7 +156,7 @@ fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
 
 fn exec(command: &runfile::Command, config: &Config) -> bool {
     if !config.silent {
-        println!("> {}", command);
+        eprintln!("> {}", command);
     }
     if command.target == "run" {
         run(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))), config.file.parent().expect("Runfile should have at least one parent"));
@@ -189,8 +189,8 @@ fn exec(command: &runfile::Command, config: &Config) -> bool {
         if !status.success() {
             if !config.silent {
                 match status.code() {
-                    Some(i) => println!(">> exit {}", i),
-                    None => println!(">> {}", signal(&status)),
+                    Some(i) => eprintln!(">> exit {}", i),
+                    None => eprintln!(">> {}", signal(&status)),
                 }
             }
             return false;
