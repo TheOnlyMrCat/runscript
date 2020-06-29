@@ -1,0 +1,16 @@
+use crate::runfile::*;
+
+use crate::parser;
+
+grammar;
+
+pub DoubledArg: Vec<ArgPart> = {
+    "\"" <DoubledPart*> "\""
+}
+
+DoubledPart: ArgPart = {
+    r"[[:alnum:] !#%&(-/:-@\[\]-`{-~]*" => ArgPart::Str(<>.to_owned()),
+    "$" => ArgPart::Str("$".to_owned()),
+    r"\$[[:alnum:]_]+" => ArgPart::Var(<>[1..].to_owned()),
+    r#"\$\([[:alnum:] !#%&'*-/:-@\[\]-`{-~\]]*\)"# =>? Ok(ArgPart::Cmd(parser::CommandParser::new().parse(&<>[2..<>.len() - 1])?))
+}

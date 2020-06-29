@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::mem::take;
 
 use crate::runfile::*;
+use crate::doubled;
 
 grammar;
 
@@ -88,7 +89,7 @@ Commands: Vec<Command> = {
     "\n" => vec![],
 }
 
-Command: Command = {
+pub Command: Command = {
     <t:CLARG> <a:(" " <Args>)?> => Command {
         target: t.to_owned(),
         args: match a { Some(a) => a, None => vec![] },
@@ -103,7 +104,7 @@ Args: Vec<Argument> = {
 }
 
 Arg: Argument = {
-    <DoubleQuotedArg> => Argument { parts: <> },
+    <DoubleQuotedArg> => <>,
     <QuotedArg> => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
     CLARG => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
     "$" <CLARG> => Argument { parts: vec![ArgPart::Var(<>.to_owned())] },
@@ -111,37 +112,9 @@ Arg: Argument = {
 }
 
 QuotedArg: String = {
-    "'" <a:QuotedPart*> "'" => a.iter().fold("".to_owned(), |acc, x| acc + x)
+    r"'[[:alnum:] !#$%&(-/:-@\[\]-`{-~]*'" => <>[1..<>.len() - 1].to_owned(),
 }
 
-DoubleQuotedArg: Vec<ArgPart> = {
-    "\"" <a:DoubleQuotedPart*> "\"" => a.iter().fold(Vec::<ArgPart>::new(), |acc, x| {
-        let mut acc = acc;
-        match acc.last_mut() {
-            Some(e) => {
-                match e {
-                    ArgPart::Str(s) => {
-                        match x {
-                            ArgPart::Str(t) => s.push_str(&t),
-                            _ => acc.push(x.clone()),
-                        }
-                    }
-                    _ => acc.push(x.clone()),
-                }
-            },
-            None => acc.push(x.clone()),
-        }
-        acc
-    })
-}
-
-QuotedPart: String = {
-    " " => <>.to_owned(),
-    CLARG => <>.to_owned(),
-}
-
-DoubleQuotedPart: ArgPart = {
-    QuotedPart => ArgPart::Str(<>),
-    "$" <CLARG> => ArgPart::Var(<>.to_owned()),
-    "$" "(" <Command> ")" => ArgPart::Cmd(<>),
+DoubleQuotedArg: Argument = {
+    r#""[[:alnum:] !#$%&(-/:-@\[\]-`{-~]*""# =>? Ok(Argument { parts: doubled::DoubledArgParser::new().parse(<>)? })
 }
