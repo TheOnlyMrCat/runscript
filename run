@@ -19,4 +19,6 @@ run test/error:internal
 run test/args:
 
 run test/chars:
+
+run test/num: one three two
 #/

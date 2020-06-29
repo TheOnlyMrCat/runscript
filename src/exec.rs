@@ -77,6 +77,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path)
         quiet: matches.opt_present("quiet"),
         silent: matches.opt_count("quiet") > 1,
         file: runfile_path,
+        args: matches.free[1..].to_vec()
     };
 
     let mut file = String::new();
@@ -201,6 +202,7 @@ fn exec(command: &runfile::Command, config: &Config) -> bool {
 fn fold_arg(config: Config) -> Box<dyn Fn(String, &ArgPart) -> String> {
     Box::new(move |acc, p| match p {
         ArgPart::Str(s) => acc + s,
+        ArgPart::Arg(n) => acc + &config.args[*n - 1],
         ArgPart::Var(v) => acc + &std::env::var(v).unwrap_or("".to_owned()),
         ArgPart::Cmd(c) => acc + &String::from_utf8_lossy(&Command::new(c.target.clone())
             .args(c.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))))
