@@ -9,6 +9,7 @@ mod runfile;
 use exec::run;
 
 lalrpop_mod!(pub parser);
+lalrpop_mod!(pub doubled);
 
 fn main() {
     run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"))
