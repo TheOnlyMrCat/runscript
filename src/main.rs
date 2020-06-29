@@ -20,4 +20,5 @@ pub struct Config {
     quiet: bool,
     silent: bool,
     file: PathBuf,
+    args: Vec<String>,
 }

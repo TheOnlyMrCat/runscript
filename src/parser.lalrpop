@@ -1,10 +1,16 @@
 use std::collections::HashMap;
 use std::mem::take;
 
+use lalrpop_util::ParseError;
+
 use crate::runfile::*;
 use crate::doubled;
 
 grammar;
+
+extern {
+    type Error = String;
+}
 
 match {
     r"![^\n]*\n" => {}, // Defined comments as "!..." so whitespace is lexed by the default lexer
@@ -107,6 +113,10 @@ Arg: Argument = {
     <DoubleQuotedArg> => <>,
     <QuotedArg> => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
     CLARG => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
+    r"\$[[:digit:]]+" =>? match <>[1..].parse::<usize>() {
+        Ok(i) => Ok(Argument { parts: vec![ArgPart::Arg(i)] }),
+        Err(e) => Err(ParseError::User { error: format!("{}", e)}),
+    },
     "$" <CLARG> => Argument { parts: vec![ArgPart::Var(<>.to_owned())] },
     "$" "(" <Command> ")" => Argument { parts: vec![ArgPart::Cmd(<>)] },
 }

@@ -42,6 +42,7 @@ pub struct Argument {
 #[derive(Debug, Clone)]
 pub enum ArgPart {
     Str(String),
+    Arg(usize),
     Var(String),
     Cmd(Command),
 }
@@ -78,6 +79,7 @@ impl Display for Argument {
         if self.parts.iter().any(|x| discriminant(x) != discriminant(&ArgPart::Str("".to_owned()))) {
             write!(f, "\"{}\"", self.parts.iter().fold("".to_owned(), |acc, part| match part {
                 ArgPart::Str(s) => acc + s,
+                ArgPart::Arg(n) => { acc + &format!("${}", n) },
                 ArgPart::Var(v) => { acc + &format!("${}", v) },
                 ArgPart::Cmd(c) => { acc + &format!("$({})", c) },
             }))
