@@ -94,7 +94,7 @@ pub fn file_parse_err(file: &SimpleFile<String, String>, err: ParseError<usize, 
 
 pub fn bad_command_err(file: &SimpleFile<String, String>, cmd: &Command, kind: ErrorKind) {
     let d: Diagnostic<()> = Diagnostic::error()
-        .with_message(format!("Failed to execute command: {}", cmd.target))
+        .with_message(format!("Failed to execute `{}`", cmd.target))
         .with_labels(vec![
             Label::primary((), cmd.loc.0..cmd.loc.1).with_message(match kind {
                 NotFound => "Couldn't find executable",
@@ -109,6 +109,19 @@ pub fn bad_command_err(file: &SimpleFile<String, String>, cmd: &Command, kind: E
             ],
             _ => vec![]
         });
+    
+    let w = StandardStream::stderr(ColorChoice::Auto);
+    let c = Config::default();
+
+    emit(&mut w.lock(), &c, file, &d).expect("Couldn't print error");
+}
+
+pub fn bad_chain(file: &SimpleFile<String, String>, cmd: &Command) {
+    let d: Diagnostic<()> = Diagnostic::error()
+        .with_message("Cannot chain recursive `run` calls")
+        .with_labels(vec![
+            Label::primary((), cmd.loc.0..cmd.loc.1).with_message("Cannot chain recursive `run` calls")
+        ]);
     
     let w = StandardStream::stderr(ColorChoice::Auto);
     let c = Config::default();
