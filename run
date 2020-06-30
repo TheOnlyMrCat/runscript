@@ -21,6 +21,8 @@ run test/args:
 run test/chars:
 
 run test/num: one three two
+
+run test/pipe:
 #/
 
 #- b!
