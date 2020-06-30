@@ -8,12 +8,16 @@ use std::io::prelude::*;
 
 use getopts::Options;
 
+use codespan_reporting::files::SimpleFile;
+
+mod err;
 mod exec;
 mod runfile;
 
 lalrpop_mod!(pub parser);
 lalrpop_mod!(pub doubled);
 
+use err::*;
 use exec::shell;
 use runfile::{TargetMeta, ScriptType};
 
@@ -41,7 +45,10 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
 
     let matches = match options.parse(args) {
         Ok(m) => m,
-        Err(x) => panic!(x),
+        Err(x) => {
+            option_parse_err(x);
+            return false;
+        },
     };
 
     if matches.opt_present("help") {
@@ -63,7 +70,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
             runfile_path.push(s);
             run_target = v[1].to_owned();
         } else {
-            panic!("Invalid target");
+            run_target = "".to_owned();
         }
     } else {
         runfile_path.push("run");
@@ -95,7 +102,21 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
     };
 
     let mut file = String::new();
-    File::open(&config.file).expect("Failed to open file").read_to_string(&mut file).expect("Failed to read file");
+    match File::open(&config.file) {
+        Ok(mut f) => match f.read_to_string(&mut file) {
+            Ok(_) => {}
+            Err(e) => {
+                file_read_err(config.file, e.kind());
+                return false;
+            }
+        },
+        Err(e) => {
+            file_read_err(config.file, e.kind());
+            return false;
+        }
+    }
+
+    let codespan_file = SimpleFile::new(String::from(config.file.as_os_str().to_string_lossy()), file.clone());
 
     match parser::RunFileParser::new().parse(&file) {
         Ok(rf) => {
@@ -105,7 +126,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                                 eprintln!("{} default", phase);
-                                if shell(&c, &config) {
+                                if shell(&c.commands, &config) {
                                     None
                                 } else {
                                     Some(())
@@ -122,7 +143,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                                 eprintln!("{} {}", phase, run_target);
-                                if shell(&c, &config) {
+                                if shell(&c.commands, &config) {
                                     None
                                 } else {
                                     Some(())
@@ -132,14 +153,16 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
                                 None => {}
                             }
                         },
-                        None => panic!("No target with name '{}'", run_target)
+                        None => {
+                            eprintln!("No target with name '{}'", run_target)
+                        }
                     }
                 }
                 match &rf.global_target {
                     Some(target) => {
                         match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                             eprintln!("{} global", phase);
-                            if shell(&c, &config) {
+                            if shell(&c.commands, &config) {
                                 None
                             } else {
                                 Some(())
@@ -155,7 +178,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
             return !config.expect_fail;
         },
         Err(e) => {
-            eprintln!("{:#?}", e);
+            file_parse_err(&codespan_file, e);
             return false;
         }
     }

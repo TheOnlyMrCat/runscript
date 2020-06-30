@@ -1,12 +1,11 @@
-use lalrpop_util::ParseError;
-
 use crate::runfile::*;
 use crate::parser;
+use crate::err::RunscriptError;
 
 grammar;
 
 extern {
-    type Error = String;
+    type Error = RunscriptError;
 }
 
 pub DoubledArg: Vec<ArgPart> = {
@@ -17,9 +16,6 @@ DoubledPart: ArgPart = {
     r"[[:alnum:] !#%&(-/:-@\[\]-`{-~]*" => ArgPart::Str(<>.to_owned()),
     "$" => ArgPart::Str("$".to_owned()),
     r"\$[[:alpha:]_][[:alnum:]_]*" => ArgPart::Var(<>[1..].to_owned()),
-    r"\$[[:digit:]]+" =>? match <>[1..].parse::<usize>() {
-        Ok(i) => Ok(ArgPart::Arg(i)),
-        Err(e) => Err(ParseError::User { error: format!("{}", e)}),
-    },
+    r"\$[[:digit:]]+" => ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits")),
     r#"\$\([[:alnum:] !#%&'*-/:-@\[\]-`{-~\]]*\)"# =>? Ok(ArgPart::Cmd(parser::LineParser::new().parse(&<>[2..<>.len() - 1])?))
 }
