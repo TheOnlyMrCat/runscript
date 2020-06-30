@@ -9,6 +9,8 @@ use termcolor::{StandardStream, ColorChoice};
 use lalrpop_util::lexer::Token;
 use lalrpop_util::ParseError::{self, *};
 
+use crate::runfile::Command;
+
 pub fn file_read_err(filename: PathBuf, kind: ErrorKind) {
     let d: Diagnostic<()> = Diagnostic::error()
         .with_message("Error reading input file")
@@ -84,6 +86,30 @@ pub fn file_parse_err(file: &SimpleFile<String, String>, err: ParseError<usize, 
         }
     };
 
+    let w = StandardStream::stderr(ColorChoice::Auto);
+    let c = Config::default();
+
+    emit(&mut w.lock(), &c, file, &d).expect("Couldn't print error");
+}
+
+pub fn bad_command_err(file: &SimpleFile<String, String>, cmd: &Command, kind: ErrorKind) {
+    let d: Diagnostic<()> = Diagnostic::error()
+        .with_message(format!("Failed to execute command: {}", cmd.target))
+        .with_labels(vec![
+            Label::primary((), cmd.loc.0..cmd.loc.1).with_message(match kind {
+                NotFound => "Couldn't find executable",
+                PermissionDenied => "Insufficient permission to execute command",
+                _ => "Failed to execute command",
+            })
+        ])
+        .with_notes(match kind {
+            NotFound => vec![
+                "You can add the command to your $PATH".to_owned(),
+                "You can specify the full path to the executable".to_owned()
+            ],
+            _ => vec![]
+        });
+    
     let w = StandardStream::stderr(ColorChoice::Auto);
     let c = Config::default();
 

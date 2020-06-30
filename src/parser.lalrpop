@@ -125,10 +125,11 @@ pub Line: Command = {
 }
 
 Command: Command = {
-    <t:CLARG> <a:Arg*> => Command {
+    <l:@L> <t:CLARG> <r:@R> <a:Arg*> => Command {
         target: t.to_owned(),
         args: a,
         chained: Box::new(ChainedCommand::None),
+        loc: (l, r),
     }
 }
 
