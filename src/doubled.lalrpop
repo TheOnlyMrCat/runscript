@@ -21,5 +21,5 @@ DoubledPart: ArgPart = {
         Ok(i) => Ok(ArgPart::Arg(i)),
         Err(e) => Err(ParseError::User { error: format!("{}", e)}),
     },
-    r#"\$\([[:alnum:] !#%&'*-/:-@\[\]-`{-~\]]*\)"# =>? Ok(ArgPart::Cmd(parser::CommandParser::new().parse(&<>[2..<>.len() - 1])?))
+    r#"\$\([[:alnum:] !#%&'*-/:-@\[\]-`{-~\]]*\)"# =>? Ok(ArgPart::Cmd(parser::LineParser::new().parse(&<>[2..<>.len() - 1])?))
 }

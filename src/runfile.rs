@@ -32,11 +32,20 @@ pub enum ScriptType {
 pub struct Command {
     pub target: String,
     pub args: Vec<Argument>,
+    pub chained: Box<ChainedCommand>,
 }
 
 #[derive(Debug, Clone)]
 pub struct Argument {
     pub parts: Vec<ArgPart>
+}
+
+#[derive(Debug, Clone)]
+pub enum ChainedCommand {
+    And(Command),
+    Or(Command),
+    Pipe(Command),
+    None,
 }
 
 #[derive(Debug, Clone)]
@@ -67,7 +76,12 @@ impl ArgPart {
 
 impl Display for Command {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}{}", self.target, self.args.iter().fold("".to_owned(), |mut acc, x| {
+        write!(f, "{}{}{}", match &*self.chained {
+            ChainedCommand::None => "".to_owned(),
+            ChainedCommand::And(c) => format!("{} && ", c),
+            ChainedCommand::Or(c) => format!("{} || ", c),
+            ChainedCommand::Pipe(c) => format!("{} | ", c),
+        }, self.target, self.args.iter().fold("".to_owned(), |mut acc, x| {
             acc.push(' ');
             acc + &format!("{}", x)
         }))
