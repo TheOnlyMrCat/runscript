@@ -1,6 +1,6 @@
 [package]
 name = "runscript"
-version = "0.8.1"
+version = "0.9.0"
 description = "Like make, but for running"
 license = "MIT"
 readme = "README.md"
@@ -17,6 +17,8 @@ path = "src/main.rs"
 lalrpop = { version = "0.19.0", features = ["lexer"] } # LALR parser generator
 
 [dependencies]
-getopts = "0.2.21"      # Option parsing
-lalrpop-util = "0.19.0" # Util for LALRPOP
-regex = "1"             # Regex parsing
+getopts = "0.2.21"           # Command-line option parsing
+lalrpop-util = "0.19.0"      # LALRPOP Runtime
+regex = "1"                  # Regex parsing, for LALRPOP's lexer
+codespan-reporting = "0.9.5" # Formatted error messages
+termcolor = "1.1.0"          # Terminal colouring

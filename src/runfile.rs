@@ -11,12 +11,18 @@ pub struct RunFile {
 
 #[derive(Debug)]
 pub struct Target {
-    pub commands: HashMap<TargetMeta, Vec<Command>>,
+    pub commands: HashMap<TargetMeta, TargetInfo>,
 }
 
 #[derive(Debug,PartialEq,Hash,Eq)]
 pub struct TargetMeta {
     pub script: ScriptType,
+}
+
+#[derive(Debug)]
+pub struct TargetInfo {
+    pub commands: Vec<Command>,
+    pub loc: (usize, usize),
 }
 
 #[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
