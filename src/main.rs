@@ -91,7 +91,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
         silent: matches.opt_count("quiet") > 1,
         expect_fail: matches.opt_present("expect-fail"),
         file: runfile_path,
-        args: if matches.free.len() > 0 { matches.free[1..].to_vec() } else { vec![] }
+        args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] }
     };
 
     let mut file = String::new();
