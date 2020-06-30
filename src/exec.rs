@@ -4,7 +4,7 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 use crate::runfile::{self, ArgPart, ChainedCommand};
 use crate::Config;
 use crate::run;
-use crate::err::bad_command_err;
+use crate::err::{bad_command_err, bad_chain};
 
 pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
     for command in commands {
@@ -12,8 +12,13 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
             eprintln!("> {}", command);
         }
         if command.target == "run" {
-            if !run(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))), config.file.parent().expect("Runfile should have at least one parent")) {
-                eprintln!("=> exit 1");
+            if let ChainedCommand::None = *command.chained {
+                if !run(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))), config.file.parent().expect("Runfile should have at least one parent")) {
+                    eprintln!("=> exit 1");
+                    return false;
+                }
+            } else {
+                bad_chain(&config.codespan_file, &command);
                 return false;
             }
         } else {
@@ -37,7 +42,8 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
 
 fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Output, ()> {
     if command.target == "run" {
-        panic!("Cannot chain recursive run calls");
+        bad_chain(&config.codespan_file, command);
+        return Err(())
     }
 
     let mut stdin: Option<Vec<u8>> = None;
