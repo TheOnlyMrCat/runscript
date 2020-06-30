@@ -11,7 +11,10 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
             eprintln!("> {}", command);
         }
         if command.target == "run" {
-            run(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))), config.file.parent().expect("Runfile should have at least one parent"));
+            if !run(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))), config.file.parent().expect("Runfile should have at least one parent")) {
+                eprintln!("=> exit 1");
+                return false;
+            }
         } else {
             let status = exec(&command, config, false).status;
             if !status.success() {
