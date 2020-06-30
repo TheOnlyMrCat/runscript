@@ -93,12 +93,13 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
         panic!("Failed to identify script phases to run")
     }
 
-    let config = Config {
+    let mut config = Config {
         quiet: matches.opt_present("quiet"),
         silent: matches.opt_count("quiet") > 1,
         expect_fail: matches.opt_present("expect-fail"),
         file: runfile_path,
-        args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] }
+        args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
+        codespan_file: SimpleFile::new("".to_owned(), "".to_owned()),
     };
 
     let mut file = String::new();
@@ -116,7 +117,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
         }
     }
 
-    let codespan_file = SimpleFile::new(String::from(config.file.as_os_str().to_string_lossy()), file.clone());
+    config.codespan_file = SimpleFile::new(String::from(config.file.as_os_str().to_string_lossy()), file.clone());
 
     match parser::RunFileParser::new().parse(&file) {
         Ok(rf) => {
@@ -178,7 +179,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
             return !config.expect_fail;
         },
         Err(e) => {
-            file_parse_err(&codespan_file, e);
+            file_parse_err(&config.codespan_file, e);
             return false;
         }
     }
@@ -191,4 +192,5 @@ pub struct Config {
     expect_fail: bool,
     file: PathBuf,
     args: Vec<String>,
+    codespan_file: SimpleFile<String, String>
 }

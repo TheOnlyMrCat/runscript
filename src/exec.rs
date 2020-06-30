@@ -4,6 +4,7 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 use crate::runfile::{self, ArgPart, ChainedCommand};
 use crate::Config;
 use crate::run;
+use crate::err::bad_command_err;
 
 pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
     for command in commands {
@@ -16,7 +17,10 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
                 return false;
             }
         } else {
-            let status = exec(&command, config, false).status;
+            let status = match exec(&command, config, false) {
+                Ok(k) => k.status,
+                Err(_) => return false,
+            };
             if !status.success() {
                 if !config.silent {
                     match status.code() {
@@ -31,7 +35,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
     return true;
 }
 
-fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Output {
+fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Output, ()> {
     if command.target == "run" {
         panic!("Cannot chain recursive run calls");
     }
@@ -40,32 +44,37 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Output {
 
     match &*command.chained {
         ChainedCommand::Pipe(c) => {
-            let h = exec(&c, config, true);
+            let h = exec(&c, config, true)?;
             stdin = Some(h.stdout.clone());
         },
         ChainedCommand::And(c) => {
-            let h = exec(&c, config, false);
+            let h = exec(&c, config, false)?;
             if !h.status.success() {
-                return h;
+                return Ok(h);
             }
         },
         ChainedCommand::Or(c) => {
-            let h = exec(&c, config, false);
+            let h = exec(&c, config, false)?;
             if h.status.success() {
-                return h;
+                return Ok(h);
             }
         },
         ChainedCommand::None => {}
     }
 
-    let mut child = Command::new(command.target.clone())
+    let mut child = match Command::new(command.target.clone())
         .args(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))))
         .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
         .stdin(match stdin { Some(_) => Stdio::piped(), None => Stdio::null() })
         .stdout(if piped { Stdio::piped() } else if config.quiet { Stdio::null() } else { Stdio::inherit() })
         .stderr(if config.quiet { Stdio::null() } else { Stdio::inherit() })
-        .spawn()
-        .expect("Failed to execute command"); //TODO: What if it fails?
+        .spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            bad_command_err(&config.codespan_file, command, e.kind());
+            return Err(())
+        }
+    };
 
     match stdin {
         Some(v) => {
@@ -75,7 +84,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Output {
         _ => {}
     }
 
-    child.wait_with_output().expect("Command was never started")
+    Ok(child.wait_with_output().expect("Command was never started"))
 }
 
 fn fold_arg(config: Config) -> Box<dyn Fn(String, &ArgPart) -> String> {

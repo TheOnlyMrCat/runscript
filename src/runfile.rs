@@ -39,6 +39,7 @@ pub struct Command {
     pub target: String,
     pub args: Vec<Argument>,
     pub chained: Box<ChainedCommand>,
+    pub loc: (usize, usize),
 }
 
 #[derive(Debug, Clone)]
