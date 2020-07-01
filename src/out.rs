@@ -1,14 +1,15 @@
 use std::io::ErrorKind::{self, *};
+use std::io::Write;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFile;
 use codespan_reporting::term::{emit, Config};
-use termcolor::{StandardStream, ColorChoice};
+use termcolor::{StandardStream, ColorChoice, WriteColor, ColorSpec, Color};
 
 use lalrpop_util::lexer::Token;
 use lalrpop_util::ParseError::{self, *};
 
-use crate::runfile::Command;
+use crate::runfile::{Command, ScriptType};
 
 pub fn file_read_err(config: &crate::Config, kind: ErrorKind) {
     let d: Diagnostic<()> = Diagnostic::error()
@@ -126,4 +127,18 @@ pub fn bad_chain(config: &crate::Config, cmd: &Command) {
     let c = Config::default();
 
     emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
+}
+
+pub fn phase_message(config: &crate::Config, phase: ScriptType, name: &str) {
+    let mut lock = config.output_stream.lock();
+    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true).set_fg(Some(match phase {
+        ScriptType::BuildOnly => Color::Red,
+        ScriptType::Build => Color::Yellow,
+        ScriptType::BuildAndRun => Color::Green,
+        ScriptType::Run => Color::Blue,
+        ScriptType::RunOnly => Color::Magenta,
+    }))).expect("Failed to set colour");
+    write!(lock, "{}", phase).expect("Failed to write");
+    lock.reset().expect("Failed to reset colour");
+    writeln!(lock, " {}", name).expect("Failed to write");
 }

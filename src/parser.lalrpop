@@ -5,7 +5,7 @@ use lalrpop_util::ParseError;
 
 use crate::runfile::*;
 use crate::doubled;
-use crate::err::RunscriptError;
+use crate::out::RunscriptError;
 
 grammar;
 

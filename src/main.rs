@@ -13,14 +13,14 @@ use codespan_reporting::files::SimpleFile;
 
 use termcolor::{StandardStream, ColorChoice};
 
-mod err;
+mod out;
 mod exec;
 mod runfile;
 
 lalrpop_mod!(pub parser);
 lalrpop_mod!(pub doubled);
 
-use err::*;
+use out::*;
 use exec::shell;
 use runfile::{TargetMeta, ScriptType};
 
@@ -130,7 +130,7 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
                     match &rf.default_target {
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                eprintln!("{} default", phase);
+                                phase_message(&config, phase, "default");
                                 if shell(&c.commands, &config) {
                                     None
                                 } else {
@@ -147,7 +147,7 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
                     match rf.targets.get(&run_target) {
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                eprintln!("{} {}", phase, run_target);
+                                phase_message(&config, phase, &run_target);
                                 if shell(&c.commands, &config) {
                                     None
                                 } else {
@@ -166,7 +166,7 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
                 match &rf.global_target {
                     Some(target) => {
                         match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                            eprintln!("{} global", phase);
+                            phase_message(&config, phase, "global");
                             if shell(&c.commands, &config) {
                                 None
                             } else {

@@ -1,6 +1,6 @@
 use crate::runfile::*;
 use crate::parser;
-use crate::err::RunscriptError;
+use crate::out::RunscriptError;
 
 grammar;
 
