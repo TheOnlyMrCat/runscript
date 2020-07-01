@@ -18,7 +18,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
                     return false;
                 }
             } else {
-                bad_chain(&config.codespan_file, &command);
+                bad_chain(&config, &command);
                 return false;
             }
         } else {
@@ -42,7 +42,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
 
 fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Output, ()> {
     if command.target == "run" {
-        bad_chain(&config.codespan_file, command);
+        bad_chain(&config, command);
         return Err(())
     }
 
@@ -77,7 +77,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Outp
         .spawn() {
         Ok(c) => c,
         Err(e) => {
-            bad_command_err(&config.codespan_file, command, e.kind());
+            bad_command_err(&config, command, e.kind());
             return Err(())
         }
     };
