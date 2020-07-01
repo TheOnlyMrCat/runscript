@@ -129,6 +129,16 @@ pub fn bad_chain(config: &crate::Config, cmd: &Command) {
     emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
 }
 
+pub fn bad_target(config: &crate::Config, target: String) {
+    let d: Diagnostic<()> = Diagnostic::error()
+        .with_message(format!("No target with name {}", target));
+
+    let w = &config.output_stream;
+    let c = Config::default();
+
+    emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
+}
+
 pub fn phase_message(config: &crate::Config, phase: ScriptType, name: &str) {
     let mut lock = config.output_stream.lock();
     lock.set_color(ColorSpec::new().set_bold(true).set_intense(true).set_fg(Some(match phase {

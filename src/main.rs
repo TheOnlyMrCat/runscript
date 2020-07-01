@@ -169,7 +169,8 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
                             }
                         },
                         None => {
-                            eprintln!("No target with name '{}'", run_target)
+                            bad_target(&config, run_target);
+                            return false;
                         }
                     }
                 }
