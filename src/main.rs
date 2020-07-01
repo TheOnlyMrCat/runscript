@@ -24,15 +24,17 @@ use out::*;
 use exec::shell;
 use runfile::{TargetMeta, ScriptType};
 
+const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+
+const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
+const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
+const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
+
 fn main() {
     if !run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane")) {
         std::process::exit(1);
     }
 }
-
-const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
-const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
-const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
 
 pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
     where T::Item: AsRef<OsStr>
@@ -40,6 +42,7 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
     let mut options = Options::new();
 
     options.optflag("h", "help", "Show this very helpful text");
+    options.optflag("", "version", "Print version information");
     options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Do not print commands as they are being run");
     options.optflag("b", "build-only", "Only execute `b!` and `b` scripts");
     options.optflag("", "build-and-run", "Execute `b`, `br`, and `r` scripts (default)");
@@ -57,6 +60,13 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
     if matches.opt_present("help") {
         print!("{}", options.usage("Usage: run [options] target"));
         return false;
+    }
+
+    if matches.opt_present("version") {
+        println!("Runscript version {}", VERSION);
+        println!("Written by TheOnlyMrCat");
+        println!("https://github.com/TheOnlyMrCat/runscript");
+        return true;
     }
 
     let mut runfile_path = PathBuf::from(cwd);
