@@ -4,7 +4,7 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 use crate::runfile::{self, ArgPart, ChainedCommand};
 use crate::Config;
 use crate::run;
-use crate::err::{bad_command_err, bad_chain};
+use crate::out::{bad_command_err, bad_chain};
 
 pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
     for command in commands {
