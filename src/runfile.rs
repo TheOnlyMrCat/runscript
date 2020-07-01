@@ -115,11 +115,11 @@ impl Display for Argument {
 impl Display for ScriptType {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", match self {
-            ScriptType::BuildOnly =>   "\x1b[91;1mBuild!\x1b[0m",
-            ScriptType::Build =>       "\x1b[93;1mBuild\x1b[0m",
-            ScriptType::BuildAndRun => "\x1b[92;1mBuild & Run\x1b[0m",
-            ScriptType::Run =>         "\x1b[94;1mRun\x1b[0m",
-            ScriptType::RunOnly =>     "\x1b[95;1mRun!\x1b[0m"
+            ScriptType::BuildOnly =>   "Build!",
+            ScriptType::Build =>       "Build",
+            ScriptType::BuildAndRun => "Build & Run",
+            ScriptType::Run =>         "Run",
+            ScriptType::RunOnly =>     "Run!"
         })
     }
 }

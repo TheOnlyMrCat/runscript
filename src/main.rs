@@ -5,10 +5,13 @@ use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::prelude::*;
+use std::rc::Rc;
 
 use getopts::Options;
 
 use codespan_reporting::files::SimpleFile;
+
+use termcolor::{StandardStream, ColorChoice};
 
 mod err;
 mod exec;
@@ -31,7 +34,7 @@ const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
 const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
 const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
 
-pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
+pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
     where T::Item: AsRef<OsStr>
 {
     let mut options = Options::new();
@@ -100,6 +103,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
         file: runfile_path,
         args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
         codespan_file: SimpleFile::new("".to_owned(), "".to_owned()),
+        output_stream: Rc::new(StandardStream::stderr(ColorChoice::Auto))
     };
 
     let mut file = String::new();
@@ -107,12 +111,12 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
         Ok(mut f) => match f.read_to_string(&mut file) {
             Ok(_) => {}
             Err(e) => {
-                file_read_err(config.file, e.kind());
+                file_read_err(&config, e.kind());
                 return false;
             }
         },
         Err(e) => {
-            file_read_err(config.file, e.kind());
+            file_read_err(&config, e.kind());
             return false;
         }
     }
@@ -179,7 +183,7 @@ pub fn run<T: Iterator>(args: T, cwd: &Path) -> bool
             return !config.expect_fail;
         },
         Err(e) => {
-            file_parse_err(&config.codespan_file, e);
+            file_parse_err(&config, e);
             return false;
         }
     }
@@ -192,5 +196,6 @@ pub struct Config {
     expect_fail: bool,
     file: PathBuf,
     args: Vec<String>,
-    codespan_file: SimpleFile<String, String>
+    codespan_file: SimpleFile<String, String>,
+    output_stream: Rc<StandardStream>,
 }

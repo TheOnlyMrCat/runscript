@@ -1,5 +1,4 @@
 use std::io::ErrorKind::{self, *};
-use std::path::PathBuf;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFile;
@@ -11,22 +10,22 @@ use lalrpop_util::ParseError::{self, *};
 
 use crate::runfile::Command;
 
-pub fn file_read_err(filename: PathBuf, kind: ErrorKind) {
+pub fn file_read_err(config: &crate::Config, kind: ErrorKind) {
     let d: Diagnostic<()> = Diagnostic::error()
         .with_message("Error reading input file")
         .with_notes(match kind {
-            NotFound => vec![format!("File {} does not exist", filename.as_os_str().to_string_lossy())],
-            PermissionDenied => vec![format!("No permission to read file {}", filename.as_os_str().to_string_lossy())],
-            InvalidData => vec![format!("Contents of {} are not valid UTF-8", filename.as_os_str().to_string_lossy())],
+            NotFound => vec![format!("File {} does not exist", config.file.as_os_str().to_string_lossy())],
+            PermissionDenied => vec![format!("No permission to read file {}", config.file.as_os_str().to_string_lossy())],
+            InvalidData => vec![format!("Contents of {} are not valid UTF-8", config.file.as_os_str().to_string_lossy())],
             WouldBlock => vec!["Reading file would block".to_owned()],
             Interrupted => vec!["Interrupted while reading file".to_owned()],
             _ => vec![]
         });
     
-    let w = StandardStream::stderr(ColorChoice::Auto);
+    let w = &config.output_stream;
     let c = Config::default();
 
-    emit(&mut w.lock(), &c, &SimpleFile::new(filename.as_os_str().to_string_lossy(), ""), &d).expect("Couldn't print error");
+    emit(&mut w.lock(), &c, &SimpleFile::new(config.file.as_os_str().to_string_lossy(), ""), &d).expect("Couldn't print error");
 }
 
 pub fn option_parse_err(err: getopts::Fail) {
@@ -47,7 +46,7 @@ pub enum RunscriptError {
     },
 }
 
-pub fn file_parse_err(file: &SimpleFile<String, String>, err: ParseError<usize, lalrpop_util::lexer::Token, RunscriptError>) {
+pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_util::lexer::Token, RunscriptError>) {
     let d: Diagnostic<()> = match err {
         InvalidToken { location: loc } => Diagnostic::error()
                 .with_message("Invalid token in input")
@@ -86,13 +85,13 @@ pub fn file_parse_err(file: &SimpleFile<String, String>, err: ParseError<usize, 
         }
     };
 
-    let w = StandardStream::stderr(ColorChoice::Auto);
+    let w = &config.output_stream;
     let c = Config::default();
 
-    emit(&mut w.lock(), &c, file, &d).expect("Couldn't print error");
+    emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
 }
 
-pub fn bad_command_err(file: &SimpleFile<String, String>, cmd: &Command, kind: ErrorKind) {
+pub fn bad_command_err(config: &crate::Config, cmd: &Command, kind: ErrorKind) {
     let d: Diagnostic<()> = Diagnostic::error()
         .with_message(format!("Failed to execute `{}`", cmd.target))
         .with_labels(vec![
@@ -110,21 +109,21 @@ pub fn bad_command_err(file: &SimpleFile<String, String>, cmd: &Command, kind: E
             _ => vec![]
         });
     
-    let w = StandardStream::stderr(ColorChoice::Auto);
+    let w = &config.output_stream;
     let c = Config::default();
 
-    emit(&mut w.lock(), &c, file, &d).expect("Couldn't print error");
+    emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
 }
 
-pub fn bad_chain(file: &SimpleFile<String, String>, cmd: &Command) {
+pub fn bad_chain(config: &crate::Config, cmd: &Command) {
     let d: Diagnostic<()> = Diagnostic::error()
         .with_message("Cannot chain recursive `run` calls")
         .with_labels(vec![
             Label::primary((), cmd.loc.0..cmd.loc.1).with_message("Cannot chain recursive `run` calls")
         ]);
     
-    let w = StandardStream::stderr(ColorChoice::Auto);
+    let w = &config.output_stream;
     let c = Config::default();
 
-    emit(&mut w.lock(), &c, file, &d).expect("Couldn't print error");
+    emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
 }
