@@ -18,13 +18,13 @@ match {
     r"[ \t]+" => {},   // Then need to ignore spaces and tabs
     r"b(?:!|r)?|r!?" => BFLAGS,
 } else {
-    r"\s+" => "\n",
+    r"\n+" => "\n",
     r"[[:alnum:]%*-/:<-@\[\]-_{}~]+" => CLARG,
     _
 }
 
 pub RunFile: RunFile = {
-    Targets
+    <Targets> "\n"*
 }
 
 Targets: RunFile = {
