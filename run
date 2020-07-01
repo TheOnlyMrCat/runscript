@@ -27,6 +27,11 @@ run test/pipe:
 
 #- b!
 cargo build --release --target x86_64-pc-windows-gnu
+tar czf runscript-windows-x86_64.tar.gz -C target/x86_64-pc-windows-gnu/release run.exe
+
 cargo build --release --target x86_64-apple-darwin
+tar czf runscript-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release run
+
 cargo build --release --target x86_64-unknown-linux-musl
+tar czf runscript-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-musl/release run
 #/
