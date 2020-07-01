@@ -63,9 +63,9 @@ pub fn file_parse_err(file: &SimpleFile<String, String>, err: ParseError<usize, 
                     format!("Expected one of the following:{}", expected.iter().fold("".to_owned(), |acc, x| acc + "\n    " + x))
                 ]),
         UnrecognizedToken { token: (start, Token(_id, name), end), expected } => Diagnostic::error()
-                .with_message(format!("Unexpected {}", name))
+                .with_message(format!("Unexpected {}", if name != "\n" { name } else { "newline" }))
                 .with_labels(vec![
-                    Label::primary((), start..end).with_message(format!("Unexpected {}", name))
+                    Label::primary((), start..end).with_message(format!("Unexpected {}", if name != "\n" { name } else { "newline" }))
                 ])
                 .with_notes(vec![
                     format!("Expected one of the following:{}", expected.iter().fold("".to_owned(), |acc, x| acc + "\n    " + x))
@@ -73,7 +73,7 @@ pub fn file_parse_err(file: &SimpleFile<String, String>, err: ParseError<usize, 
         ExtraToken { token: (start, Token(_id, name), end) } => Diagnostic::error()
                 .with_message(format!("Unexpected {}", name))
                 .with_labels(vec![
-                    Label::primary((), start..end).with_message(format!("Unexpected {}", name))
+                    Label::primary((), start..end).with_message(format!("Unexpected {}", if name != "\n" { name } else { "newline" }))
                 ])
                 .with_notes(vec!["Expected end of file".to_owned()]),
         User { error } => match error {
