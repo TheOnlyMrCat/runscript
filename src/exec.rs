@@ -71,7 +71,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Outp
     let mut child = match Command::new(command.target.clone())
         .args(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))))
         .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
-        .stdin(match stdin { Some(_) => Stdio::piped(), None => Stdio::null() })
+        .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.quiet { Stdio::null() } else { Stdio::inherit() } })
         .stdout(if piped { Stdio::piped() } else if config.quiet { Stdio::null() } else { Stdio::inherit() })
         .stderr(if config.quiet { Stdio::null() } else { Stdio::inherit() })
         .spawn() {
