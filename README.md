@@ -4,7 +4,28 @@ Runscript is a tool like `make` which manages run commands. Runscript can also h
 
 ## How to install
 
-Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. I'll add package manager support later.
+Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Alternatively, you can use a package manager.
+
+### Homebrew
+
+I don't have it in [homebrew/core](https://github.com/homebrew/homebrew-core), so if you want it from homebrew, you'll have to use my tap.
+
+```sh
+brew install theonlymrcat/utils/runscript
+```
+
+**Important note**:
+
+I only have a bottle for catalina. In the next version I will make a bottle for mojave, but I'm not making a bottle for anything earlier.
+Anyone installing this on a system that doesn't have a provided bottle will have to build from source using homebrew's rust installation.
+
+### Cargo
+
+If you have cargo, and are fine with building from source, runscript is on [crates.io](https://crates.io/crates/runscript)
+
+```sh
+cargo install runscript
+```
 
 ## How it works
 
