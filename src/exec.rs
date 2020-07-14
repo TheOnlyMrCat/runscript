@@ -116,11 +116,22 @@ fn evaluate_part(part: &ArgPart, config: &Config) -> String {
     }
 }
 
+use std::os::raw::{c_int, c_char};
+
+#[cfg(unix)]
+extern {
+    fn strsignal(sig: c_int) -> *const c_char;
+}
+
 #[cfg(unix)]
 fn signal(status: &ExitStatus) -> String {
     use std::os::unix::process::ExitStatusExt;
+    use std::ffi::CStr;
+    
+    let signal = status.signal().expect("Expected signal");
 
-    format!("signal {}", status.signal().expect("Expected signal"))
+    let sigstr = unsafe { CStr::from_ptr(strsignal(signal as c_int)) };
+    format!("signal {}", sigstr.to_str().expect("Expected returned string to be valud UTF-8"))
 }
 
 #[cfg(not(unix))]
