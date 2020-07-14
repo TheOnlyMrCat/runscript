@@ -4,69 +4,109 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
 use crate::run;
-use crate::out::{bad_command_err, bad_chain};
+use crate::out::bad_command_err;
 
-pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
+#[derive(Debug)]
+enum ProcessExit {
+    Bool(bool),
+    Status(ExitStatus),
+}
+
+#[derive(Debug)]
+struct ProcessOutput {
+    status: ProcessExit,
+    stdout: Vec<u8>
+}
+
+impl ProcessExit {
+    fn success(&self) -> bool {
+        match self {
+            ProcessExit::Bool(b) => *b,
+            ProcessExit::Status(s) => s.success(),
+        }
+    }
+
+    fn code(&self) -> Option<i32> {
+        match self {
+            ProcessExit::Bool(b) => return Some(*b as i32),
+            ProcessExit::Status(s) => return s.code(),
+        }
+    }
+
+    fn status(self) -> ExitStatus {
+        match self {
+            ProcessExit::Status(s) => s,
+            ProcessExit::Bool(_) => panic!("Expected ExitStatus")
+        }
+    }
+}
+
+impl From<Output> for ProcessOutput {
+    fn from(o: Output) -> Self {
+        ProcessOutput {
+            status: ProcessExit::Status(o.status),
+            stdout: o.stdout
+        }
+    }
+}
+
+pub fn shell(commands: &Vec<runfile::Command>, config: &Config, piped: bool) -> (bool, Vec<u8>) {
+    let mut output_acc = Vec::new();
     for command in commands {
         if !config.silent {
             eprintln!("> {}", command);
         }
-        if command.target == "run" {
-            if let ChainedCommand::None = *command.chained {
-                if !run(command.args.iter().map(|x| evaluate_arg(x, config)), config.file.parent().expect("Runfile should have at least one parent")) {
-                    eprintln!("=> exit 1");
-                    return false;
+        let mut output = match exec(&command, config, piped) {
+            Ok(k) => k,
+            Err(_) => return (false, vec![]),
+        };
+        output_acc.append(&mut output.stdout);
+        if !output.status.success() {
+            if !config.silent {
+                match output.status.code() {
+                    Some(i) => eprintln!("=> exit {}", i),
+                    None => eprintln!("=> {}", signal(&output.status.status())),
                 }
-            } else {
-                bad_chain(&config, &command);
-                return false;
             }
-        } else {
-            let status = match exec(&command, config, false) {
-                Ok(k) => k.status,
-                Err(_) => return false,
-            };
-            if !status.success() {
-                if !config.silent {
-                    match status.code() {
-                        Some(i) => eprintln!("=> exit {}", i),
-                        None => eprintln!("=> {}", signal(&status)),
-                    }
-                }
-                return false;
-            }
+            return (false, output_acc);
         }
     }
-    return true;
+    return (true, output_acc);
 }
 
-fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Output, ()> {
+fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<ProcessOutput, ()> {
     if command.target == "run" {
-        bad_chain(&config, command);
-        return Err(())
+        let (success, output) = run(command.args.iter().map(|x| evaluate_arg(x, config)), config.file.parent().expect("Runfile should have at least one parent"), config.quiet as i32 + config.silent as i32, piped);
+        return Ok(ProcessOutput {
+            status: ProcessExit::Bool(success),
+            stdout: output,
+        })
     }
 
     let mut stdin: Option<Vec<u8>> = None;
 
-    match &*command.chained {
+    let mut chained_output = match &*command.chained {
         ChainedCommand::Pipe(c) => {
             let h = exec(&c, config, true)?;
-            stdin = Some(h.stdout.clone());
+            stdin = Some(h.stdout);
+            None
         },
         ChainedCommand::And(c) => {
-            let h = exec(&c, config, false)?;
+            let h = exec(&c, config, piped)?;
             if !h.status.success() {
                 return Ok(h);
             }
+            Some(h.stdout)
         },
         ChainedCommand::Or(c) => {
-            let h = exec(&c, config, false)?;
+            let h = exec(&c, config, piped)?;
             if h.status.success() {
                 return Ok(h);
             }
+            Some(h.stdout)
         },
-        ChainedCommand::None => {}
-    }
+        ChainedCommand::None => None
+    };
 
     let mut child = match Command::new(command.target.clone())
         .args(command.args.iter().map(|x| evaluate_arg(x, config)))
@@ -90,7 +130,13 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Outp
         _ => {}
     }
 
-    Ok(child.wait_with_output().expect("Command was never started"))
+    let mut output = ProcessOutput::from(child.wait_with_output().expect("Command was never started"));
+    if let Some(mut o) = chained_output {
+        o.append(&mut output.stdout);
+        output.stdout = o;
+    }
+
+    Ok(output)
 }
 
 fn evaluate_arg(arg: &Argument, config: &Config) -> String {
@@ -136,5 +182,5 @@ fn signal(status: &ExitStatus) -> String {
 
 #[cfg(not(unix))]
 fn signal(_status: &ExitStatus) -> String {
-    "error".to_owned()
+    panic!("Process had no exit code")
 }
