@@ -85,7 +85,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
 
     let mut stdin: Option<Vec<u8>> = None;
 
-    let mut chained_output = match &*command.chained {
+    let chained_output = match &*command.chained {
         ChainedCommand::Pipe(c) => {
             let h = exec(&c, config, true)?;
             stdin = Some(h.stdout);
