@@ -134,10 +134,10 @@ Command: Command = {
 }
 
 Arg: Argument = {
-    CLARG => Argument::Unquoted(ArgPart::Str(<>.to_owned())),
+    <l:@L> <c:CLARG> <r:@R> => Argument::Unquoted(ArgPart::Str(c.to_owned()), (l, r)),
     r#""[[:alnum:] !#$%&'(-/:-@\[\]-`{-~]*""# =>? Ok(Argument::Double(doubled::DoubledArgParser::new().parse(<>)?)),
     r#"'[[:alnum:] "!#$%&(-/:-@\[\]-`{-~]*'"# => Argument::Single(<>[1..<>.len() - 1].to_owned()),
-    r"\$[[:digit:]]+" => Argument::Unquoted(ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits"))),
-    "$" <CLARG> => Argument::Unquoted(ArgPart::Var(<>.to_owned())),
-    "$" "(" <Command> ")" => Argument::Unquoted(ArgPart::Cmd(<>)),
+    r"\$[[:digit:]]+" => Argument::Unquoted(ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits")), (0, 0)),
+    "$" <CLARG> => Argument::Unquoted(ArgPart::Var(<>.to_owned()), (0, 0)),
+    "$" "(" <Command> ")" => Argument::Unquoted(ArgPart::Cmd(<>), (0, 0)),
 }

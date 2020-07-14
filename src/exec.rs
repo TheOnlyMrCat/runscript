@@ -10,10 +10,12 @@ use crate::out::bad_command_err;
 
 pub enum CommandExecErr {
     InvalidGlob {
+        glob: String,
         err: anyhow::Error,
         loc: (usize, usize),
     },
     NoGlobMatches {
+        glob: String,
         loc: (usize, usize),
     },
     BadCommand {
@@ -162,7 +164,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
 
 fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandExecErr> {
     match arg {
-        Argument::Unquoted(p) => match p {
+        Argument::Unquoted(p, loc) => match p {
             ArgPart::Str(s) => {
                 if s.chars().any(|c| c == '*' || c == '(' || c == '|' || c == '<' || c == '[' || c == '?') {
                     match Glob::new(&s) {
@@ -172,12 +174,12 @@ fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandE
                                 .map(|k| k.to_string_lossy().into_owned().to_owned())
                                 .collect::<Vec<String>>();
                             if strings.len() == 0 {
-                                Err(CommandExecErr::NoGlobMatches { loc: (0, 0) })
+                                Err(CommandExecErr::NoGlobMatches { glob: s.clone(), loc: *loc })
                             } else {
                                 Ok(strings)
                             }
                         },
-                        Err(err) => Err(CommandExecErr::InvalidGlob { err, loc: (0, 0)})
+                        Err(err) => Err(CommandExecErr::InvalidGlob { glob: s.clone(), err, loc: *loc })
                     }
                 } else {
                     Ok(vec![s.clone()])
