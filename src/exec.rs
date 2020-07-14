@@ -1,7 +1,7 @@
 use std::io::Write;
 use std::process::{Command, Stdio, Output, ExitStatus};
 
-use crate::runfile::{self, ArgPart, ChainedCommand};
+use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
 use crate::run;
 use crate::out::{bad_command_err, bad_chain};
@@ -13,7 +13,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config) -> bool {
         }
         if command.target == "run" {
             if let ChainedCommand::None = *command.chained {
-                if !run(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))), config.file.parent().expect("Runfile should have at least one parent")) {
+                if !run(command.args.iter().map(|x| evaluate_arg(x, config)), config.file.parent().expect("Runfile should have at least one parent")) {
                     eprintln!("=> exit 1");
                     return false;
                 }
@@ -69,7 +69,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Outp
     }
 
     let mut child = match Command::new(command.target.clone())
-        .args(command.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))))
+        .args(command.args.iter().map(|x| evaluate_arg(x, config)))
         .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
         .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.quiet { Stdio::null() } else { Stdio::inherit() } })
         .stdout(if piped { Stdio::piped() } else if config.quiet { Stdio::null() } else { Stdio::inherit() })
@@ -93,17 +93,27 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Outp
     Ok(child.wait_with_output().expect("Command was never started"))
 }
 
-fn fold_arg(config: Config) -> Box<dyn Fn(String, &ArgPart) -> String> {
-    Box::new(move |acc, p| match p {
-        ArgPart::Str(s) => acc + s,
-        ArgPart::Arg(n) => acc + &config.args[*n - 1],
-        ArgPart::Var(v) => acc + &std::env::var(v).unwrap_or("".to_owned()),
-        ArgPart::Cmd(c) => acc + &String::from_utf8_lossy(&Command::new(c.target.clone())
-            .args(c.args.iter().map(|x| x.parts.iter().fold("".to_owned(), fold_arg(config.clone()))))
-            .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
-            .output()
-            .expect("Failed to execute command").stdout),
-    })
+fn evaluate_arg(arg: &Argument, config: &Config) -> String {
+    match arg {
+        Argument::Unquoted(p) => evaluate_part(p, config),
+        Argument::Single(s) => s.clone(),
+        Argument::Double(p) => p.iter().map(|x| evaluate_part(x, config)).fold(String::new(), |acc, s| acc + &s)
+    }
+}
+
+fn evaluate_part(part: &ArgPart, config: &Config) -> String {
+    match part {
+        ArgPart::Str(s) => s.clone(),
+        ArgPart::Arg(n) => config.args[*n - 1].clone(),
+        ArgPart::Var(v) => std::env::var(v).unwrap_or("".to_owned()),
+        ArgPart::Cmd(c) => String::from_utf8_lossy(
+            &Command::new(c.target.clone())
+                .args(c.args.iter().map(|x| evaluate_arg(x, config)))
+                .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
+                .output()
+                .expect("Failed to execute command").stdout
+            ).into_owned().to_owned() //TODO: Propagate error correctly
+    }
 }
 
 #[cfg(unix)]

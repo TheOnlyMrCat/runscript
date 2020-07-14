@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
-use std::mem::discriminant;
 
 #[derive(Debug)]
 pub struct RunFile {
@@ -43,8 +42,10 @@ pub struct Command {
 }
 
 #[derive(Debug, Clone)]
-pub struct Argument {
-    pub parts: Vec<ArgPart>
+pub enum Argument {
+    Unquoted(ArgPart),
+    Single(String),
+    Double(Vec<ArgPart>),
 }
 
 #[derive(Debug, Clone)]
@@ -71,16 +72,6 @@ impl Default for Target {
     }
 }
 
-impl ArgPart {
-    fn arg_str(&self) -> String {
-        if let ArgPart::Str(s) = self {
-            s.clone()
-        } else {
-            panic!("Expected Str argument");
-        }
-    }
-}
-
 impl Display for Command {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}{}{}", match &*self.chained {
@@ -97,18 +88,28 @@ impl Display for Command {
 
 impl Display for Argument {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        if self.parts.iter().any(|x| discriminant(x) != discriminant(&ArgPart::Str("".to_owned()))) {
-            write!(f, "\"{}\"", self.parts.iter().fold("".to_owned(), |acc, part| match part {
-                ArgPart::Str(s) => acc + s,
-                ArgPart::Arg(n) => { acc + &format!("${}", n) },
-                ArgPart::Var(v) => { acc + &format!("${}", v) },
-                ArgPart::Cmd(c) => { acc + &format!("$({})", c) },
-            }))
-        } else if self.parts.iter().any(|x| x.arg_str().contains(' ')) {
-            write!(f, "'{}'", self.parts.iter().fold("".to_owned(), |acc, part| acc + &part.arg_str()))
-        } else {
-            write!(f, "{}", self.parts.iter().fold("".to_owned(), |acc, part| acc + &part.arg_str()))
-        }
+        write!(f, "{}", match self {
+            Argument::Unquoted(p) => match p {
+                ArgPart::Str(s) => s.clone(),
+                ArgPart::Arg(n) => format!("${}", n),
+                ArgPart::Var(v) => format!("${}", v),
+                ArgPart::Cmd(c) => format!("$({})", c),
+            },
+            Argument::Single(s) => format!("'{}'", s),
+            Argument::Double(p) =>
+                format!(
+                    "\"{}\"",
+                    p.iter().fold(
+                        "".to_owned(),
+                        |acc, part| match part {
+                            ArgPart::Str(s) => acc + s,
+                            ArgPart::Arg(n) => { acc + &format!("${}", n) },
+                            ArgPart::Var(v) => { acc + &format!("${}", v) },
+                            ArgPart::Cmd(c) => { acc + &format!("$({})", c) },
+                        }
+                    )
+                )
+        })
     }
 }
 

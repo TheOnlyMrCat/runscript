@@ -134,10 +134,10 @@ Command: Command = {
 }
 
 Arg: Argument = {
-    CLARG => Argument { parts: vec![ArgPart::Str(<>.to_owned())] },
-    r#""[[:alnum:] !#$%&'(-/:-@\[\]-`{-~]*""# =>? Ok(Argument { parts: doubled::DoubledArgParser::new().parse(<>)? }),
-    r#"'[[:alnum:] "!#$%&(-/:-@\[\]-`{-~]*'"# => Argument { parts: vec![ArgPart::Str(<>[1..<>.len() - 1].to_owned())] },
-    r"\$[[:digit:]]+" => Argument { parts: vec![ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits"))] },
-    "$" <CLARG> => Argument { parts: vec![ArgPart::Var(<>.to_owned())] },
-    "$" "(" <Command> ")" => Argument { parts: vec![ArgPart::Cmd(<>)] },
+    CLARG => Argument::Unquoted(ArgPart::Str(<>.to_owned())),
+    r#""[[:alnum:] !#$%&'(-/:-@\[\]-`{-~]*""# =>? Ok(Argument::Double(doubled::DoubledArgParser::new().parse(<>)?)),
+    r#"'[[:alnum:] "!#$%&(-/:-@\[\]-`{-~]*'"# => Argument::Single(<>[1..<>.len() - 1].to_owned()),
+    r"\$[[:digit:]]+" => Argument::Unquoted(ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits"))),
+    "$" <CLARG> => Argument::Unquoted(ArgPart::Var(<>.to_owned())),
+    "$" "(" <Command> ")" => Argument::Unquoted(ArgPart::Cmd(<>)),
 }
