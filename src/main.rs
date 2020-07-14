@@ -38,7 +38,7 @@ fn main() -> Result<(), ()> {
     }
 }
 
-pub fn run<'a, T: Iterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool) -> (bool, Vec<u8>)
+pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool) -> (bool, Vec<u8>)
     where T::Item: AsRef<OsStr>
 {
     let mut options = Options::new();

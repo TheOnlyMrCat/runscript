@@ -1,10 +1,19 @@
 use std::io::Write;
 use std::process::{Command, Stdio, Output, ExitStatus};
 
+use glob::glob;
+
 use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
 use crate::run;
 use crate::out::bad_command_err;
+
+enum CommandExecErr {
+    InvalidGlob,
+    NoGlobMatches,
+    InnerCommandError,
+    BadCommand,
+}
 
 #[derive(Debug)]
 enum ProcessExit {
@@ -74,9 +83,9 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config, piped: bool) -> 
     return (true, output_acc);
 }
 
-fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<ProcessOutput, ()> {
+fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
     if command.target == "run" {
-        let (success, output) = run(command.args.iter().map(|x| evaluate_arg(x, config)), config.file.parent().expect("Runfile should have at least one parent"), config.quiet as i32 + config.silent as i32, piped);
+        let (success, output) = run(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?, config.file.parent().expect("Runfile should have at least one parent"), config.quiet as i32 + config.silent as i32, piped);
         return Ok(ProcessOutput {
             status: ProcessExit::Bool(success),
             stdout: output,
@@ -109,7 +118,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
     };
 
     let mut child = match Command::new(command.target.clone())
-        .args(command.args.iter().map(|x| evaluate_arg(x, config)))
+        .args(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?)
         .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
         .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.quiet { Stdio::null() } else { Stdio::inherit() } })
         .stdout(if piped { Stdio::piped() } else if config.quiet { Stdio::null() } else { Stdio::inherit() })
@@ -118,7 +127,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
         Ok(c) => c,
         Err(e) => {
             bad_command_err(&config, command, e.kind());
-            return Err(())
+            return Err(CommandExecErr::BadCommand)
         }
     };
 
@@ -139,26 +148,36 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
     Ok(output)
 }
 
-fn evaluate_arg(arg: &Argument, config: &Config) -> String {
+fn evaluate_arg(arg: &Argument, config: &Config) -> Result<String, CommandExecErr> {
     match arg {
-        Argument::Unquoted(p) => evaluate_part(p, config),
-        Argument::Single(s) => s.clone(),
-        Argument::Double(p) => p.iter().map(|x| evaluate_part(x, config)).fold(String::new(), |acc, s| acc + &s)
+        Argument::Unquoted(p) => match p {
+            ArgPart::Str(s) => Ok(s.clone()),
+            _ => evaluate_part(p, config),
+        },
+        Argument::Single(s) => Ok(s.clone()),
+        Argument::Double(p) => {
+            let args = p.iter().map(|x| evaluate_part(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?;
+            Ok(args.iter().fold(String::new(), |acc, s| acc + &s))
+        }
     }
 }
 
-fn evaluate_part(part: &ArgPart, config: &Config) -> String {
+fn evaluate_part(part: &ArgPart, config: &Config) -> Result<String, CommandExecErr> {
     match part {
-        ArgPart::Str(s) => s.clone(),
-        ArgPart::Arg(n) => config.args[*n - 1].clone(),
-        ArgPart::Var(v) => std::env::var(v).unwrap_or("".to_owned()),
-        ArgPart::Cmd(c) => String::from_utf8_lossy(
-            &Command::new(c.target.clone())
-                .args(c.args.iter().map(|x| evaluate_arg(x, config)))
-                .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
-                .output()
-                .expect("Failed to execute command").stdout
-            ).into_owned().to_owned() //TODO: Propagate error correctly
+        ArgPart::Str(s) => Ok(s.clone()),
+        ArgPart::Arg(n) => Ok(config.args[*n - 1].clone()),
+        ArgPart::Var(v) => Ok(std::env::var(v).unwrap_or("".to_owned())),
+        ArgPart::Cmd(c) => {
+            Ok(String::from_utf8_lossy(
+                &match Command::new(c.target.clone())
+                    .args(c.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?)
+                    .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
+                    .output() {
+                        Ok(o) => o.stdout,
+                        Err(_) => return Err(CommandExecErr::InnerCommandError)
+                    }
+                ).into_owned().to_owned()) //TODO: Propagate error correctly
+        }
     }
 }
 

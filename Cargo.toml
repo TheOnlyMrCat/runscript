@@ -22,3 +22,4 @@ lalrpop-util = "0.19.0"      # LALRPOP Runtime
 regex = "1"                  # Regex parsing, for LALRPOP's lexer
 codespan-reporting = "0.9.5" # Formatted error messages
 termcolor = "1.1.0"          # Terminal colouring
+glob = "0.3.0"               # Glob parsing
