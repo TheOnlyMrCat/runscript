@@ -22,7 +22,7 @@ lalrpop_mod!(pub doubled);
 
 use out::*;
 use exec::shell;
-use runfile::{TargetMeta, ScriptType};
+use runfile::{TargetMeta, ScriptType, Target};
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -30,9 +30,11 @@ const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
 const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
 const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
 
-fn main() {
-    if !run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), 0, false).0 {
-        std::process::exit(1);
+fn main() -> Result<(), ()> {
+    if run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), 0, false).0 {
+        Ok(())
+    } else {
+        Err(())
     }
 }
 
@@ -138,64 +140,24 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
             let mut output_acc = Vec::new();
             for &phase in phases {
                 if run_target == "" {
-                    match &rf.default_target {
-                        Some(target) => {
-                            match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                phase_message(&config, phase, "default");
-                                let (status, mut output) = shell(&c.commands, &config, piped);
-                                output_acc.append(&mut output);
-                                if status {
-                                    None
-                                } else {
-                                    Some(())
-                                }
-                            }) {
-                                Some(_) => return (config.expect_fail, output_acc), // Some: The command was executed, and errored.
-                                None => {}
-                            }
-                        },
-                        None => {}
+                    match do_run_target(rf.default_target.as_ref(), "default", phase, &config, piped) {
+                        Ok(mut v) => output_acc.append(&mut v),
+                        Err(_) => return (config.expect_fail, output_acc)
                     }
                 } else {
-                    match rf.targets.get(&run_target) {
-                        Some(target) => {
-                            match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                                phase_message(&config, phase, &run_target);
-                                let (status, mut output) = shell(&c.commands, &config, piped);
-                                output_acc.append(&mut output);
-                                if status {
-                                    None
-                                } else {
-                                    Some(())
-                                }
-                            }) {
-                                Some(_) => return (config.expect_fail, output_acc),
-                                None => {}
-                            }
-                        },
-                        None => {
-                            bad_target(&config, run_target);
-                            return (false, output_acc);
-                        }
+                    let target = rf.targets.get(&run_target);
+                    if let None = target {
+                        bad_target(&config, run_target);
+                        return (config.expect_fail, output_acc);
+                    }
+                    match do_run_target(rf.targets.get(&run_target), &run_target, phase, &config, piped) {
+                        Ok(mut v) => output_acc.append(&mut v),
+                        Err(_) => return (config.expect_fail, output_acc)
                     }
                 }
-                match &rf.global_target {
-                    Some(target) => {
-                        match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
-                            phase_message(&config, phase, "global");
-                            let (status, mut output) = shell(&c.commands, &config, piped);
-                            output_acc.append(&mut output);
-                            if status {
-                                None
-                            } else {
-                                Some(())
-                            }
-                        }) {
-                            Some(_) => return (config.expect_fail, output_acc),
-                            None => {}
-                        }
-                    },
-                    None => {}
+                match do_run_target(rf.global_target.as_ref(), "global", phase, &config, piped) {
+                    Ok(mut v) => output_acc.append(&mut v),
+                    Err(_) => return (config.expect_fail, output_acc)
                 }
             }
             return (!config.expect_fail, output_acc);
@@ -204,6 +166,26 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
             file_parse_err(&config, e);
             return (false, vec![]);
         }
+    }
+}
+
+fn do_run_target(target: Option<&Target>, name: &str, phase: ScriptType, config: &Config, piped: bool) -> Result<Vec<u8>, Vec<u8>> {
+    match target {
+        Some(target) => {
+            match target.commands.get(&TargetMeta { script: phase }) {
+                Some(c) => {
+                    phase_message(&config, phase, name);
+                    let (status, output) = shell(&c.commands, &config, piped);
+                    if status {
+                        Ok(output)
+                    } else {
+                        Err(output)
+                    }
+                }
+                None => Ok(vec![])
+            }
+        },
+        None => Ok(vec![])
     }
 }
 

@@ -116,19 +116,6 @@ pub fn bad_command_err(config: &crate::Config, cmd: &Command, kind: ErrorKind) {
     emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
 }
 
-pub fn bad_chain(config: &crate::Config, cmd: &Command) {
-    let d: Diagnostic<()> = Diagnostic::error()
-        .with_message("Cannot chain recursive `run` calls")
-        .with_labels(vec![
-            Label::primary((), cmd.loc.0..cmd.loc.1).with_message("Cannot chain recursive `run` calls")
-        ]);
-    
-    let w = &config.output_stream;
-    let c = Config::default();
-
-    emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
-}
-
 pub fn bad_target(config: &crate::Config, target: String) {
     let d: Diagnostic<()> = Diagnostic::error()
         .with_message(format!("No target with name {}", target));
