@@ -22,4 +22,6 @@ lalrpop-util = "0.19.0"      # LALRPOP Runtime
 regex = "1"                  # Regex parsing, for LALRPOP's lexer
 codespan-reporting = "0.9.5" # Formatted error messages
 termcolor = "1.1.0"          # Terminal colouring
-globwalk = "0.8.0"           # Glob parsing
+filenamegen = "0.2.4"        # Glob parsing and walking
+pathdiff = "0.2.0"           # Getting the "difference" between two paths
+anyhow = "1.0.31"            # Trait-based error type

@@ -1,8 +1,8 @@
 use std::io::Write;
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 
-use globwalk::{GlobError, GlobWalkerBuilder};
+use filenamegen::Glob;
+use pathdiff::diff_paths;
 
 use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
@@ -10,7 +10,7 @@ use crate::run;
 use crate::out::bad_command_err;
 
 enum CommandExecErr {
-    InvalidGlob(GlobError),
+    InvalidGlob(anyhow::Error),
     NoGlobMatches,
     BadCommand {
         err: std::io::Error,
@@ -158,11 +158,11 @@ fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandE
         Argument::Unquoted(p) => match p {
             ArgPart::Str(s) => {
                 if s.chars().any(|c| c == '*' || c == '(' || c == '|' || c == '<' || c == '[' || c == '?') {
-                    match GlobWalkerBuilder::new(config.file.parent().expect("Runfile shoulf have at least one parent"), s)
-                        .build() {
+                    match Glob::new(&s) {
                         Ok(walker) => {
-                            let strings = walker
-                                .filter_map(|p| p.map(|k| k.path().to_string_lossy().into_owned().to_owned()).ok())
+                            let cwd = config.file.parent().expect("Runscript should have at least one parent");
+                            let strings = walker.walk(cwd).into_iter()
+                                .map(|k| k.to_string_lossy().into_owned().to_owned())
                                 .collect::<Vec<String>>();
                             if strings.len() == 0 {
                                 Err(CommandExecErr::NoGlobMatches)
