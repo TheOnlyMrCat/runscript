@@ -2,16 +2,20 @@ use std::io::Write;
 use std::process::{Command, Stdio, Output, ExitStatus};
 
 use filenamegen::Glob;
-use pathdiff::diff_paths;
 
 use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
 use crate::run;
 use crate::out::bad_command_err;
 
-enum CommandExecErr {
-    InvalidGlob(anyhow::Error),
-    NoGlobMatches,
+pub enum CommandExecErr {
+    InvalidGlob {
+        err: anyhow::Error,
+        loc: (usize, usize),
+    },
+    NoGlobMatches {
+        loc: (usize, usize),
+    },
     BadCommand {
         err: std::io::Error,
         loc: (usize, usize),
@@ -70,7 +74,10 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config, piped: bool) -> 
         }
         let mut output = match exec(&command, config, piped) {
             Ok(k) => k,
-            Err(_) => return (false, vec![]),
+            Err(err) => {
+                bad_command_err(config, &command, err);
+                return (false, output_acc)
+            },
         };
         output_acc.append(&mut output.stdout);
         if !output.status.success() {
@@ -165,12 +172,12 @@ fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandE
                                 .map(|k| k.to_string_lossy().into_owned().to_owned())
                                 .collect::<Vec<String>>();
                             if strings.len() == 0 {
-                                Err(CommandExecErr::NoGlobMatches)
+                                Err(CommandExecErr::NoGlobMatches { loc: (0, 0) })
                             } else {
                                 Ok(strings)
                             }
                         },
-                        Err(err) => Err(CommandExecErr::InvalidGlob(err))
+                        Err(err) => Err(CommandExecErr::InvalidGlob { err, loc: (0, 0)})
                     }
                 } else {
                     Ok(vec![s.clone()])

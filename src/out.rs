@@ -10,6 +10,7 @@ use lalrpop_util::lexer::Token;
 use lalrpop_util::ParseError::{self, *};
 
 use crate::runfile::{Command, ScriptType};
+use crate::exec::CommandExecErr::{self, *};
 
 pub fn file_read_err(config: &crate::Config, kind: ErrorKind) {
     let d: Diagnostic<()> = Diagnostic::error()
@@ -92,21 +93,28 @@ pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_uti
     emit(&mut w.lock(), &c, &config.codespan_file, &d).expect("Couldn't print error");
 }
 
-pub fn bad_command_err(config: &crate::Config, cmd: &Command, kind: ErrorKind) {
+pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExecErr) {
     let d: Diagnostic<()> = Diagnostic::error()
         .with_message(format!("Failed to execute `{}`", cmd.target))
         .with_labels(vec![
-            Label::primary((), cmd.loc.0..cmd.loc.1).with_message(match kind {
-                NotFound => "Couldn't find executable",
-                PermissionDenied => "Insufficient permission to execute command",
-                _ => "Failed to execute command",
-            })
+            match &error {
+                BadCommand { err, loc } => Label::primary((), loc.0..loc.1).with_message(match err.kind() {
+                    NotFound => "Couldn't find executable",
+                    PermissionDenied => "Insufficient permission to execute command",
+                    _ => "Failed to execute command",
+                }),
+                InvalidGlob { err, loc } => Label::primary((), loc.0..loc.1).with_message(format!("{:#}", err)),
+                NoGlobMatches { loc } => Label::primary((), loc.0..loc.1).with_message("No matches found for glob"),
+            }
         ])
-        .with_notes(match kind {
-            NotFound => vec![
-                "You can add the command to your $PATH".to_owned(),
-                "You can specify the full path to the executable".to_owned()
-            ],
+        .with_notes(match &error {
+            BadCommand { err, .. } => match err.kind() {
+                NotFound => vec![
+                    "You can add the command to your $PATH".to_owned(),
+                    "You can specify the full path to the executable".to_owned()
+                ],
+                _ => vec![]
+            },
             _ => vec![]
         });
     
