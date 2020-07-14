@@ -6,4 +6,10 @@ echo 0 || echo False
 sh -c 'exit 1' || echo True
 
 echo True | cat
+
+run pipe:echo | cat
+#/
+
+#echo r
+echo True
 #/

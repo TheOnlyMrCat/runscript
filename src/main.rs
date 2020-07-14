@@ -31,12 +31,12 @@ const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, S
 const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
 
 fn main() {
-    if !run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane")) {
+    if !run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), 0, false).0 {
         std::process::exit(1);
     }
 }
 
-pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
+pub fn run<'a, T: Iterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool) -> (bool, Vec<u8>)
     where T::Item: AsRef<OsStr>
 {
     let mut options = Options::new();
@@ -53,20 +53,20 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
         Ok(m) => m,
         Err(x) => {
             option_parse_err(x);
-            return false;
+            return (false, vec![]);
         },
     };
 
     if matches.opt_present("help") {
         print!("{}", options.usage("Usage: run [options] target"));
-        return false;
+        return (false, vec![]);
     }
 
     if matches.opt_present("version") {
         println!("Runscript version {}", VERSION);
-        println!("Written by TheOnlyMrCat");
-        println!("https://github.com/TheOnlyMrCat/runscript");
-        return true;
+        println!("Author: TheOnlyMrCat");
+        println!("Repository: https://github.com/TheOnlyMrCat/runscript");
+        return (true, vec![]);
     }
 
     let mut runfile_path = PathBuf::from(cwd);
@@ -107,8 +107,8 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
     }
 
     let mut config = Config {
-        quiet: matches.opt_present("quiet"),
-        silent: matches.opt_count("quiet") > 1,
+        quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
+        silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
         expect_fail: matches.opt_present("expect-fail"),
         file: runfile_path,
         args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
@@ -122,12 +122,12 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
             Ok(_) => {}
             Err(e) => {
                 file_read_err(&config, e.kind());
-                return false;
+                return (false, vec![]);
             }
         },
         Err(e) => {
             file_read_err(&config, e.kind());
-            return false;
+            return (false, vec![]);
         }
     }
 
@@ -135,19 +135,22 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
 
     match parser::RunFileParser::new().parse(&file) {
         Ok(rf) => {
+            let mut output_acc = Vec::new();
             for &phase in phases {
                 if run_target == "" {
                     match &rf.default_target {
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                                 phase_message(&config, phase, "default");
-                                if shell(&c.commands, &config) {
+                                let (status, mut output) = shell(&c.commands, &config, piped);
+                                output_acc.append(&mut output);
+                                if status {
                                     None
                                 } else {
                                     Some(())
                                 }
                             }) {
-                                Some(_) => return config.expect_fail, // Some: The command was executed, and errored.
+                                Some(_) => return (config.expect_fail, output_acc), // Some: The command was executed, and errored.
                                 None => {}
                             }
                         },
@@ -158,19 +161,21 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
                         Some(target) => {
                             match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                                 phase_message(&config, phase, &run_target);
-                                if shell(&c.commands, &config) {
+                                let (status, mut output) = shell(&c.commands, &config, piped);
+                                output_acc.append(&mut output);
+                                if status {
                                     None
                                 } else {
                                     Some(())
                                 }
                             }) {
-                                Some(_) => return config.expect_fail,
+                                Some(_) => return (config.expect_fail, output_acc),
                                 None => {}
                             }
                         },
                         None => {
                             bad_target(&config, run_target);
-                            return false;
+                            return (false, output_acc);
                         }
                     }
                 }
@@ -178,24 +183,26 @@ pub fn run<'a, T: Iterator>(args: T, cwd: &Path) -> bool
                     Some(target) => {
                         match target.commands.get(&TargetMeta { script: phase }).and_then(|c| {
                             phase_message(&config, phase, "global");
-                            if shell(&c.commands, &config) {
+                            let (status, mut output) = shell(&c.commands, &config, piped);
+                            output_acc.append(&mut output);
+                            if status {
                                 None
                             } else {
                                 Some(())
                             }
                         }) {
-                            Some(_) => return config.expect_fail,
+                            Some(_) => return (config.expect_fail, output_acc),
                             None => {}
                         }
                     },
                     None => {}
                 }
             }
-            return !config.expect_fail;
+            return (!config.expect_fail, output_acc);
         },
         Err(e) => {
             file_parse_err(&config, e);
-            return false;
+            return (false, vec![]);
         }
     }
 }
