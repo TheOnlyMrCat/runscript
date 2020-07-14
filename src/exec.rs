@@ -1,7 +1,8 @@
 use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio, Output, ExitStatus};
 
-use glob::glob;
+use globwalk::{GlobError, GlobWalkerBuilder};
 
 use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
@@ -9,10 +10,12 @@ use crate::run;
 use crate::out::bad_command_err;
 
 enum CommandExecErr {
-    InvalidGlob,
+    InvalidGlob(GlobError),
     NoGlobMatches,
-    InnerCommandError,
-    BadCommand,
+    BadCommand {
+        err: std::io::Error,
+        loc: (usize, usize),
+    },
 }
 
 #[derive(Debug)]
@@ -37,7 +40,7 @@ impl ProcessExit {
 
     fn code(&self) -> Option<i32> {
         match self {
-            ProcessExit::Bool(b) => return Some(*b as i32),
+            ProcessExit::Bool(b) => return Some(if *b { 0 } else { 1 }),
             ProcessExit::Status(s) => return s.code(),
         }
     }
@@ -85,7 +88,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config, piped: bool) -> 
 
 fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
     if command.target == "run" {
-        let (success, output) = run(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?, config.file.parent().expect("Runfile should have at least one parent"), config.quiet as i32 + config.silent as i32, piped);
+        let (success, output) = run(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }), config.file.parent().expect("Runfile should have at least one parent"), config.quiet as i32 + config.silent as i32, piped);
         return Ok(ProcessOutput {
             status: ProcessExit::Bool(success),
             stdout: output,
@@ -118,7 +121,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
     };
 
     let mut child = match Command::new(command.target.clone())
-        .args(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?)
+        .args(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
         .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
         .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.quiet { Stdio::null() } else { Stdio::inherit() } })
         .stdout(if piped { Stdio::piped() } else if config.quiet { Stdio::null() } else { Stdio::inherit() })
@@ -126,8 +129,10 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
         .spawn() {
         Ok(c) => c,
         Err(e) => {
-            bad_command_err(&config, command, e.kind());
-            return Err(CommandExecErr::BadCommand)
+            return Err(CommandExecErr::BadCommand{
+                err: e,
+                loc: command.loc,
+            })
         }
     };
 
@@ -148,35 +153,57 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
     Ok(output)
 }
 
-fn evaluate_arg(arg: &Argument, config: &Config) -> Result<String, CommandExecErr> {
+fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandExecErr> {
     match arg {
         Argument::Unquoted(p) => match p {
-            ArgPart::Str(s) => Ok(s.clone()),
+            ArgPart::Str(s) => {
+                if s.chars().any(|c| c == '*' || c == '(' || c == '|' || c == '<' || c == '[' || c == '?') {
+                    match GlobWalkerBuilder::new(config.file.parent().expect("Runfile shoulf have at least one parent"), s)
+                        .build() {
+                        Ok(walker) => {
+                            let strings = walker
+                                .filter_map(|p| p.map(|k| k.path().to_string_lossy().into_owned().to_owned()).ok())
+                                .collect::<Vec<String>>();
+                            if strings.len() == 0 {
+                                Err(CommandExecErr::NoGlobMatches)
+                            } else {
+                                Ok(strings)
+                            }
+                        },
+                        Err(err) => Err(CommandExecErr::InvalidGlob(err))
+                    }
+                } else {
+                    Ok(vec![s.clone()])
+                }
+            },
             _ => evaluate_part(p, config),
         },
-        Argument::Single(s) => Ok(s.clone()),
+        Argument::Single(s) => Ok(vec![s.clone()]),
         Argument::Double(p) => {
-            let args = p.iter().map(|x| evaluate_part(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?;
-            Ok(args.iter().fold(String::new(), |acc, s| acc + &s))
+            let args = p.iter().map(|x| evaluate_part(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc });
+            Ok(vec![args.iter().fold(String::new(), |acc, s| acc + &s)])
         }
     }
 }
 
-fn evaluate_part(part: &ArgPart, config: &Config) -> Result<String, CommandExecErr> {
+fn evaluate_part(part: &ArgPart, config: &Config) -> Result<Vec<String>, CommandExecErr> {
     match part {
-        ArgPart::Str(s) => Ok(s.clone()),
-        ArgPart::Arg(n) => Ok(config.args[*n - 1].clone()),
-        ArgPart::Var(v) => Ok(std::env::var(v).unwrap_or("".to_owned())),
+        ArgPart::Str(s) => Ok(vec![s.clone()]),
+        ArgPart::Arg(n) => Ok(vec![config.args[*n - 1].clone()]),
+        ArgPart::Var(v) => Ok(vec![std::env::var(v).unwrap_or("".to_owned())]),
         ArgPart::Cmd(c) => {
-            Ok(String::from_utf8_lossy(
+            Ok(vec![String::from_utf8_lossy(
                 &match Command::new(c.target.clone())
-                    .args(c.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<String>, CommandExecErr>>()?)
+                    .args(c.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
                     .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
                     .output() {
                         Ok(o) => o.stdout,
-                        Err(_) => return Err(CommandExecErr::InnerCommandError)
+                        Err(e) => return Err(CommandExecErr::BadCommand {
+                            err: e,
+                            loc: c.loc,
+                        })
                     }
-                ).into_owned().to_owned()) //TODO: Propagate error correctly
+                ).into_owned().to_owned()]) //TODO: Propagate error correctly
         }
     }
 }
