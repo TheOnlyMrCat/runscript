@@ -71,25 +71,37 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
         return (true, vec![]);
     }
 
-    let mut runfile_path = PathBuf::from(cwd);
+    let path_branch_file: String;
+    let path_branch_dir: String;
     let run_target: String;
     if let Some(target) = matches.free.get(0) {
         let v = target.split(':').collect::<Vec<&str>>();
         
         if v.len() == 1 {
-            runfile_path.push("run");
+            path_branch_file = "".to_owned();
+            path_branch_dir = "run".to_owned();
             run_target = v[0].to_owned();
         } else if v.len() == 2 {
-            let mut s = v[0].to_owned();
-            s.push_str(".run");
-            runfile_path.push(s);
+            let path_branch = v[0].to_owned();
+
+            let mut pbf = path_branch.clone();
+            pbf.push_str(".run");
+            path_branch_file = pbf;
+
+            let mut pbd = path_branch.clone();
+            pbd.push_str("/run");
+            path_branch_dir = pbd;
+
             run_target = v[1].to_owned();
         } else {
+            path_branch_file = "".to_owned();
+            path_branch_dir = "run".to_owned();
             run_target = "".to_owned();
         }
     } else {
-        runfile_path.push("run");
-        run_target = String::new();
+        path_branch_file = "".to_owned();
+        path_branch_dir = "run".to_owned();
+        run_target = "".to_owned();
     }
 
     let b_pos = matches.opt_positions("build-only")   .iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
@@ -110,32 +122,40 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
 
     let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
 
-    let mut file = String::new();
-    match File::open(&runfile_path) {
-        Ok(mut f) => match f.read_to_string(&mut file) {
-            Ok(_) => {}
-            Err(e) => {
-                file_read_err(&runfile_path.as_os_str().to_string_lossy().into_owned(), output_stream, e.kind());
-                return (false, vec![]);
-            }
-        },
-        Err(e) => {
-            file_read_err(&runfile_path.as_os_str().to_string_lossy().into_owned(), output_stream, e.kind());
-            return (false, vec![]);
+    let mut runfile_data: Option<(String, PathBuf)> = None;
+    for path in cwd.ancestors() {
+        let file_path = path.join(&path_branch_file);
+        if let Ok(s) = std::fs::read_to_string(&file_path) {
+            runfile_data = Some((s, file_path));
+            break;
+        }
+
+        let dir_path = path.join(&path_branch_dir);
+        if let Ok(s) = std::fs::read_to_string(&dir_path) {
+            runfile_data = Some((s, dir_path));
+            break;
         }
     }
+
+    let (runfile, runfile_path) = match runfile_data {
+        Some(r) => r,
+        None => {
+            //TODO: Some error message here
+            return (false, vec![])
+        }
+    };
 
     let config = Config {
         quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
         silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
-        codespan_file: SimpleFile::new(String::from(runfile_path.as_os_str().to_string_lossy()), file.clone()),
+        codespan_file: SimpleFile::new(String::from(runfile_path.as_os_str().to_string_lossy()), runfile),
         expect_fail: matches.opt_present("expect-fail"),
         file: runfile_path,
         args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
         output_stream: output_stream
     };
 
-    match parser::RunFileParser::new().parse(&file) {
+    match parser::RunFileParser::new().parse(&config.codespan_file.source()) {
         Ok(rf) => {
             let mut output_acc = Vec::new();
             for &phase in phases {
