@@ -1,5 +1,6 @@
 use std::io::ErrorKind::{self, *};
 use std::io::Write;
+use std::rc::Rc;
 
 use codespan_reporting::diagnostic::{Diagnostic, Label};
 use codespan_reporting::files::SimpleFile;
@@ -12,22 +13,22 @@ use lalrpop_util::ParseError::{self, *};
 use crate::runfile::{Command, ScriptType};
 use crate::exec::CommandExecErr::{self, *};
 
-pub fn file_read_err(config: &crate::Config, kind: ErrorKind) {
+pub fn file_read_err(file_path: &str, output_stream: Rc<StandardStream>, kind: ErrorKind) {
     let d: Diagnostic<()> = Diagnostic::error()
         .with_message("Error reading input file")
         .with_notes(match kind {
-            NotFound => vec![format!("File `{}` does not exist", config.file.as_os_str().to_string_lossy())],
-            PermissionDenied => vec![format!("No permission to read file `{}`", config.file.as_os_str().to_string_lossy())],
-            InvalidData => vec![format!("Contents of `{}` are not valid UTF-8", config.file.as_os_str().to_string_lossy())],
+            NotFound => vec![format!("File `{}` does not exist", file_path)],
+            PermissionDenied => vec![format!("No permission to read file `{}`", file_path)],
+            InvalidData => vec![format!("Contents of `{}` are not valid UTF-8", file_path)],
             WouldBlock => vec!["Reading file would block".to_owned()],
             Interrupted => vec!["Interrupted while reading file".to_owned()],
             _ => vec![]
         });
     
-    let w = &config.output_stream;
+    let w = output_stream;
     let c = Config::default();
 
-    emit(&mut w.lock(), &c, &SimpleFile::new(config.file.as_os_str().to_string_lossy(), ""), &d).expect("Couldn't print error");
+    emit(&mut w.lock(), &c, &SimpleFile::new(file_path, ""), &d).expect("Couldn't print error");
 }
 
 pub fn option_parse_err(err: getopts::Fail) {

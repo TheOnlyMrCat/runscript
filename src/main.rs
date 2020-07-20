@@ -108,32 +108,32 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
         panic!("Failed to identify script phases to run")
     }
 
-    let mut config = Config {
-        quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
-        silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
-        expect_fail: matches.opt_present("expect-fail"),
-        file: runfile_path,
-        args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
-        codespan_file: SimpleFile::new("".to_owned(), "".to_owned()),
-        output_stream: Rc::new(StandardStream::stderr(ColorChoice::Auto))
-    };
+    let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
 
     let mut file = String::new();
-    match File::open(&config.file) {
+    match File::open(&runfile_path) {
         Ok(mut f) => match f.read_to_string(&mut file) {
             Ok(_) => {}
             Err(e) => {
-                file_read_err(&config, e.kind());
+                file_read_err(&runfile_path.as_os_str().to_string_lossy().into_owned(), output_stream, e.kind());
                 return (false, vec![]);
             }
         },
         Err(e) => {
-            file_read_err(&config, e.kind());
+            file_read_err(&runfile_path.as_os_str().to_string_lossy().into_owned(), output_stream, e.kind());
             return (false, vec![]);
         }
     }
 
-    config.codespan_file = SimpleFile::new(String::from(config.file.as_os_str().to_string_lossy()), file.clone());
+    let config = Config {
+        quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
+        silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
+        codespan_file: SimpleFile::new(String::from(runfile_path.as_os_str().to_string_lossy()), file.clone()),
+        expect_fail: matches.opt_present("expect-fail"),
+        file: runfile_path,
+        args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
+        output_stream: output_stream
+    };
 
     match parser::RunFileParser::new().parse(&file) {
         Ok(rf) => {
