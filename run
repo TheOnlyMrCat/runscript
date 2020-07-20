@@ -29,6 +29,12 @@ run test/num: one three two
 run test/pipe:
 
 run test/glob:
+
+run test/parent:
+#/
+
+#parent-check r
+echo true
 #/
 
 #pkg b
