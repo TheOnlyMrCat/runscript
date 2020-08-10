@@ -1,6 +1,6 @@
 [package]
 name = "runscript"
-version = "1.1.0"
+version = "1.2.0-pre.2"
 description = "Like make, but for running"
 license = "MIT"
 readme = "README.md"
@@ -8,6 +8,9 @@ categories = ["command-line-utilities", "development-tools::build-utils"]
 repository = "https://github.com/TheOnlyMrCat/runscript"
 authors = ["TheOnlyMrCat <skylifegame@gmail.com>"]
 edition = "2018"
+
+[profile.release]
+panic = "abort"
 
 [[bin]]
 name = "run"

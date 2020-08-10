@@ -30,11 +30,9 @@ const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
 const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
 const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
 
-fn main() -> Result<(), ()> {
-    if run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), 0, false).0 {
-        Ok(())
-    } else {
-        Err(())
+fn main() {
+    if !run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), 0, false).0 {
+		std::process::exit(1);
     }
 }
 
@@ -65,9 +63,9 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
     }
 
     if matches.opt_present("version") {
-        println!("Runscript version {}", VERSION);
-        println!("Author: TheOnlyMrCat");
-        println!("Repository: https://github.com/TheOnlyMrCat/runscript");
+        println!("Runscript {}", VERSION);
+		println!("Written by TheOnlyMrCat");
+        println!("Source code available at https://github.com/TheOnlyMrCat/runscript");
         return (true, vec![]);
     }
 
@@ -117,7 +115,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
     } else if r_pos > t_pos && r_pos > b_pos {
         phases = &PHASES_R;
     } else {
-        panic!("Failed to identify script phases to run")
+        panic!("Failed to identify script phases to run. This is a bug.")
     }
 
     let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
@@ -140,7 +138,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
     let (runfile, runfile_path) = match runfile_data {
         Some(r) => r,
         None => {
-            //TODO: Some error message here
+            file_read_err(output_stream);
             return (false, vec![])
         }
     };

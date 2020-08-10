@@ -1,4 +1,4 @@
-use std::io::ErrorKind::{self, *};
+use std::io::ErrorKind::*;
 use std::io::Write;
 use std::rc::Rc;
 
@@ -13,22 +13,15 @@ use lalrpop_util::ParseError::{self, *};
 use crate::runfile::{Command, ScriptType};
 use crate::exec::CommandExecErr::{self, *};
 
-pub fn file_read_err(file_path: &str, output_stream: Rc<StandardStream>, kind: ErrorKind) {
+pub fn file_read_err(output_stream: Rc<StandardStream>) {
     let d: Diagnostic<()> = Diagnostic::error()
-        .with_message("Error reading input file")
-        .with_notes(match kind {
-            NotFound => vec![format!("File `{}` does not exist", file_path)],
-            PermissionDenied => vec![format!("No permission to read file `{}`", file_path)],
-            InvalidData => vec![format!("Contents of `{}` are not valid UTF-8", file_path)],
-            WouldBlock => vec!["Reading file would block".to_owned()],
-            Interrupted => vec!["Interrupted while reading file".to_owned()],
-            _ => vec![]
-        });
+		.with_message("Error finding runscript")
+		.with_notes(vec!["Additional diagnostics planned".to_owned()]);
     
     let w = output_stream;
     let c = Config::default();
 
-    emit(&mut w.lock(), &c, &SimpleFile::new(file_path, ""), &d).expect("Couldn't print error");
+    emit(&mut w.lock(), &c, &SimpleFile::new("", ""), &d).expect("Couldn't print error");
 }
 
 pub fn option_parse_err(err: getopts::Fail) {
