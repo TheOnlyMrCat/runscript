@@ -1,8 +1,10 @@
+use std::path::Path;
+
 use crate::runfile::*;
 use crate::parser;
 use crate::out::RunscriptError;
 
-grammar;
+grammar(id: &'input [usize], self_path: &Path);
 
 extern {
     type Error = RunscriptError;
@@ -17,5 +19,5 @@ DoubledPart: ArgPart = {
     "$" => ArgPart::Str("$".to_owned()),
     r"\$[[:alpha:]_][[:alnum:]_]*" => ArgPart::Var(<>[1..].to_owned()),
     r"\$[[:digit:]]+" => ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits")),
-    r#"\$\([[:alnum:] !#%&'*-/:-@\[\]-`{-~\]]*\)"# =>? Ok(ArgPart::Cmd(parser::LineParser::new().parse(&<>[2..<>.len() - 1])?))
+    r#"\$\([[:alnum:] !#%&'*-/:-@\[\]-`{-~\]]*\)"# =>? Ok(ArgPart::Cmd(parser::LineParser::new().parse(id, self_path, &<>[2..<>.len() - 1])?))
 }

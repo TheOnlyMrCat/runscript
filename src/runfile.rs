@@ -1,16 +1,34 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
+use std::ops::Range;
+use std::pin::Pin;
 
-#[derive(Debug)]
-pub struct RunFile {
-    pub global_target: Option<Target>,
-    pub default_target: Option<Target>,
-    pub targets: HashMap<String, Target>,
+use codespan_reporting::files::Files;
+
+pub struct RunFiles<'a> {
+	pub root: RunFileRef<'a>,
 }
 
 #[derive(Debug)]
-pub struct Target {
-    pub commands: HashMap<TargetMeta, TargetInfo>,
+pub struct RunFileRef<'a> {
+	pub file: RunFile<'a>,
+	pub id: Pin<Box<[usize]>>,
+	pub name: String,
+	pub source: Pin<Box<str>>,
+	pub starts: Vec<usize>,
+}
+
+#[derive(Debug)]
+pub struct RunFile<'a> {
+    pub global_target: Option<Target<'a>>,
+    pub default_target: Option<Target<'a>>,
+	pub targets: HashMap<String, Target<'a>>,
+	pub includes: Vec<RunFileRef<'a>>,
+}
+
+#[derive(Debug)]
+pub struct Target<'a> {
+    pub commands: HashMap<TargetMeta, TargetInfo<'a>>,
 }
 
 #[derive(Debug,PartialEq,Hash,Eq)]
@@ -19,8 +37,9 @@ pub struct TargetMeta {
 }
 
 #[derive(Debug)]
-pub struct TargetInfo {
-    pub commands: Vec<Command>,
+pub struct TargetInfo<'a> {
+	pub commands: Vec<Command>,
+	pub file: &'a [usize],
     pub loc: (usize, usize),
 }
 
@@ -64,7 +83,87 @@ pub enum ArgPart {
     Cmd(Command),
 }
 
-impl Default for Target {
+impl<'a> RunFile<'a> {
+	pub fn get_default_target<'b: 'a>(&'b self) -> Option<&'b Target<'a>> {
+		if let Some(t) = &self.default_target {
+			return Some(t);
+		}
+		for included in &self.includes {
+			if let Some(t) = included.file.get_default_target() {
+				return Some(&t);
+			}
+		}
+		None
+	}
+
+	pub fn get_global_target<'b: 'a>(&'b self) -> Option<&'b Target<'a>> {
+		if let Some(t) = &self.global_target {
+			return Some(t);
+		}
+		for included in &self.includes {
+			if let Some(t) = included.file.get_global_target() {
+				return Some(&t);
+			}
+		}
+		None
+	}
+
+	pub fn get_target<'b: 'a, 'c>(&'b self, name: &'c String) -> Option<&'b Target<'a>> {
+		if let Some(t) = &self.targets.get(name) {
+			return Some(t);
+		}
+		for included in &self.includes {
+			if let Some(t) = included.file.get_target(name) {
+				return Some(&t);
+			}
+		}
+		None
+	}
+}
+
+impl<'a> RunFiles<'a> {
+	fn unwind_fileid(&self, id: <RunFiles as Files>::FileId) -> Option<&RunFileRef> {
+		if id.len() == 0 {
+			Some(&self.root)
+		} else {
+			let mut file_ref = &self.root;
+			for index in id {
+				file_ref = file_ref.file.includes.get(*index)?
+			}
+			Some(file_ref)
+		}
+	}
+}
+
+impl<'a> Files<'a> for RunFiles<'_> {
+	type FileId = &'a [usize];
+	type Name = String;
+	type Source = &'a str;
+
+	fn name(&'a self, id: Self::FileId) -> Option<Self::Name> {
+		Some(self.unwind_fileid(id)?.name.clone())
+	}
+
+	fn source(&'a self, id: Self::FileId) -> Option<Self::Source> {
+		Some(&self.unwind_fileid(id)?.source)
+	}
+
+	fn line_index(&'a self, id: Self::FileId, byte_index: usize) -> Option<usize> {
+		self.unwind_fileid(id)?.starts.iter().rfind(|&&i| i < byte_index).copied()
+	}
+
+	fn line_range(&'a self, id: Self::FileId, line_index: usize) -> Option<Range<usize>> {
+		let file = self.unwind_fileid(id)?;
+		Some(*file.starts.get(line_index)?
+			..
+			match file.starts.get(line_index + 1) {
+				Some(i) => *i,
+				None => file.source.len(),
+		})
+	}
+}
+
+impl Default for Target<'_> {
     fn default() -> Self {
         Target {
             commands: HashMap::default(),

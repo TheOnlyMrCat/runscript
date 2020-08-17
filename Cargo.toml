@@ -20,10 +20,10 @@ path = "src/main.rs"
 lalrpop = { version = "0.19.0", features = ["lexer"] } # LALR parser generator
 
 [dependencies]
-getopts = "0.2.21"           # Command-line option parsing
-lalrpop-util = "0.19.0"      # LALRPOP Runtime
-regex = "1"                  # Regex parsing, for LALRPOP's lexer
-codespan-reporting = "0.9.5" # Formatted error messages
-termcolor = "1.1.0"          # Terminal colouring
-filenamegen = "0.2.4"        # Glob parsing and walking
-anyhow = "1.0.31"            # Trait-based error type
+getopts = "0.2"            # Command-line option parsing
+lalrpop-util = "0.19"      # LALRPOP Runtime
+regex = "1"                # Regex parsing, for LALRPOP's lexer
+codespan-reporting = "0.9" # Formatted error messages
+termcolor = "1.1"          # Terminal colouring
+filenamegen = "0.2"        # Glob parsing and walking
+anyhow = "1.0"             # Trait-based error type

@@ -3,8 +3,6 @@
 use std::env;
 use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
-use std::fs::File;
-use std::io::prelude::*;
 use std::rc::Rc;
 
 use getopts::Options;
@@ -153,27 +151,27 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
         output_stream: output_stream
     };
 
-    match parser::RunFileParser::new().parse(&config.codespan_file.source()) {
+    match parser::RunFileParser::new().parse(&[], &config.file, &config.codespan_file.source()) {
         Ok(rf) => {
             let mut output_acc = Vec::new();
             for &phase in phases {
                 if run_target == "" {
-                    match do_run_target(rf.default_target.as_ref(), "default", phase, &config, piped) {
+                    match do_run_target(rf.get_default_target(), "default", phase, &config, piped) {
                         Ok(mut v) => output_acc.append(&mut v),
                         Err(_) => return (config.expect_fail, output_acc)
                     }
                 } else {
-                    let target = rf.targets.get(&run_target);
+                    let target = rf.get_target(&run_target);
                     if let None = target {
                         bad_target(&config, run_target);
                         return (config.expect_fail, output_acc);
                     }
-                    match do_run_target(rf.targets.get(&run_target), &run_target, phase, &config, piped) {
+                    match do_run_target(target, &run_target, phase, &config, piped) {
                         Ok(mut v) => output_acc.append(&mut v),
                         Err(_) => return (config.expect_fail, output_acc)
                     }
                 }
-                match do_run_target(rf.global_target.as_ref(), "global", phase, &config, piped) {
+                match do_run_target(rf.get_global_target(), "global", phase, &config, piped) {
                     Ok(mut v) => output_acc.append(&mut v),
                     Err(_) => return (config.expect_fail, output_acc)
                 }
