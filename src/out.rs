@@ -39,7 +39,13 @@ pub enum RunscriptError {
         target: String,
         location: (usize, usize),
         previous_def: (usize, usize),
-    },
+	},
+	InvalidInclude {
+		include_str: String,
+		file_err: std::io::Error,
+		dir_err: std::io::Error,
+		location: (usize, usize),
+	}
 }
 
 pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_util::lexer::Token, RunscriptError>) {
@@ -57,27 +63,49 @@ pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_uti
                 .with_notes(vec![
                     format!("Expected one of the following:{}", expected.iter().fold("".to_owned(), |acc, x| acc + "\n    " + x))
                 ]),
-        UnrecognizedToken { token: (start, Token(_id, name), end), expected } => Diagnostic::error()
+        UnrecognizedToken { token: (start, Token(id, name), end), expected } => Diagnostic::error()
                 .with_message(format!("Unexpected `{}`", if name != "\n" { name } else { "newline" }))
                 .with_labels(vec![
                     Label::primary((), start..end).with_message(format!("Unexpected `{}`", if name != "\n" { name } else { "newline" }))
                 ])
                 .with_notes(vec![
-                    format!("Expected one of the following:{}", expected.iter().fold("".to_owned(), |acc, x| acc + "\n    " + x))
+					format!("Token matched as id `{}`", id),
+                    format!("Expected one of the following:{}", expected.iter().fold("".to_owned(), |acc, x| acc + "\n    " + x)),
                 ]),
         ExtraToken { token: (start, Token(_id, name), end) } => Diagnostic::error()
                 .with_message(format!("Unexpected `{}`", name))
                 .with_labels(vec![
-                    Label::primary((), start..end).with_message(format!("Unexpected `{}`", if name != "\n" { name } else { "newline" }))
+                    Label::primary((), start..end).with_message(format!("Unexpected `{}`", if name != "\n" { name } else { "newline" })),
                 ])
                 .with_notes(vec!["Expected end of file".to_owned()]),
         User { error } => match error {
             RunscriptError::MultipleDefinition { target: t, location: (nl, nr), previous_def: (pl, pr) } => Diagnostic::error()
-                .with_message(format!("Multiple definitions of {}", match &*t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("target `{}`", s)}))
+                .with_message(format!("Multiple definitions of `{}`", match &*t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("target `{}`", s)}))
                 .with_labels(vec![
                     Label::primary((), nl..nr).with_message(format!("Multiple definitions of `{}`", t)),
-                    Label::secondary((), pl..pr).with_message("Previous definition is here")
-                ]),
+                    Label::secondary((), pl..pr).with_message("Previous definition is here"),
+				]),
+			RunscriptError::InvalidInclude { include_str, file_err, dir_err, location: (l, r) } => Diagnostic::error()
+					.with_message(format!("Could not include `{}`", include_str))
+					.with_labels(vec![
+						Label::primary((), l..r).with_message(format!("Could not include `{}`", include_str)),
+					])
+					.with_notes(vec![
+						match file_err.kind() {
+							NotFound => format!("File {}.run not found", include_str),
+							PermissionDenied => format!("Read permission denied for {}.run", include_str),
+							InvalidData => format!("File {}.run did not contain valid UTF-8", include_str),
+							Interrupted => format!("Interrupted while reading file {}.run", include_str),
+							_ => format!("An I/O error occurred while reading {}.run", include_str),
+						},
+						match dir_err.kind() {
+							NotFound => format!("File {}/run not found", include_str),
+							PermissionDenied => format!("Read permission denied for {}/run", include_str),
+							InvalidData => format!("File {}/run did not contain valid UTF-8", include_str),
+							Interrupted => format!("Interrupted while reading file {}./run", include_str),
+							_ => format!("An I/O error occurred while reading {}/run", include_str),
+						}
+					])
         }
     };
 
@@ -108,7 +136,7 @@ pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExec
         .with_notes(match &error {
             BadCommand { err, .. } => match err.kind() {
                 NotFound => vec![
-                    "You can add the command to your $PATH".to_owned(),
+                    "You can add the executable to your $PATH".to_owned(),
                     "You can specify the full path to the executable".to_owned()
                 ],
                 _ => vec![]
@@ -124,7 +152,7 @@ pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExec
 
 pub fn bad_target(config: &crate::Config, target: String) {
     let d: Diagnostic<()> = Diagnostic::error()
-        .with_message(format!("No target with name {}", target));
+        .with_message(format!("No target with name `{}`", target));
 
     let w = &config.output_stream;
     let c = Config::default();
