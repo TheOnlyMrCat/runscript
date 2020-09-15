@@ -11,7 +11,6 @@ use lalrpop_util::lexer::Token;
 use lalrpop_util::ParseError::{self, *};
 
 use crate::runfile::{Command, ScriptType};
-use crate::exec::CommandExecErr::{self, *};
 
 pub fn file_read_err(output_stream: Rc<StandardStream>) {
     let d: Diagnostic<()> = Diagnostic::error()
@@ -34,39 +33,58 @@ pub fn option_parse_err(err: getopts::Fail) {
     emit(&mut w.lock(), &c, &SimpleFile::new("", ""), &d).expect("Couldn't print error");
 }
 
+#[derive(Debug)]
 pub enum RunscriptError {
     MultipleDefinition {
         target: String,
-        location: (usize, usize),
-        previous_def: (usize, usize),
+        location: (Box<[usize]>, usize, usize),
+        previous_def: (Box<[usize]>, usize, usize),
 	},
 	InvalidInclude {
 		include_str: String,
 		file_err: std::io::Error,
 		dir_err: std::io::Error,
-		location: (usize, usize),
+		location: (Box<[usize]>, usize, usize),
 	}
 }
 
+#[derive(Debug)]
+pub enum CommandExecErr {
+    InvalidGlob {
+        glob: String,
+        err: anyhow::Error,
+        loc: (Box<[usize]>, usize, usize),
+    },
+    NoGlobMatches {
+        glob: String,
+        loc: (Box<[usize]>, usize, usize),
+    },
+    BadCommand {
+        err: std::io::Error,
+        loc: (Box<[usize]>, usize, usize),
+    },
+}
+use CommandExecErr::*;
+
 pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_util::lexer::Token, RunscriptError>) {
-    let d: Diagnostic<()> = match err {
+    let d: Diagnostic<&[usize]> = match &err {
         InvalidToken { location: loc } => Diagnostic::error()
                 .with_message("Invalid token in input")
                 .with_labels(vec![
-                    Label::primary((), loc..loc + 1).with_message("Invalid token")
+                    Label::primary(&[] as &[usize], *loc..*loc + 1).with_message("Invalid token")
                 ]),
         UnrecognizedEOF { location: loc, expected } => Diagnostic::error()
                 .with_message("Unexpected end of file")
                 .with_labels(vec![
-                    Label::primary((), loc..loc + 1).with_message("Unexpected end of file")
+                    Label::primary(&[] as &[usize], *loc..*loc + 1).with_message("Unexpected end of file")
                 ])
                 .with_notes(vec![
                     format!("Expected one of the following:{}", expected.iter().fold("".to_owned(), |acc, x| acc + "\n    " + x))
                 ]),
         UnrecognizedToken { token: (start, Token(id, name), end), expected } => Diagnostic::error()
-                .with_message(format!("Unexpected `{}`", if name != "\n" { name } else { "newline" }))
+                .with_message(format!("Unexpected `{}`", if *name != "\n" { *name } else { "newline" }))
                 .with_labels(vec![
-                    Label::primary((), start..end).with_message(format!("Unexpected `{}`", if name != "\n" { name } else { "newline" }))
+                    Label::primary(&[] as &[usize], *start..*end).with_message(format!("Unexpected `{}`", if *name != "\n" { *name } else { "newline" }))
                 ])
                 .with_notes(vec![
 					format!("Token matched as id `{}`", id),
@@ -75,20 +93,20 @@ pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_uti
         ExtraToken { token: (start, Token(_id, name), end) } => Diagnostic::error()
                 .with_message(format!("Unexpected `{}`", name))
                 .with_labels(vec![
-                    Label::primary((), start..end).with_message(format!("Unexpected `{}`", if name != "\n" { name } else { "newline" })),
+                    Label::primary(&[] as &[usize], *start..*end).with_message(format!("Unexpected `{}`", if *name != "\n" { *name } else { "newline" })),
                 ])
                 .with_notes(vec!["Expected end of file".to_owned()]),
         User { error } => match error {
-            RunscriptError::MultipleDefinition { target: t, location: (nl, nr), previous_def: (pl, pr) } => Diagnostic::error()
-                .with_message(format!("Multiple definitions of `{}`", match &*t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("target `{}`", s)}))
+            RunscriptError::MultipleDefinition { target: t, location: (nf, nl, nr), previous_def: (pf, pl, pr) } => Diagnostic::error()
+                .with_message(format!("Multiple definitions of `{}`", match &**t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("target `{}`", s)}))
                 .with_labels(vec![
-                    Label::primary((), nl..nr).with_message(format!("Multiple definitions of `{}`", t)),
-                    Label::secondary((), pl..pr).with_message("Previous definition is here"),
+                    Label::primary(&**nf, *nl..*nr).with_message(format!("Multiple definitions of `{}`", t)),
+                    Label::secondary(&**pf, *pl..*pr).with_message("Previous definition is here"),
 				]),
-			RunscriptError::InvalidInclude { include_str, file_err, dir_err, location: (l, r) } => Diagnostic::error()
+			RunscriptError::InvalidInclude { include_str, file_err, dir_err, location: (f, l, r) } => Diagnostic::error()
 					.with_message(format!("Could not include `{}`", include_str))
 					.with_labels(vec![
-						Label::primary((), l..r).with_message(format!("Could not include `{}`", include_str)),
+						Label::primary(&**f, *l..*r).with_message(format!("Could not include `{}`", include_str)),
 					])
 					.with_notes(vec![
 						match file_err.kind() {
@@ -116,7 +134,9 @@ pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_uti
 }
 
 pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExecErr) {
-    let d: Diagnostic<()> = Diagnostic::error()
+	dbg!(&error);
+	println!("{:#?}", config.codespan_file.root.starts);
+    let d: Diagnostic<&[usize]> = Diagnostic::error()
         .with_message(match &error {
             BadCommand { .. } => format!("Failed to execute `{}`", cmd.target),
             InvalidGlob { glob, .. } => format!("Failed to parse `{}`", glob),
@@ -124,13 +144,13 @@ pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExec
         })
         .with_labels(vec![
             match &error {
-                BadCommand { err, loc } => Label::primary((), loc.0..loc.1).with_message(match err.kind() {
+                BadCommand { err, loc: (f, l, r) } => Label::primary(&**f, *l..*r).with_message(match err.kind() {
                     NotFound => "Couldn't find executable",
                     PermissionDenied => "Insufficient permission to execute command",
                     _ => "Failed to execute command",
                 }),
-                InvalidGlob { err, loc, .. } => Label::primary((), loc.0..loc.1).with_message(format!("{:#}", err)),
-                NoGlobMatches { loc, .. } => Label::primary((), loc.0..loc.1).with_message("No matches found for glob"),
+                InvalidGlob { err, loc: (f, l, r), .. } => Label::primary(&**f, *l..*r).with_message(format!("{:#}", err)),
+                NoGlobMatches { loc: (f, l, r), .. } => Label::primary(&**f, *l..*r).with_message("No matches found for glob"),
             }
         ])
         .with_notes(match &error {
@@ -151,7 +171,7 @@ pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExec
 }
 
 pub fn bad_target(config: &crate::Config, target: String) {
-    let d: Diagnostic<()> = Diagnostic::error()
+    let d: Diagnostic<&[usize]> = Diagnostic::error()
         .with_message(format!("No target with name `{}`", target));
 
     let w = &config.output_stream;

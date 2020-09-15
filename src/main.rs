@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use getopts::Options;
 
-use codespan_reporting::files::SimpleFile;
+use codespan_reporting::files::Files;
 
 use termcolor::{StandardStream, ColorChoice};
 
@@ -20,7 +20,7 @@ lalrpop_mod!(pub doubled);
 
 use out::*;
 use exec::shell;
-use runfile::{TargetMeta, ScriptType, Target};
+use runfile::{TargetMeta, ScriptType, Target, RunFiles, RunFileRef};
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -139,19 +139,26 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
             file_read_err(output_stream);
             return (false, vec![])
         }
-    };
+	};
 
     let config = Config {
         quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
         silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
-        codespan_file: SimpleFile::new(String::from(runfile_path.as_os_str().to_string_lossy()), runfile),
+		codespan_file: RunFiles {
+			root: RunFileRef {
+				file: None,
+				name: runfile_path.file_name().unwrap().to_string_lossy().to_owned().to_string(),
+				starts: codespan_reporting::files::line_starts(&runfile).collect(),
+				source: runfile.into_boxed_str().into(),
+			},
+		},
         expect_fail: matches.opt_present("expect-fail"),
         file: runfile_path,
         args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
-        output_stream: output_stream
+		output_stream: output_stream,
     };
 
-    match parser::RunFileParser::new().parse(&[], &config.file, &config.codespan_file.source()) {
+    match parser::RunFileParser::new().parse(&[], &config.file, &config.codespan_file.source(&[]).unwrap()) {
         Ok(rf) => {
             let mut output_acc = Vec::new();
             for &phase in phases {
@@ -205,13 +212,12 @@ fn do_run_target(target: Option<&Target>, name: &str, phase: ScriptType, config:
     }
 }
 
-#[derive(Clone)]
 pub struct Config {
     quiet: bool,
     silent: bool,
     expect_fail: bool,
     file: PathBuf,
     args: Vec<String>,
-    codespan_file: SimpleFile<String, String>,
+    codespan_file: RunFiles,
     output_stream: Rc<StandardStream>,
 }

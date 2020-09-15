@@ -4,7 +4,7 @@ use crate::runfile::*;
 use crate::parser;
 use crate::out::RunscriptError;
 
-grammar(id: &'input [usize], self_path: &Path);
+grammar(id: &[usize], self_path: &Path);
 
 extern {
     type Error = RunscriptError;
