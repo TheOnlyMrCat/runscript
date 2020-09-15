@@ -1,34 +1,32 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::ops::Range;
-use std::pin::Pin;
 
 use codespan_reporting::files::Files;
 
-pub struct RunFiles<'a> {
-	pub root: RunFileRef<'a>,
+pub struct RunFiles {
+	pub root: RunFileRef,
 }
 
 #[derive(Debug)]
-pub struct RunFileRef<'a> {
-	pub file: RunFile<'a>,
-	pub id: Pin<Box<[usize]>>,
+pub struct RunFileRef {
+	pub file: Option<RunFile>,
 	pub name: String,
-	pub source: Pin<Box<str>>,
+	pub source: Box<str>,
 	pub starts: Vec<usize>,
 }
 
 #[derive(Debug)]
-pub struct RunFile<'a> {
-    pub global_target: Option<Target<'a>>,
-    pub default_target: Option<Target<'a>>,
-	pub targets: HashMap<String, Target<'a>>,
-	pub includes: Vec<RunFileRef<'a>>,
+pub struct RunFile {
+    pub global_target: Option<Target>,
+    pub default_target: Option<Target>,
+	pub targets: HashMap<String, Target>,
+	pub includes: Vec<RunFileRef>,
 }
 
 #[derive(Debug)]
-pub struct Target<'a> {
-    pub commands: HashMap<TargetMeta, TargetInfo<'a>>,
+pub struct Target {
+    pub commands: HashMap<TargetMeta, TargetInfo>,
 }
 
 #[derive(Debug,PartialEq,Hash,Eq)]
@@ -37,10 +35,9 @@ pub struct TargetMeta {
 }
 
 #[derive(Debug)]
-pub struct TargetInfo<'a> {
+pub struct TargetInfo {
 	pub commands: Vec<Command>,
-	pub file: &'a [usize],
-    pub loc: (usize, usize),
+    pub loc: (Box<[usize]>, usize, usize),
 }
 
 #[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
@@ -57,12 +54,12 @@ pub struct Command {
     pub target: String,
     pub args: Vec<Argument>,
     pub chained: Box<ChainedCommand>,
-    pub loc: (usize, usize),
+    pub loc: (Box<[usize]>, usize, usize),
 }
 
 #[derive(Debug, Clone)]
 pub enum Argument {
-    Unquoted(ArgPart, (usize, usize)),
+    Unquoted(ArgPart, (Box<[usize]>, usize, usize)),
     Single(String),
     Double(Vec<ArgPart>),
 }
@@ -83,59 +80,59 @@ pub enum ArgPart {
     Cmd(Command),
 }
 
-impl<'a> RunFile<'a> {
-	pub fn get_default_target<'b: 'a>(&'b self) -> Option<&'b Target<'a>> {
+impl RunFile {
+	pub fn get_default_target<'b>(&self) -> Option<&Target> {
 		if let Some(t) = &self.default_target {
 			return Some(t);
 		}
 		for included in &self.includes {
-			if let Some(t) = included.file.get_default_target() {
-				return Some(&t);
+			if let Some(t) = &included.file.as_ref()?.get_default_target() {
+				return Some(t);
 			}
 		}
 		None
 	}
 
-	pub fn get_global_target<'b: 'a>(&'b self) -> Option<&'b Target<'a>> {
+	pub fn get_global_target<'b>(&self) -> Option<&Target> {
 		if let Some(t) = &self.global_target {
 			return Some(t);
 		}
 		for included in &self.includes {
-			if let Some(t) = included.file.get_global_target() {
-				return Some(&t);
+			if let Some(t) = &included.file.as_ref()?.get_global_target() {
+				return Some(t);
 			}
 		}
 		None
 	}
 
-	pub fn get_target<'b: 'a, 'c>(&'b self, name: &'c String) -> Option<&'b Target<'a>> {
+	pub fn get_target(&self, name: &String) -> Option<&Target> {
 		if let Some(t) = &self.targets.get(name) {
 			return Some(t);
 		}
 		for included in &self.includes {
-			if let Some(t) = included.file.get_target(name) {
-				return Some(&t);
+			if let Some(t) = &included.file.as_ref()?.get_target(name) {
+				return Some(t);
 			}
 		}
 		None
 	}
 }
 
-impl<'a> RunFiles<'a> {
+impl RunFiles {
 	fn unwind_fileid(&self, id: <RunFiles as Files>::FileId) -> Option<&RunFileRef> {
 		if id.len() == 0 {
 			Some(&self.root)
 		} else {
 			let mut file_ref = &self.root;
 			for index in id {
-				file_ref = file_ref.file.includes.get(*index)?
+				file_ref = file_ref.file.as_ref()?.includes.get(*index)?
 			}
 			Some(file_ref)
 		}
 	}
 }
 
-impl<'a> Files<'a> for RunFiles<'_> {
+impl<'a> Files<'a> for RunFiles {
 	type FileId = &'a [usize];
 	type Name = String;
 	type Source = &'a str;
@@ -154,16 +151,16 @@ impl<'a> Files<'a> for RunFiles<'_> {
 
 	fn line_range(&'a self, id: Self::FileId, line_index: usize) -> Option<Range<usize>> {
 		let file = self.unwind_fileid(id)?;
-		Some(*file.starts.get(line_index)?
-			..
+		Some(*file.starts.get(line_index)?..
 			match file.starts.get(line_index + 1) {
 				Some(i) => *i,
 				None => file.source.len(),
-		})
+			}
+		)
 	}
 }
 
-impl Default for Target<'_> {
+impl Default for Target {
     fn default() -> Self {
         Target {
             commands: HashMap::default(),

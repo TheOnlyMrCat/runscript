@@ -6,23 +6,7 @@ use filenamegen::Glob;
 use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
 use crate::run;
-use crate::out::bad_command_err;
-
-pub enum CommandExecErr {
-    InvalidGlob {
-        glob: String,
-        err: anyhow::Error,
-        loc: (usize, usize),
-    },
-    NoGlobMatches {
-        glob: String,
-        loc: (usize, usize),
-    },
-    BadCommand {
-        err: std::io::Error,
-        loc: (usize, usize),
-    },
-}
+use crate::out::{bad_command_err, CommandExecErr};
 
 #[derive(Debug)]
 enum ProcessExit {
@@ -140,7 +124,7 @@ fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<Proc
         Err(e) => {
             return Err(CommandExecErr::BadCommand{
                 err: e,
-                loc: command.loc,
+                loc: command.loc.clone(),
             })
         }
     };
@@ -174,12 +158,12 @@ fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandE
                                 .map(|k| k.to_string_lossy().into_owned().to_owned())
                                 .collect::<Vec<String>>();
                             if strings.len() == 0 {
-                                Err(CommandExecErr::NoGlobMatches { glob: s.clone(), loc: *loc })
+                                Err(CommandExecErr::NoGlobMatches { glob: s.clone(), loc: loc.clone() })
                             } else {
                                 Ok(strings)
                             }
                         },
-                        Err(err) => Err(CommandExecErr::InvalidGlob { glob: s.clone(), err, loc: *loc })
+                        Err(err) => Err(CommandExecErr::InvalidGlob { glob: s.clone(), err, loc: loc.clone() })
                     }
                 } else {
                     Ok(vec![s.clone()])
@@ -209,7 +193,7 @@ fn evaluate_part(part: &ArgPart, config: &Config) -> Result<Vec<String>, Command
                         Ok(o) => o.stdout,
                         Err(e) => return Err(CommandExecErr::BadCommand {
                             err: e,
-                            loc: c.loc,
+                            loc: c.loc.clone(),
                         })
                     }
                 ).into_owned().to_owned()]) //TODO: Propagate error correctly
@@ -232,7 +216,7 @@ fn signal(status: &ExitStatus) -> String {
     let signal = status.signal().expect("Expected signal");
 
     let sigstr = unsafe { CStr::from_ptr(strsignal(signal as c_int)) };
-    format!("signal {}", sigstr.to_str().expect("Expected returned string to be valud UTF-8"))
+    format!("signal {}", sigstr.to_str().expect("Expected returned string to be valid UTF-8"))
 }
 
 #[cfg(not(unix))]

@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::mem::take;
 use std::path::{Path, PathBuf};
-use std::pin::Pin;
 
 use lalrpop_util::ParseError;
 
@@ -10,7 +9,7 @@ use crate::runfile::*;
 use crate::doubled;
 use crate::out::RunscriptError;
 
-grammar(id: &'input [usize], self_path: &Path);
+grammar(id: &[usize], self_path: &Path);
 
 extern {
     type Error = RunscriptError;
@@ -27,25 +26,19 @@ match {
     _
 }
 
-pub RunFile: RunFile<'input> = {
+pub RunFile: RunFile = {
     <Targets> "\n"*
 }
 
-Targets: RunFile<'input> = {
+Targets: RunFile = {
 	<mut t:Targets> "\n"* "$include" <l:@L> <p:ClargOrAlnum> <r:@R> =>? {
-		let new_id: Pin<Box<[usize]>> = {
-			let mut new_id = id.to_owned();
-			new_id.reserve_exact(1);
-			new_id.push(t.includes.len());
-			new_id.into_boxed_slice().into()
-		};
 		let file_str = {
 			let mut file_str = p.clone();
 			file_str.push_str(".run");
 			file_str
 		};
 		let file_path = self_path.join(file_str);
-		let (source, path): (Pin<Box<str>>, PathBuf) = match std::fs::read_to_string(&file_path) {
+		let (source, path): (Box<str>, PathBuf) = match std::fs::read_to_string(&file_path) {
 			Ok(s) => (s.into_boxed_str().into(), file_path),
 			Err(file_err) => {
 				let dir_path = {
@@ -59,15 +52,19 @@ Targets: RunFile<'input> = {
 						include_str: p,
 						file_err,
 						dir_err,
-						location: (l, r),
+						location: (id.into(), l, r),
 					}}),
 				}
 			}
 		};
-		let file = parser::RunFileParser::new().parse(unsafe { &*(&*new_id as *const [usize]) }, &path, unsafe { &*(&*source as *const str) })?;
+		let new_id = {
+			let mut new = id.to_vec();
+			new.push(t.includes.len());
+			new
+		};
+		let file = parser::RunFileParser::new().parse(&new_id, &path, unsafe { &*(&*source as *const str) })?;
 		t.includes.push(RunFileRef {
-			file,
-			id: new_id,
+			file: Some(file),
 			name: p,
 			starts: codespan_reporting::files::line_starts(&source).collect(),
 			source,
@@ -82,11 +79,11 @@ Targets: RunFile<'input> = {
         if let Some(t) = n.commands.get(&m) {
             return Err(ParseError::User { error: RunscriptError::MultipleDefinition {
                 target: "#".to_owned(),
-                location: (l, r),
-                previous_def: t.loc,
+                location: (id.into(), l, r),
+                previous_def: t.loc.clone(),
             }});
         }
-        n.commands.insert(m, TargetInfo { commands: c, file: id, loc: (l, r) });
+        n.commands.insert(m, TargetInfo { commands: c, loc: (id.into(), l, r) });
         t.global_target = Some(n);
         Ok(t)
     },
@@ -98,11 +95,11 @@ Targets: RunFile<'input> = {
         if let Some(t) = n.commands.get(&m) {
             return Err(ParseError::User { error: RunscriptError::MultipleDefinition {
                 target: "-".to_owned(),
-                location: (l, r),
-                previous_def: t.loc,
+                location: (id.into(), l, r),
+                previous_def: t.loc.clone(),
             }});
         }
-        n.commands.insert(m, TargetInfo { commands: c, file: id, loc: (l, r) });
+        n.commands.insert(m, TargetInfo { commands: c, loc: (id.into(), l, r) });
         t.default_target = Some(n);
         Ok(t)
     },
@@ -115,11 +112,11 @@ Targets: RunFile<'input> = {
         if let Some(t) = n.commands.get(&m) {
             return Err(ParseError::User { error: RunscriptError::MultipleDefinition {
                 target: target_name,
-                location: (l, r),
-                previous_def: t.loc,
+                location: (id.into(), l, r),
+                previous_def: t.loc.clone(),
             }});
         }
-        n.commands.insert(m, TargetInfo { commands: c, file: id, loc: (l, r) });
+        n.commands.insert(m, TargetInfo { commands: c, loc: (id.into(), l, r) });
         t.targets.insert(target_name, n);
         Ok(t)
     },
@@ -176,17 +173,18 @@ Command: Command = {
         target: t,
         args: a,
         chained: Box::new(ChainedCommand::None),
-        loc: (l, r),
+        loc: (id.into(), l, r),
     }
 }
 
+//TODO: Location tracking properly
 Arg: Argument = {
-    <l:@L> <c:ClargOrAlnum> <r:@R> => Argument::Unquoted(ArgPart::Str(c), (l, r)),
+    <l:@L> <c:ClargOrAlnum> <r:@R> => Argument::Unquoted(ArgPart::Str(c), (id.into(), l, r)),
     r#""[[:alnum:] !#$%&'(-/:-@\[\]-`{-~]*""# =>? Ok(Argument::Double(doubled::DoubledArgParser::new().parse(id, self_path, <>)?)),
     r#"'[[:alnum:] "!#$%&(-/:-@\[\]-`{-~]*'"# => Argument::Single(<>[1..<>.len() - 1].to_owned()),
-    r"\$[[:digit:]]+" => Argument::Unquoted(ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits")), (0, 0)),
-    "$" <CLARG> => Argument::Unquoted(ArgPart::Var(<>.to_owned()), (0, 0)),
-    "$" "(" <Command> ")" => Argument::Unquoted(ArgPart::Cmd(<>), (0, 0)),
+    r"\$[[:digit:]]+" => Argument::Unquoted(ArgPart::Arg(<>[1..].parse::<usize>().expect("Expected regex to only match digits")), (id.into(), 0, 0)),
+    "$" <CLARG> => Argument::Unquoted(ArgPart::Var(<>.to_owned()), (id.into(), 0, 0)),
+    "$" "(" <Command> ")" => Argument::Unquoted(ArgPart::Cmd(<>), (id.into(), 0, 0)),
 }
 
 ClargOrAlnum: String = {
