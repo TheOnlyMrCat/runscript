@@ -1,19 +1,14 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
-use std::ops::Range;
 
-use codespan_reporting::files::Files;
-
-pub struct RunFiles {
-	pub root: RunFileRef,
-}
+use crate::out::Location;
 
 #[derive(Debug)]
 pub struct RunFileRef {
 	pub file: Option<RunFile>,
 	pub name: String,
 	pub source: Box<str>,
-	pub starts: Vec<usize>,
+	pub line_ends: Vec<usize>,
 }
 
 #[derive(Debug)]
@@ -37,7 +32,7 @@ pub struct TargetMeta {
 #[derive(Debug)]
 pub struct TargetInfo {
 	pub commands: Vec<Command>,
-    pub loc: (Box<[usize]>, usize, usize),
+    pub loc: Location,
 }
 
 #[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
@@ -54,12 +49,12 @@ pub struct Command {
     pub target: String,
     pub args: Vec<Argument>,
     pub chained: Box<ChainedCommand>,
-    pub loc: (Box<[usize]>, usize, usize),
+    pub loc: Location,
 }
 
 #[derive(Debug, Clone)]
 pub enum Argument {
-    Unquoted(ArgPart, (Box<[usize]>, usize, usize)),
+    Unquoted(ArgPart, Location),
     Single(String),
     Double(Vec<ArgPart>),
 }
@@ -81,7 +76,7 @@ pub enum ArgPart {
 }
 
 impl RunFile {
-	pub fn get_default_target<'b>(&self) -> Option<&Target> {
+	pub fn get_default_target(&self) -> Option<&Target> {
 		if let Some(t) = &self.default_target {
 			return Some(t);
 		}
@@ -93,7 +88,7 @@ impl RunFile {
 		None
 	}
 
-	pub fn get_global_target<'b>(&self) -> Option<&Target> {
+	pub fn get_global_target(&self) -> Option<&Target> {
 		if let Some(t) = &self.global_target {
 			return Some(t);
 		}
@@ -118,45 +113,17 @@ impl RunFile {
 	}
 }
 
-impl RunFiles {
-	fn unwind_fileid(&self, id: <RunFiles as Files>::FileId) -> Option<&RunFileRef> {
+impl RunFileRef {
+	pub fn unwind_fileid(&self, id: &[usize]) -> Option<&RunFileRef> {
 		if id.len() == 0 {
-			Some(&self.root)
+			Some(&self)
 		} else {
-			let mut file_ref = &self.root;
+			let mut file_ref = self;
 			for index in id {
 				file_ref = file_ref.file.as_ref()?.includes.get(*index)?
 			}
 			Some(file_ref)
 		}
-	}
-}
-
-impl<'a> Files<'a> for RunFiles {
-	type FileId = &'a [usize];
-	type Name = String;
-	type Source = &'a str;
-
-	fn name(&'a self, id: Self::FileId) -> Option<Self::Name> {
-		Some(self.unwind_fileid(id)?.name.clone())
-	}
-
-	fn source(&'a self, id: Self::FileId) -> Option<Self::Source> {
-		Some(&self.unwind_fileid(id)?.source)
-	}
-
-	fn line_index(&'a self, id: Self::FileId, byte_index: usize) -> Option<usize> {
-		self.unwind_fileid(id)?.starts.iter().rfind(|&&i| i < byte_index).copied()
-	}
-
-	fn line_range(&'a self, id: Self::FileId, line_index: usize) -> Option<Range<usize>> {
-		let file = self.unwind_fileid(id)?;
-		Some(*file.starts.get(line_index)?..
-			match file.starts.get(line_index + 1) {
-				Some(i) => *i,
-				None => file.source.len(),
-			}
-		)
 	}
 }
 
