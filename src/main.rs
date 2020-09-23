@@ -7,8 +7,6 @@ use std::rc::Rc;
 
 use getopts::Options;
 
-use codespan_reporting::files::Files;
-
 use termcolor::{StandardStream, ColorChoice};
 
 mod out;
@@ -20,7 +18,7 @@ lalrpop_mod!(pub doubled);
 
 use out::*;
 use exec::shell;
-use runfile::{TargetMeta, ScriptType, Target, RunFiles, RunFileRef};
+use runfile::{TargetMeta, ScriptType, Target, RunFileRef};
 
 const VERSION: &'static str = env!("CARGO_PKG_VERSION");
 
@@ -37,6 +35,8 @@ fn main() {
 pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool) -> (bool, Vec<u8>)
     where T::Item: AsRef<OsStr>
 {
+	let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
+	
     let mut options = Options::new();
 
     options.optflag("h", "help", "Show this very helpful text");
@@ -50,7 +50,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
     let matches = match options.parse(args) {
         Ok(m) => m,
         Err(x) => {
-            option_parse_err(x);
+            option_parse_err(output_stream, x);
             return (false, vec![]);
         },
     };
@@ -114,9 +114,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
         phases = &PHASES_R;
     } else {
         panic!("Failed to identify script phases to run. This is a bug.")
-    }
-
-    let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
+	}
 
     let mut runfile_data: Option<(String, PathBuf)> = None;
     for path in cwd.ancestors() {
@@ -144,13 +142,11 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
     let config = Config {
         quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
         silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
-		codespan_file: RunFiles {
-			root: RunFileRef {
-				file: None,
-				name: runfile_path.file_name().unwrap().to_string_lossy().to_owned().to_string(),
-				starts: codespan_reporting::files::line_starts(&runfile).collect(),
-				source: runfile.into_boxed_str().into(),
-			},
+		codespan_file: RunFileRef {
+			file: None,
+			name: runfile_path.file_name().unwrap().to_string_lossy().to_owned().to_string(),
+			line_ends: runfile.char_indices().filter_map(|(i, c)| if c == '\n' { Some(i) } else { None }).collect(),
+			source: runfile.into_boxed_str().into(),
 		},
         expect_fail: matches.opt_present("expect-fail"),
         file: runfile_path,
@@ -158,7 +154,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
 		output_stream: output_stream,
     };
 
-    match parser::RunFileParser::new().parse(&[], &config.file, &config.codespan_file.source(&[]).unwrap()) {
+    match parser::RunFileParser::new().parse(&[], &config.file, &config.codespan_file.source) {
         Ok(rf) => {
             let mut output_acc = Vec::new();
             for &phase in phases {
@@ -218,6 +214,6 @@ pub struct Config {
     expect_fail: bool,
     file: PathBuf,
     args: Vec<String>,
-    codespan_file: RunFiles,
+    codespan_file: RunFileRef,
     output_stream: Rc<StandardStream>,
 }

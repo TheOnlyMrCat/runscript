@@ -136,16 +136,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4785bdd1c96b2a846b2bd7cc02e86b6b3dbf14e7e53446c4f54c92a361040822"
 
 [[package]]
-name = "codespan-reporting"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e0762455306b1ed42bc651ef6a2197aabda5e1d4a43c34d5eab5c1a3634e81d"
-dependencies = [
- "termcolor",
- "unicode-width",
-]
-
-[[package]]
 name = "constant_time_eq"
 version = "0.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -460,7 +450,6 @@ name = "runscript"
 version = "1.2.0-pre.2"
 dependencies = [
  "anyhow",
- "codespan-reporting",
  "filenamegen",
  "getopts",
  "lalrpop",
