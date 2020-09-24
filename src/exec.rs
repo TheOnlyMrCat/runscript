@@ -182,7 +182,7 @@ fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandE
 fn evaluate_part(part: &ArgPart, config: &Config) -> Result<Vec<String>, CommandExecErr> {
     match part {
         ArgPart::Str(s) => Ok(vec![s.clone()]),
-        ArgPart::Arg(n) => Ok(vec![config.args[*n - 1].clone()]),
+        ArgPart::Arg(n) => Ok(vec![config.args.get(*n - 1).map(|s| s.clone()).unwrap_or("".to_owned())]),
         ArgPart::Var(v) => Ok(vec![std::env::var(v).unwrap_or("".to_owned())]),
         ArgPart::Cmd(c) => {
             Ok(vec![String::from_utf8_lossy(
