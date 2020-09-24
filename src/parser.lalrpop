@@ -37,12 +37,13 @@ Targets: RunFile = {
 			file_str.push_str(".run");
 			file_str
 		};
-		let file_path = self_path.join(file_str);
+		let self_dir = self_path.parent().expect("File should have parent");
+		let file_path = self_dir.join(file_str);
 		let (source, path): (Box<str>, PathBuf) = match std::fs::read_to_string(&file_path) {
 			Ok(s) => (s.into_boxed_str().into(), file_path),
 			Err(file_err) => {
 				let dir_path = {
-					let mut dir_path = self_path.join(&p);
+					let mut dir_path = self_dir.join(&p);
 					dir_path.push("run");
 					dir_path
 				};

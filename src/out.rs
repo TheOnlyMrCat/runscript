@@ -1,9 +1,8 @@
-use std::error::Error;
 use std::io::ErrorKind::*;
 use std::io::Write;
 use std::rc::Rc;
 
-use termcolor::{StandardStream, ColorChoice, WriteColor, ColorSpec, Color};
+use termcolor::{StandardStream, WriteColor, ColorSpec, Color};
 
 use lalrpop_util::lexer::Token;
 use lalrpop_util::ParseError::{self, *};
@@ -12,12 +11,12 @@ use crate::runfile::{Command, ScriptType};
 
 pub fn file_read_err(output_stream: Rc<StandardStream>) {
 	let mut lock = output_stream.lock();
-	writeln!(lock, "Could not find runfile to execute");
+	writeln!(lock, "Could not find runfile to execute").expect("Failed to write");
 }
 
 pub fn option_parse_err(output_stream: Rc<StandardStream>, err: getopts::Fail) {
 	let mut lock = output_stream.lock();
-	writeln!(lock, "{}", err);
+	writeln!(lock, "{}", err).expect("Failed to write");
 }
 
 #[derive(Debug)]
@@ -65,53 +64,53 @@ pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_uti
 	match &err {
 		InvalidToken { location: loc } => {
 			let mut lock = config.output_stream.lock();
-			let (line, col) = config.codespan_file.line_ends.iter().enumerate().find_map(|(line, &index)|
+			let (line, col) = config.parsed_file.line_ends.iter().enumerate().find_map(|(line, &index)|
 				if index < *loc {
 					Some((line, *loc - index))
 				} else {
 					None
 				}
 			).unwrap();
-			writeln!(lock, "{}({}:{}): Invalid token", config.codespan_file.name, line, col);
+			writeln!(lock, "{}({}:{}): Invalid token", config.parsed_file.name, line, col).expect("Failed to write");
 		},
-		UnrecognizedEOF { location: loc, expected } => {
+		UnrecognizedEOF { location: loc, .. } => {
 			let mut lock = config.output_stream.lock();
-			let (line, col) = config.codespan_file.line_ends.iter().enumerate().find_map(|(line, &index)|
+			let (line, col) = config.parsed_file.line_ends.iter().enumerate().find_map(|(line, &index)|
 				if index < *loc {
 					Some((line, *loc - index))
 				} else {
 					None
 				}
 			).unwrap();
-			writeln!(lock, "{}({}:{}): Unexpected end of file", config.codespan_file.name, line, col);
+			writeln!(lock, "{}({}:{}): Unexpected end of file", config.parsed_file.name, line, col).expect("Failed to write");
 		},
-		UnrecognizedToken { token: (start, Token(id, name), end), expected } => {
+		UnrecognizedToken { token: (start, Token(_id, name), _end), .. } => {
 			let mut lock = config.output_stream.lock();
-			let (line, col) = config.codespan_file.line_ends.iter().enumerate().find_map(|(line, &index)|
+			let (line, col) = config.parsed_file.line_ends.iter().enumerate().find_map(|(line, &index)|
 				if index < *start {
 					Some((line, *start - index))
 				} else {
 					None
 				}
 			).unwrap();
-			writeln!(lock, "{}({}:{}): Unexpected `{}`", config.codespan_file.name, line, col, name);
+			writeln!(lock, "{}({}:{}): Unexpected `{}`", config.parsed_file.name, line, col, name).expect("Failed to write");
 		},
-		ExtraToken { token: (start, Token(_id, name), end) } => {
+		ExtraToken { token: (start, Token(_id, name), _end) } => {
 			let mut lock = config.output_stream.lock();
-			let (line, col) = config.codespan_file.line_ends.iter().enumerate().find_map(|(line, &index)|
+			let (line, col) = config.parsed_file.line_ends.iter().enumerate().find_map(|(line, &index)|
 				if index < *start {
 					Some((line, *start - index))
 				} else {
 					None
 				}
 			).unwrap();
-			writeln!(lock, "{}({}:{}): Unexpected `{}`, expected end of file", config.codespan_file.name, line, col, name);
+			writeln!(lock, "{}({}:{}): Unexpected `{}`, expected end of file", config.parsed_file.name, line, col, name).expect("Failed to write");
 		},
 		User { error } => match error {
-			RunscriptError::MultipleDefinition { target: t, location, previous_def } => {
+			RunscriptError::MultipleDefinition { target: t, location, .. } => {
 				location.emit_error(config, format!("Multiple definitions of `{}`", match &**t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("target `{}`", s)}));
 			},
-			RunscriptError::InvalidInclude { include_str, file_err, dir_err, location } => {
+			RunscriptError::InvalidInclude { include_str, location, .. } => {
 				location.emit_error(config, format!("Could not include `{}`", include_str));
 				//TODO: I/O error notes
 			}
@@ -120,7 +119,6 @@ pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_uti
 }
 
 pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExecErr) {
-	let mut lock = config.output_stream.lock();
 	match &error {
 		BadCommand { err, loc } => loc.emit_error(config, match err.kind() {
 			NotFound => format!("Couldn't find executable for `{}`", cmd.target),
@@ -135,7 +133,7 @@ pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExec
 
 pub fn bad_target(config: &crate::Config, target: String) {
 	let mut lock = config.output_stream.lock();
-	writeln!(lock, "No target with name {}", target);
+	writeln!(lock, "No target with name {}", target).expect("Failed to write");
 }
 
 pub fn phase_message(config: &crate::Config, phase: ScriptType, name: &str) {
@@ -184,8 +182,8 @@ impl Location {
 
 	fn emit_error(&self, config: &crate::Config, error_msg: String) {
 		let mut lock = config.output_stream.lock();
-		let file = config.codespan_file.unwind_fileid(&self.include_path).unwrap();
+		let file = config.parsed_file.unwind_fileid(&self.include_path).unwrap();
 		let coordinates = self.get_file_coordinates(&file.line_ends).unwrap();
-		writeln!(lock, "{}({}:{}): {}", file.name, coordinates.0.0, coordinates.0.1, error_msg);
+		writeln!(lock, "{}({}:{}): {}", file.name, coordinates.0.0, coordinates.0.1, error_msg).expect("Failed to write");
 	}
 }
