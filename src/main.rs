@@ -142,9 +142,9 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
     let config = Config {
         quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
         silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
-		codespan_file: RunFileRef {
+		parsed_file: RunFileRef {
 			file: None,
-			name: runfile_path.file_name().unwrap().to_string_lossy().to_owned().to_string(),
+			name: runfile_path.file_stem().unwrap().to_string_lossy().to_owned().to_string(),
 			line_ends: runfile.char_indices().filter_map(|(i, c)| if c == '\n' { Some(i) } else { None }).collect(),
 			source: runfile.into_boxed_str().into(),
 		},
@@ -154,7 +154,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
 		output_stream: output_stream,
     };
 
-    match parser::RunFileParser::new().parse(&[], &config.file, &config.codespan_file.source) {
+    match parser::RunFileParser::new().parse(&[], &config.file, &config.parsed_file.source) {
         Ok(rf) => {
             let mut output_acc = Vec::new();
             for &phase in phases {
@@ -214,6 +214,6 @@ pub struct Config {
     expect_fail: bool,
     file: PathBuf,
     args: Vec<String>,
-    codespan_file: RunFileRef,
+    parsed_file: RunFileRef,
     output_stream: Rc<StandardStream>,
 }
