@@ -4,20 +4,8 @@ Runscript is a tool like `make` which manages run commands. Runscript can also h
 
 ## How to install
 
-Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Alternatively, you can use a package manager.
-
-### Homebrew
-
-I don't have it in [homebrew/core](https://github.com/homebrew/homebrew-core), so if you want it from homebrew, you'll have to use my tap.
-
-```sh
-brew install theonlymrcat/utils/runscript
-```
-
-**Important note**:
-
-I only have a bottle for catalina. In the next version I will make a bottle for mojave, but I'm not making a bottle for anything earlier.
-Anyone installing this on a system that doesn't have a provided bottle will have to build from source using homebrew's rust installation.
+Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Alternatively, you can use cargo to
+build and install it. Supporting package managers is difficult, so I'm not going to try doing it until this gets real use.
 
 ### Cargo
 
@@ -49,7 +37,7 @@ Of course, not all phases need to be used. Up to three of these phases will be r
 |           Run |                      |         ✓         |         ✓          |
 |      Run Only |                      |                   |         ✓          |
 
-When no arguments are passed, it assumes `--build-and-run`.
+If no arguments are passed, it assumes `--build-and-run`. If multiple arguments are passed, the one provided last is used.
 
 ### Targets
 
@@ -57,13 +45,15 @@ The first non-option argument is the target.
 
 The target consists of two parts: A file, and a target, separated by a `:`. A file only can be specified with a trailing `:`, and if there's no `:` the argument is interpreted as a target only.
 
-When a file is specified, `f`, runscript looks in `f.run`. If no file is specified, runscript looks in the current working directory for `run`.
+Files are found by iteratively searching parent directories for a file which matches what was specified. When a file is specified, e.g. `f`, runscript looks in the current working directory for `f.run`, then `f/run`. If no file is specified, runscript looks in the current working directory for `run`. If it couldn't find a runfile in the current working directory, it sets the effective current working directory to the parent directory of the CWD, then repeats the search.
+
+The working directory of all the commands inside the runfile is the directory the runfile is in
 
 ```shell
 run        # Runs the default target of ./run
 run test   # Runs the target "test" of ./run
-run test:  # Runs the default target of ./test.run
-run test:t # Runs the target "t" of ./test.run
+run test:  # Runs the default target of ./test.run or ./test/run
+run test:t # Runs the target "t" of ./test.run or ./test/run
 ```
 
 
@@ -75,7 +65,7 @@ run test:t # Runs the target "t" of ./test.run
 ! Multi-line comments do not exist
 ! Comments can only appear outside of blocks
 
-! Global block. Runs after target block
+! Global block. Runs after the specified target block with the same build phase
 ##
 echo Normal shell commands go here
 echo Supports $VARIABLES and $(echo subcommands)
