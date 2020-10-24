@@ -7,7 +7,7 @@ use crate::out::RunscriptError;
 grammar(id: &[usize], self_path: &Path);
 
 extern {
-    type Error = RunscriptError;
+    type Error = RunscriptError<'input>;
 }
 
 pub DoubledArg: Vec<ArgPart> = {

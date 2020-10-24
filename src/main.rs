@@ -57,7 +57,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
 
     if matches.opt_present("help") {
         print!("{}", options.usage("Usage: run [options] target"));
-        return (false, vec![]);
+        return (true, vec![]);
     }
 
     if matches.opt_present("version") {

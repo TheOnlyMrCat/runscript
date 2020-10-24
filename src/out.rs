@@ -20,7 +20,7 @@ pub fn option_parse_err(output_stream: Rc<StandardStream>, err: getopts::Fail) {
 }
 
 #[derive(Debug)]
-pub enum RunscriptError {
+pub enum RunscriptError<'input> {
 	MultipleDefinition {
 		target: String,
 		location: Location,
@@ -31,6 +31,10 @@ pub enum RunscriptError {
 		file_err: std::io::Error,
 		dir_err: std::io::Error,
 		location: Location,
+	},
+	NestedError {
+		location: Location,
+		error: Box<ParseError<usize, lalrpop_util::lexer::Token<'input>, RunscriptError<'input>>>,
 	}
 }
 
@@ -60,7 +64,7 @@ pub struct Location {
 }
 
 pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_util::lexer::Token, RunscriptError>) {
-	//TODO use proper file locations, instead of just indices
+	//TODO will be fixed when parser gets rewritten
 	match &err {
 		InvalidToken { location: loc } => {
 			let mut lock = config.output_stream.lock();
@@ -113,6 +117,9 @@ pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_uti
 			RunscriptError::InvalidInclude { include_str, location, .. } => {
 				location.emit_error(config, format!("Could not include `{}`", include_str));
 				//TODO: I/O error notes
+			},
+			RunscriptError::NestedError { location, .. } => {
+				location.emit_error(config, format!("Parse error in included file"));
 			}
 		}
 	}
@@ -159,8 +166,8 @@ impl Location {
 		}
 	}
 
-	fn get_file_coordinates(&self, line_ends: &Vec<usize>) -> Option<((usize, usize), (usize, usize))> {
-		Some((
+	fn get_file_coordinates(&self, line_ends: &Vec<usize>) -> ((usize, usize), (usize, usize)) {
+		(
 			line_ends.iter()
 				.enumerate()
 				.find_map(|(line, &index)|
@@ -174,16 +181,24 @@ impl Location {
 					} else {
 						None
 					}
-				)?,
+				)
+				.unwrap_or((line_ends.len(), line_ends.len())),
 			// The same as above, but with self.end_index instead
-			line_ends.iter().enumerate().find_map(|(line, &index)| if index >= self.end_index { Some((line + 1, if line > 0 { self.end_index - line_ends[line - 1] } else { self.end_index })) } else { None })?,
-		))
+			line_ends.iter().enumerate().find_map(|(line, &index)| if index >= self.end_index { Some((line + 1, if line > 0 { self.end_index - line_ends[line - 1] } else { self.end_index })) } else { None }).unwrap_or((line_ends.len(), line_ends.len())),
+		)
 	}
 
 	fn emit_error(&self, config: &crate::Config, error_msg: String) {
 		let mut lock = config.output_stream.lock();
-		let file = config.parsed_file.unwind_fileid(&self.include_path).unwrap();
-		let coordinates = self.get_file_coordinates(&file.line_ends).unwrap();
-		writeln!(lock, "{}({}:{}): {}", file.name, coordinates.0.0, coordinates.0.1, error_msg).expect("Failed to write");
+		match config.parsed_file.unwind_fileid(&self.include_path) {
+			Some(file) => {
+				let coordinates = self.get_file_coordinates(&file.line_ends);
+				writeln!(lock, "{}({}:{}): {}", file.name, coordinates.0.0, coordinates.0.1, error_msg).expect("Failed to write");
+			},
+			None => {
+				writeln!(lock, "run: Error in included file").expect("Failed to write");
+				writeln!(lock, "-> note: A full backtrace of the error location will be included in future versions of runscript").expect("Failed to write");
+			}
+		}
 	}
 }
