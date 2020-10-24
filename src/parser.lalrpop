@@ -12,7 +12,7 @@ use crate::out::{RunscriptError, Location};
 grammar(id: &[usize], self_path: &Path);
 
 extern {
-    type Error = RunscriptError;
+    type Error = RunscriptError<'input>;
 }
 
 match {
@@ -63,14 +63,23 @@ Targets: RunFile = {
 			new.push(t.includes.len());
 			new
 		};
-		let file = parser::RunFileParser::new().parse(&new_id, &path, unsafe { &*(&*source as *const str) })?;
-		t.includes.push(RunFileRef {
-			file: Some(file),
-			name: p,
-			line_ends: source.char_indices().filter_map(|(i, c)| if c == '\n' { Some(i) } else { None }).collect(),
-			source,
-		});
-		Ok(t)
+		match parser::RunFileParser::new().parse(&new_id, &path, unsafe { &*(&*source as *const str) }) {
+			Ok(file) => {
+				t.includes.push(RunFileRef {
+					file: Some(file),
+					name: p,
+					line_ends: source.char_indices().filter_map(|(i, c)| if c == '\n' { Some(i) } else { None }).collect(),
+					source,
+				});
+				Ok(t)
+			},
+			Err(parse_error) => {
+				Err(ParseError::User { error: RunscriptError::NestedError {
+					location: Location::new(id.into(), l, r),
+					error: Box::new(parse_error),
+				}})
+			},
+		}
 	},
     <mut t:Targets> "\n"* <l:@L> "##" <m:TargetMeta> <r:@R> "\n" <c:Lines> "#/"  =>? {
         let mut n = match take(&mut t.global_target) {
