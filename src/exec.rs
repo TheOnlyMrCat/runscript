@@ -30,8 +30,8 @@ impl ProcessExit {
 
     fn code(&self) -> Option<i32> {
         match self {
-            ProcessExit::Bool(b) => return Some(if *b { 0 } else { 1 }),
-            ProcessExit::Status(s) => return s.code(),
+            ProcessExit::Bool(b) => Some(if *b { 0 } else { 1 }),
+            ProcessExit::Status(s) => s.code(),
         }
     }
 
@@ -76,7 +76,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config, piped: bool) -> 
             return (false, output_acc);
         }
     }
-    return (true, output_acc);
+    (true, output_acc)
 }
 
 fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<ProcessOutput, CommandExecErr> {

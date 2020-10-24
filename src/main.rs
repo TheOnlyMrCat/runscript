@@ -20,7 +20,7 @@ use out::*;
 use exec::shell;
 use runfile::{TargetMeta, ScriptType, Target, RunFileRef};
 
-const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
 const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
@@ -32,7 +32,7 @@ fn main() {
     }
 }
 
-pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool) -> (bool, Vec<u8>)
+pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool) -> (bool, Vec<u8>)
     where T::Item: AsRef<OsStr>
 {
 	let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
@@ -84,7 +84,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
             pbf.push_str(".run");
             path_branch_file = pbf;
 
-            let mut pbd = path_branch.clone();
+            let mut pbd = path_branch;
             pbd.push_str("/run");
             path_branch_dir = pbd;
 
@@ -146,12 +146,12 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
 			file: None,
 			name: runfile_path.file_stem().unwrap().to_string_lossy().to_owned().to_string(),
 			line_ends: runfile.char_indices().filter_map(|(i, c)| if c == '\n' { Some(i) } else { None }).collect(),
-			source: runfile.into_boxed_str().into(),
+			source: runfile.into_boxed_str(),
 		},
         expect_fail: matches.opt_present("expect-fail"),
         file: runfile_path,
         args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
-		output_stream: output_stream,
+		output_stream,
     };
 
     match parser::RunFileParser::new().parse(&[], &config.file, &config.parsed_file.source) {
@@ -165,7 +165,7 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
                     }
                 } else {
                     let target = rf.get_target(&run_target);
-                    if let None = target {
+                    if target.is_none() {
                         bad_target(&config, run_target);
                         return (config.expect_fail, output_acc);
                     }
@@ -179,11 +179,11 @@ pub fn run<'a, T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: 
                     Err(_) => return (config.expect_fail, output_acc)
                 }
             }
-            return (!config.expect_fail, output_acc);
+            (!config.expect_fail, output_acc)
         },
         Err(e) => {
             file_parse_err(&config, e);
-            return (false, vec![]);
+            (false, vec![])
         }
     }
 }
