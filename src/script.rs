@@ -4,39 +4,35 @@ use std::fmt::{self, Display, Formatter};
 use crate::out::Location;
 
 #[derive(Debug)]
-pub struct RunFileRef {
-	pub file: Option<RunFile>,
+pub struct Runscript {
 	pub name: String,
-	pub source: Box<str>,
+	pub source: String,
 	pub line_ends: Vec<usize>,
+	pub includes: Vec<Runscript>,
+	pub scripts: Scripts,
 }
 
 #[derive(Debug)]
-pub struct RunFile {
-    pub global_target: Option<Target>,
-    pub default_target: Option<Target>,
-	pub targets: HashMap<String, Target>,
-	pub includes: Vec<RunFileRef>,
-}
-
-#[derive(Debug)]
-pub struct Target {
-    pub commands: HashMap<TargetMeta, TargetInfo>,
+pub struct Scripts {
+    pub global_target: HashMap<ScriptPhase, Script>,
+    pub default_target: HashMap<ScriptPhase, Script>,
+	pub targets: HashMap<Target, Script>,
 }
 
 #[derive(Debug,PartialEq,Hash,Eq)]
-pub struct TargetMeta {
-    pub script: ScriptType,
+pub struct Target {
+	pub name: String,
+    pub script: ScriptPhase,
 }
 
 #[derive(Debug)]
-pub struct TargetInfo {
+pub struct Script {
 	pub commands: Vec<Command>,
     pub loc: Location,
 }
 
 #[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
-pub enum ScriptType {
+pub enum ScriptPhase {
     BuildOnly,   // b!
     Build,       // b
     BuildAndRun, // br (default)
@@ -75,64 +71,18 @@ pub enum ArgPart {
     Cmd(Command),
 }
 
-impl RunFile {
-	pub fn get_default_target(&self) -> Option<&Target> {
-		if let Some(t) = &self.default_target {
-			return Some(t);
-		}
-		for included in &self.includes {
-			if let Some(t) = &included.file.as_ref()?.get_default_target() {
-				return Some(t);
-			}
-		}
-		None
-	}
-
-	pub fn get_global_target(&self) -> Option<&Target> {
-		if let Some(t) = &self.global_target {
-			return Some(t);
-		}
-		for included in &self.includes {
-			if let Some(t) = &included.file.as_ref()?.get_global_target() {
-				return Some(t);
-			}
-		}
-		None
-	}
-
-	pub fn get_target(&self, name: &String) -> Option<&Target> {
-		if let Some(t) = &self.targets.get(name) {
-			return Some(t);
-		}
-		for included in &self.includes {
-			if let Some(t) = &included.file.as_ref()?.get_target(name) {
-				return Some(t);
-			}
-		}
-		None
-	}
-}
-
-impl RunFileRef {
-	pub fn unwind_fileid(&self, id: &[usize]) -> Option<&RunFileRef> {
+impl Runscript {
+	pub fn unwind_fileid(&self, id: &[usize]) -> Option<&Runscript> {
 		if id.len() == 0 {
 			Some(&self)
 		} else {
 			let mut file_ref = self;
 			for index in id {
-				file_ref = file_ref.file.as_ref()?.includes.get(*index)?
+				file_ref = file_ref.includes.get(*index)?
 			}
 			Some(file_ref)
 		}
 	}
-}
-
-impl Default for Target {
-    fn default() -> Self {
-        Target {
-            commands: HashMap::default(),
-        }
-    }
 }
 
 impl Display for Command {
@@ -176,14 +126,14 @@ impl Display for Argument {
     }
 }
 
-impl Display for ScriptType {
+impl Display for ScriptPhase {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", match self {
-            ScriptType::BuildOnly =>   "Build!",
-            ScriptType::Build =>       "Build",
-            ScriptType::BuildAndRun => "Build & Run",
-            ScriptType::Run =>         "Run",
-            ScriptType::RunOnly =>     "Run!"
+            ScriptPhase::BuildOnly =>   "Build!",
+            ScriptPhase::Build =>       "Build",
+            ScriptPhase::BuildAndRun => "Build & Run",
+            ScriptPhase::Run =>         "Run",
+            ScriptPhase::RunOnly =>     "Run!"
         })
     }
 }

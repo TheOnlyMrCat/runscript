@@ -10,19 +10,19 @@ use termcolor::{StandardStream, ColorChoice};
 mod out;
 mod exec;
 mod parser;
-mod runfile;
+mod script;
 
 use out::*;
 use exec::shell;
 use parser::parse_runfile;
-use runfile::{TargetMeta, ScriptType, Target, RunFileRef};
+use script::{ScriptPhase, Target, Runscript};
 
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
-const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
-const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
+const PHASES_B: [ScriptPhase; 2] = [ScriptPhase::BuildOnly, ScriptPhase::Build];
+const PHASES_T: [ScriptPhase; 3] = [ScriptPhase::Build, ScriptPhase::BuildAndRun, ScriptPhase::Run];
+const PHASES_R: [ScriptPhase; 2] = [ScriptPhase::Run, ScriptPhase::RunOnly];
 
 fn main() {
     if !run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), 0, false).0 {
@@ -102,7 +102,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
     let t_pos = matches.opt_positions("build-and-run").iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
     let r_pos = matches.opt_positions("run-only")     .iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
 
-    let phases: &[ScriptType];
+    let phases: &[ScriptPhase];
     if b_pos + t_pos + r_pos == -3
     || t_pos > b_pos && t_pos > r_pos {
         phases = &PHASES_T;
@@ -186,7 +186,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
     }
 }
 
-fn do_run_target(target: Option<&Target>, name: &str, phase: ScriptType, config: &Config, piped: bool) -> Result<Vec<u8>, Vec<u8>> {
+fn do_run_target(target: Option<&Target>, name: &str, phase: ScriptPhase, config: &Config, piped: bool) -> Result<Vec<u8>, Vec<u8>> {
     match target {
         Some(target) => {
             match target.commands.get(&TargetMeta { script: phase }) {

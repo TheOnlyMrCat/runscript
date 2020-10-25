@@ -3,7 +3,7 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 
 use filenamegen::Glob;
 
-use crate::runfile::{self, ArgPart, ChainedCommand, Argument};
+use crate::script::{self, ArgPart, ChainedCommand, Argument};
 use crate::Config;
 use crate::run;
 use crate::out::{bad_command_err, CommandExecErr};
@@ -52,7 +52,7 @@ impl From<Output> for ProcessOutput {
     }
 }
 
-pub fn shell(commands: &Vec<runfile::Command>, config: &Config, piped: bool) -> (bool, Vec<u8>) {
+pub fn shell(commands: &Vec<script::Command>, config: &Config, piped: bool) -> (bool, Vec<u8>) {
     let mut output_acc = Vec::new();
     for command in commands {
         if !config.silent {
@@ -79,7 +79,7 @@ pub fn shell(commands: &Vec<runfile::Command>, config: &Config, piped: bool) -> 
     (true, output_acc)
 }
 
-fn exec(command: &runfile::Command, config: &Config, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
+fn exec(command: &script::Command, config: &Config, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
     if command.target == "run" {
         let (success, output) = run(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }), config.file.parent().expect("Runfile should have at least one parent"), config.quiet as i32 + config.silent as i32, piped);
         return Ok(ProcessOutput {
