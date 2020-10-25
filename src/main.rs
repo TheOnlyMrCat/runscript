@@ -1,5 +1,3 @@
-#[macro_use] extern crate lalrpop_util;
-
 use std::env;
 use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
@@ -11,14 +9,14 @@ use termcolor::{StandardStream, ColorChoice};
 
 mod out;
 mod exec;
+mod parser;
 mod runfile;
-
-lalrpop_mod!(pub parser);
-lalrpop_mod!(pub doubled);
 
 use out::*;
 use exec::shell;
+use parser::parse_runfile;
 use runfile::{TargetMeta, ScriptType, Target, RunFileRef};
+
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
