@@ -1,15 +1,21 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 
-use crate::out::Location;
+use crate::parser::RunscriptLocation;
 
 #[derive(Debug)]
 pub struct Runscript {
 	pub name: String,
 	pub source: String,
 	pub line_ends: Vec<usize>,
-	pub includes: Vec<Runscript>,
+	pub includes: Vec<RunscriptInclude>,
 	pub scripts: Scripts,
+}
+
+#[derive(Debug)]
+pub struct RunscriptInclude {
+	pub runscript: Runscript,
+	pub location: RunscriptLocation,
 }
 
 #[derive(Debug)]
@@ -22,13 +28,13 @@ pub struct Scripts {
 #[derive(Debug,PartialEq,Hash,Eq)]
 pub struct Target {
 	pub name: String,
-    pub script: ScriptPhase,
+    pub phase: ScriptPhase,
 }
 
 #[derive(Debug)]
 pub struct Script {
 	pub commands: Vec<Command>,
-    pub loc: Location,
+    pub location: RunscriptLocation,
 }
 
 #[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
@@ -45,12 +51,12 @@ pub struct Command {
     pub target: String,
     pub args: Vec<Argument>,
     pub chained: Box<ChainedCommand>,
-    pub loc: Location,
+    pub loc: RunscriptLocation,
 }
 
 #[derive(Debug, Clone)]
 pub enum Argument {
-    Unquoted(ArgPart, Location),
+    Unquoted(ArgPart, RunscriptLocation),
     Single(String),
     Double(Vec<ArgPart>),
 }
@@ -78,7 +84,7 @@ impl Runscript {
 		} else {
 			let mut file_ref = self;
 			for index in id {
-				file_ref = file_ref.includes.get(*index)?
+				file_ref = &file_ref.includes.get(*index)?.runscript;
 			}
 			Some(file_ref)
 		}
