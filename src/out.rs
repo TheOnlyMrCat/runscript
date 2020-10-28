@@ -56,13 +56,6 @@ pub enum CommandExecErr {
 }
 use CommandExecErr::*;
 
-#[derive(Debug, Clone)]
-pub struct Location {
-	include_path: Box<[usize]>,
-	start_index: usize,
-	end_index: usize,
-}
-
 pub fn file_parse_err(config: &crate::Config, err: ParseError<usize, lalrpop_util::lexer::Token, RunscriptError>) {
 	//TODO will be fixed when parser gets rewritten
 	match &err {
