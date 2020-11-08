@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 
+use enum_map::EnumMap;
+
 use crate::parser::RunscriptLocation;
 
 #[derive(Debug)]
@@ -20,15 +22,9 @@ pub struct RunscriptInclude {
 
 #[derive(Debug)]
 pub struct Scripts {
-    pub global_target: HashMap<ScriptPhase, Script>,
-    pub default_target: HashMap<ScriptPhase, Script>,
-	pub targets: HashMap<Target, Script>,
-}
-
-#[derive(Debug,PartialEq,Hash,Eq)]
-pub struct Target {
-	pub name: String,
-    pub phase: ScriptPhase,
+    pub global_target: EnumMap<ScriptPhase, Option<Script>>,
+    pub default_target: EnumMap<ScriptPhase, Option<Script>>,
+	pub targets: HashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
 #[derive(Debug)]
@@ -37,7 +33,7 @@ pub struct Script {
     pub location: RunscriptLocation,
 }
 
-#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
+#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy,Enum)]
 pub enum ScriptPhase {
     BuildOnly,   // b!
     Build,       // b

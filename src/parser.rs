@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 
+use enum_map::EnumMap;
+
 use crate::script::*;
 
 pub struct RunscriptSource<'a> {
@@ -42,6 +44,10 @@ pub enum RunscriptParseError {
 	NestedError {
 		include_location: RunscriptLocation,
 		error: Box<RunscriptParseError>,
+	},
+	MultipleDefinition {
+		previous_location: RunscriptLocation,
+		new_location: RunscriptLocation,
 	}
 }
 
@@ -78,8 +84,8 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
 			source: source.source,
 			includes: Vec::new(),
 			scripts: Scripts {
-				global_target: HashMap::new(),
-				default_target: HashMap::new(),
+				global_target: EnumMap::new(),
+				default_target: EnumMap::new(),
 				targets: HashMap::new(),
 			}
 		}
@@ -209,14 +215,33 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
 			};
 
 			if name == "-" {
-				context.runfile.scripts.default_target.insert(phase, script);
+				if let Some(prev_script) = context.runfile.scripts.default_target[phase] {
+					return Err(RunscriptParseError::MultipleDefinition {
+						previous_location: prev_script.location,
+						new_location: script.location,
+					});
+				}
+				context.runfile.scripts.default_target[phase] = Some(script);
 			} else if name == "#" {
-				context.runfile.scripts.global_target.insert(phase, script);
+				if let Some(prev_script) = context.runfile.scripts.default_target[phase] {
+					return Err(RunscriptParseError::MultipleDefinition {
+						previous_location: prev_script.location,
+						new_location: script.location,
+					});
+				}
+				context.runfile.scripts.global_target[phase] = Some(script);
 			} else {
 				if name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
 					return Err(RunscriptParseError::InvalidID { found: name });
 				}
-				context.runfile.scripts.targets.insert(Target { name, phase }, script);
+				let target = context.runfile.scripts.targets.entry(name).or_insert_with(EnumMap::new);
+				if let Some(prev_script) = target[phase] {
+					return Err(RunscriptParseError::MultipleDefinition {
+						previous_location: prev_script.location,
+						new_location: script.location,
+					});
+				}
+				target[phase] = Some(script);
 			}
 		},
 		(_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => continue,

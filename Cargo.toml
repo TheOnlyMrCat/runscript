@@ -21,3 +21,4 @@ getopts = "0.2"        # Command-line option parsing
 termcolor = "1.1"      # Terminal colouring
 filenamegen = "0.2"    # Glob parsing and walking
 anyhow = "1.0"         # Trait-based error type
+enum-map = "0.6.4"     # Array-based map over enum constants

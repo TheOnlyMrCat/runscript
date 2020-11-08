@@ -1,12 +1,26 @@
 use std::io::Write;
+use std::path::Path;
 use std::process::{Command, Stdio, Output, ExitStatus};
 
 use filenamegen::Glob;
 
 use crate::script::{self, ArgPart, ChainedCommand, Argument};
-use crate::Config;
 use crate::run;
 use crate::out::{bad_command_err, CommandExecErr};
+
+pub struct ExecConfig<'a> {
+	pub verbosity: Verbosity,
+	pub output_stream: termcolor::StandardStream,
+	pub working_directory: &'a Path,
+	pub positional_args: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd)]
+pub enum Verbosity {
+	Normal,
+	Quiet,
+	Silent,
+}
 
 #[derive(Debug)]
 enum ProcessExit {
@@ -52,22 +66,24 @@ impl From<Output> for ProcessOutput {
     }
 }
 
-pub fn shell(commands: &Vec<script::Command>, config: &Config, piped: bool) -> (bool, Vec<u8>) {
+pub fn shell(commands: &Vec<script::Command>, config: &ExecConfig, capture_stdout: bool) -> (bool, Vec<u8>) {
     let mut output_acc = Vec::new();
     for command in commands {
-        if !config.silent {
+        if config.verbosity < Verbosity::Silent {
             eprintln!("> {}", command);
         }
-        let mut output = match exec(&command, config, piped) {
+        let mut output = match exec(&command, config, capture_stdout) {
             Ok(k) => k,
             Err(err) => {
                 bad_command_err(config, &command, err);
                 return (false, output_acc)
             },
-        };
-        output_acc.append(&mut output.stdout);
+		};
+		if capture_stdout {
+			output_acc.extend(output.stdout.into_iter());
+		}
         if !output.status.success() {
-            if !config.silent {
+            if config.verbosity < Verbosity::Silent {
                 match output.status.code() {
                     Some(i) => eprintln!("=> exit {}", i),
                     None => eprintln!("=> {}", signal(&output.status.status())),
@@ -79,9 +95,16 @@ pub fn shell(commands: &Vec<script::Command>, config: &Config, piped: bool) -> (
     (true, output_acc)
 }
 
-fn exec(command: &script::Command, config: &Config, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
+fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
     if command.target == "run" {
-        let (success, output) = run(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }), config.file.parent().expect("Runfile should have at least one parent"), config.quiet as i32 + config.silent as i32, piped);
+        let (success, output) = run(
+			command.args.iter()
+				.map(|x| evaluate_arg(x, config))
+				.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
+				.iter()
+				.fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }),
+			config.working_directory,
+			config.verbosity, piped);
         return Ok(ProcessOutput {
             status: ProcessExit::Bool(success),
             stdout: output,
@@ -115,10 +138,10 @@ fn exec(command: &script::Command, config: &Config, piped: bool) -> Result<Proce
 
     let mut child = match Command::new(command.target.clone())
         .args(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
-        .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
-        .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.quiet { Stdio::null() } else { Stdio::inherit() } })
-        .stdout(if piped { Stdio::piped() } else if config.quiet { Stdio::null() } else { Stdio::inherit() })
-        .stderr(if config.quiet { Stdio::null() } else { Stdio::inherit() })
+        .current_dir(config.working_directory)
+        .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() } })
+        .stdout(if piped { Stdio::piped() } else if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
+        .stderr(if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
         .spawn() {
         Ok(c) => c,
         Err(e) => {
@@ -146,14 +169,14 @@ fn exec(command: &script::Command, config: &Config, piped: bool) -> Result<Proce
     Ok(output)
 }
 
-fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandExecErr> {
+fn evaluate_arg(arg: &Argument, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
     match arg {
         Argument::Unquoted(p, loc) => match p {
             ArgPart::Str(s) => {
                 if s.chars().any(|c| c == '*' || c == '(' || c == '|' || c == '<' || c == '[' || c == '?') {
                     match Glob::new(&s) {
                         Ok(walker) => {
-                            let cwd = config.file.parent().expect("Runscript should have at least one parent");
+                            let cwd = config.working_directory;
                             let strings = walker.walk(cwd).into_iter()
                                 .map(|k| k.to_string_lossy().into_owned().to_owned())
                                 .collect::<Vec<String>>();
@@ -179,16 +202,17 @@ fn evaluate_arg(arg: &Argument, config: &Config) -> Result<Vec<String>, CommandE
     }
 }
 
-fn evaluate_part(part: &ArgPart, config: &Config) -> Result<Vec<String>, CommandExecErr> {
+fn evaluate_part(part: &ArgPart, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
+	use std::env::VarError::*;
     match part {
         ArgPart::Str(s) => Ok(vec![s.clone()]),
-        ArgPart::Arg(n) => Ok(vec![config.args.get(*n - 1).map(|s| s.clone()).unwrap_or("".to_owned())]),
-        ArgPart::Var(v) => Ok(vec![std::env::var(v).unwrap_or("".to_owned())]),
+        ArgPart::Arg(n) => Ok(vec![config.positional_args.get(*n - 1).map(|s| s.clone()).unwrap_or_else(|| "".to_owned())]),
+        ArgPart::Var(v) => Ok(vec![std::env::var(v).unwrap_or_else(|err| match err { NotPresent => "".to_owned(), NotUnicode(s) => s.to_string_lossy().into_owned() })]),
         ArgPart::Cmd(c) => {
             Ok(vec![String::from_utf8_lossy(
                 &match Command::new(c.target.clone())
                     .args(c.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
-                    .current_dir(config.file.parent().expect("Runfile should have at least one parent"))
+                    .current_dir(config.working_directory)
                     .output() {
                         Ok(o) => o.stdout,
                         Err(e) => return Err(CommandExecErr::BadCommand {
