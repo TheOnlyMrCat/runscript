@@ -32,8 +32,8 @@ pub enum ParseOrIOError {
 }
 
 pub struct RunscriptParseError {
-	script: Runscript,
-	data: RunscriptParseErrorData,
+	pub script: Runscript,
+	pub data: RunscriptParseErrorData,
 }
 
 pub enum RunscriptParseErrorData {
@@ -95,7 +95,7 @@ struct ParsingContext<'a, T: Iterator<Item = (usize, char)>> {
 
 impl<T: Iterator<Item = (usize, char)>> ParsingContext<'_, T> {
 	fn get_loc(&self, index: usize) -> RunscriptLocation {
-		let (line, column) = self.line_indices.iter().enumerate().find_map(|(line, &end)| if end > index { Some((line, index - end)) } else { None }).unwrap_or((self.line_indices.len(), index - self.line_indices.last().copied().unwrap_or(0)));
+		let (line, column) = self.line_indices.iter().enumerate().find_map(|(line, &end)| if end > index { Some((line, end - index)) } else { None }).unwrap_or((self.line_indices.len(), index - self.line_indices.last().copied().unwrap_or(0)));
 		RunscriptLocation {
 			index: self.index.clone(),
 			line,
@@ -127,15 +127,15 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
 	}
 }
 
-pub fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>, source: &RunscriptSource) -> Result<(), RunscriptParseErrorData> {
+fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>, source: &RunscriptSource) -> Result<(), RunscriptParseErrorData> {
 	while let Some(tk) = context.iterator.next() { match tk {
 		// Comment
 		(_, '!') => {
-			consume_line(&context.iterator);
+			consume_line(&mut context.iterator);
 		},
 		// Annotation (Better name?)
 		(i, '$') => {
-			let (special, bk) = consume_word(&context.iterator);
+			let (special, bk) = consume_word(&mut context.iterator);
 
 			if matches!(bk, BreakCondition::EOF) {
 				return Err(RunscriptParseErrorData::UnexpectedEOF { location: context.get_loc(i + 1), expected: "include".to_owned() });
@@ -143,24 +143,24 @@ pub fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContex
 
 			match &*special {
 				"include" => {
-					let (included, bk) = consume_word(&context.iterator);
+					let (included, bk) = consume_word(&mut context.iterator);
 					let index = {
-						let v = source.index.clone();
+						let mut v = source.index.clone();
 						v.push(context.runfile.includes.len());
 						v
 					};
 
 					if !matches!(bk, BreakCondition::Newline(_)) {
-						consume_line(&context.iterator);
+						consume_line(&mut context.iterator);
 					}
 
 					let file_branch = {
-						let st = included.clone();
+						let mut st = included.clone();
 						st.push_str(".run");
 						st
 					};
 					let file_path = source.base.join(file_branch);
-					match parse_runfile_nested(file_path, source.base, index.clone()) {
+					match parse_runfile_nested(file_path, source.base.clone(), index.clone()) {
 						Ok(runscript) => {
 							context.runfile.includes.push(RunscriptInclude {
 								runscript,
@@ -169,11 +169,11 @@ pub fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContex
 						}
 						Err(ParseOrIOError::IOError(fe)) => {
 							let dir_path = {
-								let p = source.base.join(&included);
+								let mut p = source.base.join(&included);
 								p.push("run");
 								p
 							};
-							match parse_runfile_nested(dir_path, source.base, index) {
+							match parse_runfile_nested(dir_path, source.base.clone(), index) {
 								Ok(runscript) => {
 									context.runfile.includes.push(RunscriptInclude {
 										runscript,
@@ -208,7 +208,7 @@ pub fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContex
 		},
 		// Script
 		(i, '#') => {
-			let (name, bk) = consume_word(&context.iterator);
+			let (name, bk) = consume_word(&mut context.iterator);
 
 			// Don't ask...
 			let (phase, bk) = match bk {
@@ -220,37 +220,39 @@ pub fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContex
 						Some((_, 'r')) => (ScriptPhase::BuildAndRun, BreakCondition::Parse),
 						Some((i, '\n')) => (ScriptPhase::Build, BreakCondition::Newline(i)),
 						_ => (ScriptPhase::Build, BreakCondition::Parse),
-					}
+					},
 					Some((_, 'r')) => match context.iterator.next() {
 						Some((_, '!')) => (ScriptPhase::RunOnly, BreakCondition::Parse),
 						Some((i, '\n')) => (ScriptPhase::Run, BreakCondition::Newline(i)),
 						_ => (ScriptPhase::Run, BreakCondition::Parse),
-					}
+					},
+					Some(_) => todo!(),
+					None => todo!(),
 				},
 			};
 
 			if !matches!(bk, BreakCondition::Newline(_)) {
-				consume_line(&context.iterator);
+				consume_line(&mut context.iterator);
 			}
 
 			let script = Script {
 				location: context.get_loc(i),
-				commands: parse_commands(&context)?,
+				commands: parse_commands(context)?,
 			};
 
 			if name == "-" {
-				if let Some(prev_script) = context.runfile.scripts.default_target[phase] {
+				if let Some(prev_script) = &context.runfile.scripts.default_target[phase] {
 					return Err(RunscriptParseErrorData::MultipleDefinition {
-						previous_location: prev_script.location,
+						previous_location: prev_script.location.clone(),
 						new_location: script.location,
 						target_name: name,
 					});
 				}
 				context.runfile.scripts.default_target[phase] = Some(script);
 			} else if name == "#" {
-				if let Some(prev_script) = context.runfile.scripts.default_target[phase] {
+				if let Some(prev_script) = &context.runfile.scripts.default_target[phase] {
 					return Err(RunscriptParseErrorData::MultipleDefinition {
-						previous_location: prev_script.location,
+						previous_location: prev_script.location.clone(),
 						new_location: script.location,
 						target_name: name,
 					});
@@ -260,10 +262,10 @@ pub fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContex
 				if name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
 					return Err(RunscriptParseErrorData::InvalidID { location: context.get_loc(i + 1), found: name });
 				}
-				let target = context.runfile.scripts.targets.entry(name).or_insert_with(EnumMap::new);
-				if let Some(prev_script) = target[phase] {
+				let target = context.runfile.scripts.targets.entry(name.clone()).or_insert_with(EnumMap::new);
+				if let Some(prev_script) = &target[phase] {
 					return Err(RunscriptParseErrorData::MultipleDefinition {
-						previous_location: prev_script.location,
+						previous_location: prev_script.location.clone(),
 						new_location: script.location,
 						target_name: name,
 					});
@@ -278,7 +280,7 @@ pub fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContex
 	Ok(())
 }
 
-fn parse_commands<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>) -> Result<Vec<Command>, RunscriptParseErrorData> {
+fn parse_commands<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>) -> Result<Vec<Command>, RunscriptParseErrorData> {
 	let mut cmds = Vec::new();
 	while let Some(cmd) = parse_command(context, ChainedCommand::None)? {
 		// parse_command returns None when the first 'word' it encounters is `#/`
@@ -287,17 +289,18 @@ fn parse_commands<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>
 	Ok(cmds)
 }
 
-fn parse_command<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>, chained: ChainedCommand) -> Result<Option<Command>, RunscriptParseErrorData> {
-	let (start_loc, _) = context.iterator.peek().ok_or_else(|| RunscriptParseErrorData::UnexpectedEOF { location: context.get_loc(context.runfile.source.len()), expected: "#/".to_string() })?;
-	let (target, bk) = consume_word(&context.iterator);
+fn parse_command<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>, chained: ChainedCommand) -> Result<Option<Command>, RunscriptParseErrorData> {
+	let end_loc = context.get_loc(context.runfile.source.len());
+	let start_loc = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_string() })?.0;
+	let (target, bk) = consume_word(&mut context.iterator);
 	if target == "#/" {
 		if !matches!(bk, BreakCondition::Newline(_)) {
-			consume_line(&context.iterator);
+			consume_line(&mut context.iterator);
 		}
 		return Ok(None);
 	}
 
-	let args = Vec::new();
+	let mut args = Vec::new();
 	loop {
 		match context.iterator.peek() {
 			Some((_, '\'')) => {
@@ -307,7 +310,7 @@ fn parse_command<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>,
 					match context.iterator.peek() {
 						Some((_, '\'')) => break,
 						Some((_, c)) => buf.push(*c),
-						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: context.get_loc(context.runfile.source.len()), expected: "`'`".to_owned() }),
+						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
 					}
 				}
 				args.push(Argument::Single(buf));
@@ -320,7 +323,7 @@ fn parse_command<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>,
 					match context.iterator.peek() {
 						Some((_, '\'')) => break,
 						Some((_, c)) => buf.push(*c),
-						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: context.get_loc(context.runfile.source.len()), expected: "`'`".to_owned() }),
+						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
 					}
 				}
 				args.push(Argument::Single(buf));
@@ -333,7 +336,7 @@ fn parse_command<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>,
 					Some((_, c)) if c.is_digit(10) => {
 						let mut acc = *c as usize - '0' as usize;
 						loop {
-							let (_, c) = context.iterator.peek().ok_or_else(|| RunscriptParseErrorData::UnexpectedEOF { location: context.get_loc(context.runfile.source.len()), expected: "#/".to_owned() })?;
+							let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
 							match c.to_digit(10) {
 								Some(i) => {
 									context.iterator.next();
@@ -343,18 +346,20 @@ fn parse_command<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>,
 							}
 						}
 						args.push(Argument::Unquoted(ArgPart::Arg(acc)))
-					}
+					},
+					Some((_, c)) => todo!(),
+					None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "environment variable".to_owned() })
 				}
 			},
 			Some(_) => {
-				let (s, bk) = consume_word(&context.iterator);
+				let (s, bk) = consume_word(&mut context.iterator);
 				args.push(Argument::Unquoted(ArgPart::Str(s)));
 				if matches!(bk, BreakCondition::Newline(_)) {
 					break;
 				}
 			},
 			None => {
-				return Err(RunscriptParseErrorData::UnexpectedEOF { location: context.get_loc(context.runfile.source.len()), expected: "#/".to_owned() });
+				return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "#/".to_owned() });
 			}
 		}
 	}
@@ -363,7 +368,7 @@ fn parse_command<T: Iterator<Item = (usize, char)>>(context: &ParsingContext<T>,
 		target,
 		args,
 		chained: Box::new(chained),
-		loc: context.get_loc(*start_loc),
+		loc: context.get_loc(start_loc),
 	}))
 }
 
@@ -374,7 +379,7 @@ enum BreakCondition {
 	CloseParen,
 }
 
-fn consume_word(iterator: &impl Iterator<Item = (usize, char)>) -> (String, BreakCondition) {
+fn consume_word(iterator: &mut impl Iterator<Item = (usize, char)>) -> (String, BreakCondition) {
 	let mut buf = String::new();
 	let nl = loop {
 		match iterator.next() {
@@ -389,7 +394,7 @@ fn consume_word(iterator: &impl Iterator<Item = (usize, char)>) -> (String, Brea
 	(buf, nl)
 }
 
-fn consume_line(iterator: &impl Iterator<Item = (usize, char)>) -> BreakCondition {
+fn consume_line(iterator: &mut impl Iterator<Item = (usize, char)>) -> BreakCondition {
 	loop {
 		match iterator.next() {
 			Some((i, '\n')) => break BreakCondition::Newline(i),
