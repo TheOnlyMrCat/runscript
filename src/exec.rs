@@ -4,9 +4,10 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 
 use filenamegen::Glob;
 
-use crate::script::{self, ArgPart, ChainedCommand, Argument};
-use crate::run;
 use crate::out::{bad_command_err, CommandExecErr};
+use crate::parser::RunscriptLocation;
+use crate::run;
+use crate::script::{self, ArgPart, ChainedCommand, Argument};
 
 pub struct ExecConfig<'a> {
 	pub verbosity: Verbosity,
@@ -99,7 +100,7 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
     if command.target == "run" {
         let (success, output) = run(
 			command.args.iter()
-				.map(|x| evaluate_arg(x, config))
+				.map(|x| evaluate_arg(x, command.loc, config))
 				.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
 				.iter()
 				.fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }),
@@ -137,7 +138,7 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
     };
 
     let mut child = match Command::new(command.target.clone())
-        .args(command.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+        .args(command.args.iter().map(|x| evaluate_arg(x, command.loc, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
         .current_dir(config.working_directory)
         .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() } })
         .stdout(if piped { Stdio::piped() } else if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
@@ -169,9 +170,9 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
     Ok(output)
 }
 
-fn evaluate_arg(arg: &Argument, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
+fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
     match arg {
-        Argument::Unquoted(p, loc) => match p {
+        Argument::Unquoted(p) => match p {
             ArgPart::Str(s) => {
                 if s.chars().any(|c| c == '*' || c == '(' || c == '|' || c == '<' || c == '[' || c == '?') {
                     match Glob::new(&s) {
@@ -181,12 +182,12 @@ fn evaluate_arg(arg: &Argument, config: &ExecConfig) -> Result<Vec<String>, Comm
                                 .map(|k| k.to_string_lossy().into_owned().to_owned())
                                 .collect::<Vec<String>>();
                             if strings.len() == 0 {
-                                Err(CommandExecErr::NoGlobMatches { glob: s.clone(), loc: loc.clone() })
+                                Err(CommandExecErr::NoGlobMatches { glob: s.clone(), loc: command_loc.clone() })
                             } else {
                                 Ok(strings)
                             }
                         },
-                        Err(err) => Err(CommandExecErr::InvalidGlob { glob: s.clone(), err, loc: loc.clone() })
+                        Err(err) => Err(CommandExecErr::InvalidGlob { glob: s.clone(), err, loc: command_loc.clone() })
                     }
                 } else {
                     Ok(vec![s.clone()])
@@ -211,7 +212,7 @@ fn evaluate_part(part: &ArgPart, config: &ExecConfig) -> Result<Vec<String>, Com
         ArgPart::Cmd(c) => {
             Ok(vec![String::from_utf8_lossy(
                 &match Command::new(c.target.clone())
-                    .args(c.args.iter().map(|x| evaluate_arg(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+                    .args(c.args.iter().map(|x| evaluate_arg(x, c.loc, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
                     .current_dir(config.working_directory)
                     .output() {
                         Ok(o) => o.stdout,
