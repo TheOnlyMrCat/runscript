@@ -9,7 +9,6 @@ use crate::parser::RunscriptLocation;
 pub struct Runscript {
 	pub name: String,
 	pub source: String,
-	pub line_ends: Vec<usize>,
 	pub includes: Vec<RunscriptInclude>,
 	pub scripts: Scripts,
 }
@@ -52,7 +51,7 @@ pub struct Command {
 
 #[derive(Debug, Clone)]
 pub enum Argument {
-    Unquoted(ArgPart, RunscriptLocation),
+    Unquoted(ArgPart),
     Single(String),
     Double(Vec<ArgPart>),
 }
@@ -104,7 +103,7 @@ impl Display for Command {
 impl Display for Argument {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", match self {
-            Argument::Unquoted(p, _) => match p {
+            Argument::Unquoted(p) => match p {
                 ArgPart::Str(s) => s.clone(),
                 ArgPart::Arg(n) => format!("${}", n),
                 ArgPart::Var(v) => format!("${}", v),
