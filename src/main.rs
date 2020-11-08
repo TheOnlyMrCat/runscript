@@ -143,7 +143,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
         Ok(rf) => {
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
-				output_stream: termcolor::StandardStream::stdout(termcolor::ColorChoice::Auto),
+				output_stream: output_stream.clone(),
 				verbosity: match matches.opt_count("quiet") {
 					0 => Verbosity::Normal,
 					1 => Verbosity::Quiet,
@@ -157,9 +157,9 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 			//TODO: Instead, find all scripts that would run given the target and phases?
             for &phase in phases {
                 if run_target == "" {
-					match rf.scripts.default_target[phase] {
+					match &rf.scripts.default_target[phase] {
 						Some(script) => {
-							let (success, output) = exec::shell(&script.commands, &exec_config, capture_stdout);
+							let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
 							if capture_stdout {
 								output_acc.extend(output.into_iter());
 							}
@@ -171,9 +171,9 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 					}
 				} else {
 					match rf.scripts.targets.get(&run_target) {
-						Some(target) => match target[phase] {
+						Some(target) => match &target[phase] {
 							Some(script) => {
-								let (success, output) = exec::shell(&script.commands, &exec_config, capture_stdout);
+								let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
 								if capture_stdout {
 									output_acc.extend(output.into_iter());
 								}
@@ -190,9 +190,9 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 						}
 					}
 				}
-				match rf.scripts.global_target[phase] {
+				match &rf.scripts.global_target[phase] {
 					Some(script) => {
-						let (success, output) = exec::shell(&script.commands, &exec_config, capture_stdout);
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
 						if capture_stdout {
 							output_acc.extend(output.into_iter());
 						}
