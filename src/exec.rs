@@ -4,14 +4,14 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 
 use filenamegen::Glob;
 
-use crate::out::{bad_command_err, CommandExecErr};
+use crate::out;
 use crate::parser::RunscriptLocation;
 use crate::run;
-use crate::script::{self, ArgPart, ChainedCommand, Argument};
+use crate::script::{self, Runscript, ArgPart, ChainedCommand, Argument};
 
 pub struct ExecConfig<'a> {
 	pub verbosity: Verbosity,
-	pub output_stream: termcolor::StandardStream,
+	pub output_stream: std::rc::Rc<termcolor::StandardStream>,
 	pub working_directory: &'a Path,
 	pub positional_args: Vec<String>,
 }
@@ -33,6 +33,23 @@ enum ProcessExit {
 struct ProcessOutput {
     status: ProcessExit,
     stdout: Vec<u8>
+}
+
+#[derive(Debug)]
+pub enum CommandExecErr {
+	InvalidGlob {
+		glob: String,
+		err: anyhow::Error,
+		loc: RunscriptLocation,
+	},
+	NoGlobMatches {
+		glob: String,
+		loc: RunscriptLocation,
+	},
+	BadCommand {
+		err: std::io::Error,
+		loc: RunscriptLocation,
+	},
 }
 
 impl ProcessExit {
@@ -67,7 +84,7 @@ impl From<Output> for ProcessOutput {
     }
 }
 
-pub fn shell(commands: &Vec<script::Command>, config: &ExecConfig, capture_stdout: bool) -> (bool, Vec<u8>) {
+pub fn shell(commands: &Vec<script::Command>, script: &Runscript, config: &ExecConfig, capture_stdout: bool) -> (bool, Vec<u8>) {
     let mut output_acc = Vec::new();
     for command in commands {
         if config.verbosity < Verbosity::Silent {
@@ -76,7 +93,7 @@ pub fn shell(commands: &Vec<script::Command>, config: &ExecConfig, capture_stdou
         let mut output = match exec(&command, config, capture_stdout) {
             Ok(k) => k,
             Err(err) => {
-                bad_command_err(config, &command, err);
+                out::bad_command_err(config.output_stream.clone(), &command, script, err);
                 return (false, output_acc)
             },
 		};
@@ -100,7 +117,7 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
     if command.target == "run" {
         let (success, output) = run(
 			command.args.iter()
-				.map(|x| evaluate_arg(x, command.loc, config))
+				.map(|x| evaluate_arg(x, command.loc.clone(), config))
 				.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
 				.iter()
 				.fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }),
@@ -138,7 +155,7 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
     };
 
     let mut child = match Command::new(command.target.clone())
-        .args(command.args.iter().map(|x| evaluate_arg(x, command.loc, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+        .args(command.args.iter().map(|x| evaluate_arg(x, command.loc.clone(), config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
         .current_dir(config.working_directory)
         .stdin(match stdin { Some(_) => Stdio::piped(), None => if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() } })
         .stdout(if piped { Stdio::piped() } else if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
@@ -212,7 +229,7 @@ fn evaluate_part(part: &ArgPart, config: &ExecConfig) -> Result<Vec<String>, Com
         ArgPart::Cmd(c) => {
             Ok(vec![String::from_utf8_lossy(
                 &match Command::new(c.target.clone())
-                    .args(c.args.iter().map(|x| evaluate_arg(x, c.loc, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+                    .args(c.args.iter().map(|x| evaluate_arg(x, c.loc.clone(), config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
                     .current_dir(config.working_directory)
                     .output() {
                         Ok(o) => o.stdout,
