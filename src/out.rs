@@ -131,8 +131,8 @@ pub fn bad_command_err(config: &crate::Config, cmd: &Command, error: CommandExec
 	//TODO Verbose output option
 }
 
-pub fn bad_target(config: &crate::Config, target: String) {
-	let mut lock = config.output_stream.lock();
+pub fn bad_target(output_stream: Rc<StandardStream>, target: String) {
+	let mut lock = output_stream.lock();
 	writeln!(lock, "No target with name {}", target).expect("Failed to write");
 }
 
