@@ -147,7 +147,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 
     match parser::parse_runfile(&runfile_path) {
         Ok(rf) => {
-			dbg!(&rf);
+			println!("{:?}", &rf);
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
 				output_stream: output_stream.clone(),
@@ -212,9 +212,12 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
             }
             (!expect_fail, output_acc)
         },
-        Err(e) => {
-            // file_parse_err(&config, e);
+        Err(parser::ParseOrIOError::ParseError(e)) => {
+            out::file_parse_err(output_stream.clone(), e);
             (false, vec![])
-        }
+		},
+		Err(parser::ParseOrIOError::IOError(_)) => {
+			todo!();
+		}
     }
 }
