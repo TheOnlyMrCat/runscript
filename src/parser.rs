@@ -101,11 +101,14 @@ struct ParsingContext<'a, T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
 }
 
 impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> {
+
+	#[cfg_attr(feature="trace", trace)]
 	fn get_loc(&self, index: usize) -> RunscriptLocation {
+		println!("{:?}", self);
 		let (line, column) = self.line_indices.iter()
 			.enumerate()
 			.find_map(|(line, &end)| if end > index {
-				Some((line, index - self.line_indices.get(line - 1).copied().unwrap_or(0)))
+				Some((line, index - if line == 0 { 0 } else { self.line_indices[line - 1] }))
 			} else {
 				None
 			})
@@ -275,7 +278,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 				}
 				context.runfile.scripts.global_target[phase] = Some(script);
 			} else {
-				if name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_')) {
+				if name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')) {
 					return Err(RunscriptParseErrorData::InvalidID { location: context.get_loc(i + 1), found: name });
 				}
 				let target = context.runfile.scripts.targets.entry(name.clone()).or_insert_with(EnumMap::new);
@@ -325,9 +328,9 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 				context.iterator.next();
 				let mut buf = String::new();
 				loop {
-					match context.iterator.peek() {
+					match context.iterator.next() {
 						Some((_, '\'')) => break,
-						Some((_, c)) => buf.push(*c),
+						Some((_, c)) => buf.push(c),
 						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
 					}
 				}
@@ -338,10 +341,10 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 				context.iterator.next();
 				let mut buf = String::new();
 				loop {
-					match context.iterator.peek() {
-						Some((_, '\'')) => break,
-						Some((_, c)) => buf.push(*c),
-						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
+					match context.iterator.next() {
+						Some((_, '"')) => break,
+						Some((_, c)) => buf.push(c),
+						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`\"`".to_owned() }),
 					}
 				}
 				args.push(Argument::Single(buf));
