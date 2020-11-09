@@ -3,8 +3,11 @@ use std::path::PathBuf;
 
 use enum_map::EnumMap;
 
+#[cfg(feature="trace")]
+use crate::DEPTH;
 use crate::script::*;
 
+#[derive(Debug)]
 pub struct RunscriptSource {
 	/// The name of the runfile this runscript belongs to, for location-tracking purposes.
 	pub file: PathBuf,
@@ -26,16 +29,19 @@ pub struct RunscriptLocation {
 	pub column: usize,
 }
 
+#[derive(Debug)]
 pub enum ParseOrIOError {
 	IOError(std::io::Error),
 	ParseError(RunscriptParseError),
 }
 
+#[derive(Debug)]
 pub struct RunscriptParseError {
 	pub script: Runscript,
 	pub data: RunscriptParseErrorData,
 }
 
+#[derive(Debug)]
 pub enum RunscriptParseErrorData {
 	UnexpectedEOF {
 		location: RunscriptLocation,
@@ -82,20 +88,28 @@ pub fn parse_runfile_nested<'a>(path: impl Into<PathBuf>, base: impl Into<PathBu
 		source: std::fs::read_to_string(&path).map_err(|e| ParseOrIOError::IOError(e))?,
 		file: path.into(),
 		base: base.into(),
-		index: Vec::new(),
+		index,
 	}).map_err(|e| ParseOrIOError::ParseError(e))
 }
 
-struct ParsingContext<'a, T: Iterator<Item = (usize, char)>> {
+#[derive(Debug)]
+struct ParsingContext<'a, T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
 	iterator: std::iter::Peekable<T>,
 	runfile: Runscript,
 	index: &'a Vec<usize>,
 	line_indices: Vec<usize>,
 }
 
-impl<T: Iterator<Item = (usize, char)>> ParsingContext<'_, T> {
+impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> {
 	fn get_loc(&self, index: usize) -> RunscriptLocation {
-		let (line, column) = self.line_indices.iter().enumerate().find_map(|(line, &end)| if end > index { Some((line, end - index)) } else { None }).unwrap_or((self.line_indices.len(), index - self.line_indices.last().copied().unwrap_or(0)));
+		let (line, column) = self.line_indices.iter()
+			.enumerate()
+			.find_map(|(line, &end)| if end > index {
+				Some((line, index - self.line_indices.get(line - 1).copied().unwrap_or(0)))
+			} else {
+				None
+			})
+			.unwrap_or_else(|| (self.line_indices.len(), index - self.line_indices.last().copied().unwrap_or(0)));
 		RunscriptLocation {
 			index: self.index.clone(),
 			line,
@@ -104,6 +118,7 @@ impl<T: Iterator<Item = (usize, char)>> ParsingContext<'_, T> {
 	}
 }
 
+#[cfg_attr(feature="trace", trace)]
 pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptParseError> {
 	let mut context = ParsingContext {
 		iterator: source.source.char_indices().peekable(),
@@ -127,7 +142,8 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
 	}
 }
 
-fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>, source: &RunscriptSource) -> Result<(), RunscriptParseErrorData> {
+#[cfg_attr(feature="trace", trace)]
+fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, source: &RunscriptSource) -> Result<(), RunscriptParseErrorData> {
 	while let Some(tk) = context.iterator.next() { match tk {
 		// Comment
 		(_, '!') => {
@@ -280,7 +296,8 @@ fn parse_root<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>
 	Ok(())
 }
 
-fn parse_commands<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>) -> Result<Vec<Command>, RunscriptParseErrorData> {
+#[cfg_attr(feature="trace", trace)]
+fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<Vec<Command>, RunscriptParseErrorData> {
 	let mut cmds = Vec::new();
 	while let Some(cmd) = parse_command(context, ChainedCommand::None)? {
 		// parse_command returns None when the first 'word' it encounters is `#/`
@@ -289,7 +306,8 @@ fn parse_commands<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContex
 	Ok(cmds)
 }
 
-fn parse_command<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext<T>, chained: ChainedCommand) -> Result<Option<Command>, RunscriptParseErrorData> {
+#[cfg_attr(feature="trace", trace)]
+fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, chained: ChainedCommand) -> Result<Option<Command>, RunscriptParseErrorData> {
 	let end_loc = context.get_loc(context.runfile.source.len());
 	let start_loc = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_string() })?.0;
 	let (target, bk) = consume_word(&mut context.iterator);
@@ -372,6 +390,7 @@ fn parse_command<T: Iterator<Item = (usize, char)>>(context: &mut ParsingContext
 	}))
 }
 
+#[derive(Debug)]
 enum BreakCondition {
 	Newline(usize),
 	EOF,
@@ -379,7 +398,8 @@ enum BreakCondition {
 	CloseParen,
 }
 
-fn consume_word(iterator: &mut impl Iterator<Item = (usize, char)>) -> (String, BreakCondition) {
+#[cfg_attr(feature="trace", trace)]
+fn consume_word(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> (String, BreakCondition) {
 	let mut buf = String::new();
 	let nl = loop {
 		match iterator.next() {
@@ -394,7 +414,8 @@ fn consume_word(iterator: &mut impl Iterator<Item = (usize, char)>) -> (String, 
 	(buf, nl)
 }
 
-fn consume_line(iterator: &mut impl Iterator<Item = (usize, char)>) -> BreakCondition {
+#[cfg_attr(feature="trace", trace)]
+fn consume_line(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> BreakCondition {
 	loop {
 		match iterator.next() {
 			Some((i, '\n')) => break BreakCondition::Newline(i),
