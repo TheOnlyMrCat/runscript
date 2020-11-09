@@ -1,5 +1,9 @@
 #[macro_use] extern crate enum_map;
 
+#[cfg(feature="trace")]
+#[macro_use]
+extern crate trace;
+
 use std::env;
 use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
@@ -17,6 +21,8 @@ mod script;
 use exec::Verbosity;
 use script::ScriptPhase;
 
+#[cfg(feature="trace")]
+trace::init_depth_var!();
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -141,6 +147,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 
     match parser::parse_runfile(&runfile_path) {
         Ok(rf) => {
+			dbg!(&rf);
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
 				output_stream: output_stream.clone(),
