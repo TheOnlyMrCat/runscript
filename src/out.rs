@@ -19,39 +19,42 @@ pub fn option_parse_err(output_stream: Rc<StandardStream>, err: getopts::Fail) {
 }
 
 pub fn file_parse_err(output_stream: Rc<StandardStream>, RunscriptParseError { script, data }: RunscriptParseError) {
-	//TODO will be fixed when parser gets rewritten
 	match &data {
 		RunscriptParseErrorData::UnexpectedToken { location: loc, found, expected } => {
-			emit_error(output_stream, loc, &script, format!("Unexpected token; found `{}` but expected {}", found, expected));
+			emit_error(&output_stream, loc, &script, format!("Unexpected token; found `{}` but expected {}", found, expected));
 		},
 		RunscriptParseErrorData::UnexpectedEOF { location: loc, expected } => {
-			emit_error(output_stream, loc, &script, format!("Unexpected end of file; expected {}", expected));
+			emit_error(&output_stream, loc, &script, format!("Unexpected end of file; expected {}", expected));
 		},
+		RunscriptParseErrorData::ReservedToken { location: loc, token, reason } => {
+			emit_error(&output_stream, loc, &script, format!("Token `{}` reserved. {}", token, reason));
+		}
 		RunscriptParseErrorData::InvalidID { location: loc, found } => {
-			emit_error(output_stream, loc, &script, format!("Invalid content of identifier; found `{}` but identifiers can only have alphanumeric characters and `_`", found));
+			emit_error(&output_stream, loc, &script, format!("Invalid content of identifier; found `{}` but identifiers can only have alphanumeric characters and `_`", found));
 		},
-		RunscriptParseErrorData::MultipleDefinition { new_location: loc, previous_location, target_name: t } => {
-			emit_error(output_stream, loc, &script, format!("Multiple definitions of `{}`", match &**t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("`{}`", s)}));
+		RunscriptParseErrorData::MultipleDefinition { new_location: loc, previous_location: prev, target_name: t } => {
+			emit_error(&output_stream, loc, &script, format!("Multiple definitions of `{}`", match &**t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("`{}`", s)}));
+			emit_error(&output_stream, prev, &script, format!("Previous definition is here"));
 		},
 		RunscriptParseErrorData::BadInclude { location: loc, .. } => {
-			emit_error(output_stream, loc, &script, format!("Could not include referenced runfile"));
+			emit_error(&output_stream, loc, &script, format!("Could not include referenced runfile"));
 			//TODO: I/O error notes
 		},
 		RunscriptParseErrorData::NestedError { include_location: loc, .. } => {
-			emit_error(output_stream, loc, &script, format!("Parse error in included file"));
+			emit_error(&output_stream, loc, &script, format!("Parse error in included file"));
 		}
 	}
 }
 
 pub fn bad_command_err(output_stream: Rc<StandardStream>, cmd: &Command, script: &Runscript, error: CommandExecErr) {
 	match &error {
-		CommandExecErr::BadCommand { err, loc } => emit_error(output_stream, loc, script, match err.kind() {
+		CommandExecErr::BadCommand { err, loc } => emit_error(&output_stream, loc, script, match err.kind() {
 			NotFound => format!("Couldn't find executable for `{}`", cmd.target),
 			PermissionDenied => format!("Insufficient permission to execute `{}`", cmd.target),
 			_ => format!("Failed to execute `{}`", cmd.target),
 		}),
-		CommandExecErr::InvalidGlob { glob, loc, .. } => emit_error(output_stream, loc, script, format!("Failed to parse `{}`", glob)),
-		CommandExecErr::NoGlobMatches { glob, loc, .. } => emit_error(output_stream, loc, script, format!("No matches found for `{}`", glob)),
+		CommandExecErr::InvalidGlob { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("Failed to parse `{}`", glob)),
+		CommandExecErr::NoGlobMatches { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("No matches found for `{}`", glob)),
 	}
 	//TODO Verbose output option
 }
@@ -75,7 +78,7 @@ pub fn phase_message(output_stream: Rc<StandardStream>, phase: ScriptPhase, name
 	writeln!(lock, " {}", name).expect("Failed to write");
 }
 
-fn emit_error(output_stream: Rc<StandardStream>, location: &RunscriptLocation, script: &Runscript, error_msg: String) {
+fn emit_error(output_stream: &Rc<StandardStream>, location: &RunscriptLocation, script: &Runscript, error_msg: String) {
 	let mut lock = output_stream.lock();
 	match script.unwind_fileid(&location.index) {
 		Some(file) => {
