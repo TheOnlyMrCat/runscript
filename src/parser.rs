@@ -52,6 +52,11 @@ pub enum RunscriptParseErrorData {
 		found: String,
 		expected: String,
 	},
+	ReservedToken {
+		location: RunscriptLocation,
+		token: String,
+		reason: String,
+	},
 	InvalidID {
 		location: RunscriptLocation,
 		found: String,
@@ -104,11 +109,11 @@ impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> 
 
 	#[cfg_attr(feature="trace", trace)]
 	fn get_loc(&self, index: usize) -> RunscriptLocation {
-		println!("{:?}", self);
+		println!("{:?}", self.line_indices);
 		let (line, column) = self.line_indices.iter()
 			.enumerate()
 			.find_map(|(line, &end)| if end > index {
-				Some((line, index - if line == 0 { 0 } else { self.line_indices[line - 1] }))
+				Some((line + 1, index - if line == 0 { 0 } else { self.line_indices[line - 1] }))
 			} else {
 				None
 			})
@@ -269,7 +274,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 				}
 				context.runfile.scripts.default_target[phase] = Some(script);
 			} else if name == "#" {
-				if let Some(prev_script) = &context.runfile.scripts.default_target[phase] {
+				if let Some(prev_script) = &context.runfile.scripts.global_target[phase] {
 					return Err(RunscriptParseErrorData::MultipleDefinition {
 						previous_location: prev_script.location.clone(),
 						new_location: script.location,
@@ -312,16 +317,36 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: 
 #[cfg_attr(feature="trace", trace)]
 fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, chained: ChainedCommand) -> Result<Option<Command>, RunscriptParseErrorData> {
 	let end_loc = context.get_loc(context.runfile.source.len());
-	let start_loc = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_string() })?.0;
+	let start_loc = loop {
+		match context.iterator.peek() {
+			Some((_, ' ')) | Some((_, '\t')) | Some((_, '\n')) => {
+				context.iterator.next();
+			},
+			Some((i, _)) => {
+				break *i;
+			},
+			None => {
+				return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_string() })
+			}
+		}
+	};
 	let (target, bk) = consume_word(&mut context.iterator);
-	if target == "#/" {
+	if target == "" && matches!(bk, BreakCondition::Newline(_)) {
+		return parse_command(context, ChainedCommand::None);
+	} else if target == "#/" {
 		if !matches!(bk, BreakCondition::Newline(_)) {
 			consume_line(&mut context.iterator);
 		}
 		return Ok(None);
 	}
 
-	let mut args = Vec::new();
+	let mut command = Command {
+		target,
+		args: Vec::new(),
+		chained: Box::new(chained),
+		loc: context.get_loc(start_loc),
+	};
+
 	loop {
 		match context.iterator.peek() {
 			Some((_, '\'')) => {
@@ -334,7 +359,7 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
 					}
 				}
-				args.push(Argument::Single(buf));
+				command.args.push(Argument::Single(buf));
 			},
 			Some((_, '"')) => {
 				//TODO
@@ -347,14 +372,14 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`\"`".to_owned() }),
 					}
 				}
-				args.push(Argument::Single(buf));
+				command.args.push(Argument::Single(buf));
 			},
 			Some((_, ' ')) | Some((_, '\t')) => { context.iterator.next(); }
 			Some((_, '$')) => {
 				context.iterator.next();
 				match context.iterator.peek() {
 					Some((_, '(')) => todo!(),
-					Some((_, c)) if c.is_digit(10) => {
+					Some((_, c)) if c.is_ascii_digit() => {
 						let mut acc = *c as usize - '0' as usize;
 						loop {
 							let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
@@ -366,15 +391,61 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 								None => break,
 							}
 						}
-						args.push(Argument::Unquoted(ArgPart::Arg(acc)))
+						command.args.push(Argument::Unquoted(ArgPart::Arg(acc)))
 					},
-					Some((_, c)) => todo!(),
+					Some((_, c)) if c.is_ascii_alphabetic() || *c == '_' => {
+						let mut buf = String::new();
+						loop {
+							let (_, c) = context.iterator.next().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
+							if c.is_ascii_alphanumeric() {
+								buf.push(c);
+							} else {
+								break;
+							}
+						}
+						command.args.push(Argument::Unquoted(ArgPart::Var(buf)))
+					},
+					Some((i, c)) => {
+						let i = *i; let c = *c;
+						return Err(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i), found: c.to_string(), expected: "environment variable".to_owned() })
+					},
 					None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "environment variable".to_owned() })
 				}
 			},
+			Some((_, '|')) => {
+				context.iterator.next();
+				match context.iterator.peek() {
+					Some((i, '|')) => {
+						let i = *i;
+						context.iterator.next();
+						return Ok(Some(parse_command(context, ChainedCommand::Or(command))?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
+					},
+					Some((i, _)) => {
+						let i = *i;
+						return Ok(Some(parse_command(context, ChainedCommand::Pipe(command))?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
+					},
+					None => {
+						return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "command".to_owned() });
+					}
+				}
+			},
+			Some((_, '&')) => {
+				context.iterator.next();
+				match context.iterator.next() {
+					Some((i, '&')) => {
+						return Ok(Some(parse_command(context, ChainedCommand::And(command))?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
+					},
+					Some((i, _)) => {
+						return Err(RunscriptParseErrorData::ReservedToken { location: context.get_loc(i - 1), token: "&".to_owned(), reason: "Single `&` signifies background execution, which is unsupported.".to_owned()})
+					},
+					None => {
+						return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "command".to_owned()});
+					}
+				}
+			}
 			Some(_) => {
 				let (s, bk) = consume_word(&mut context.iterator);
-				args.push(Argument::Unquoted(ArgPart::Str(s)));
+				command.args.push(Argument::Unquoted(ArgPart::Str(s)));
 				if matches!(bk, BreakCondition::Newline(_)) {
 					break;
 				}
@@ -385,12 +456,7 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 		}
 	}
 
-	Ok(Some(Command {
-		target,
-		args,
-		chained: Box::new(chained),
-		loc: context.get_loc(start_loc),
-	}))
+	Ok(Some(command))
 }
 
 #[derive(Debug)]

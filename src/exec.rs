@@ -90,7 +90,7 @@ pub fn shell(commands: &Vec<script::Command>, script: &Runscript, config: &ExecC
         if config.verbosity < Verbosity::Silent {
             eprintln!("> {}", command);
         }
-        let mut output = match exec(&command, config, capture_stdout) {
+        let output = match exec(&command, config, capture_stdout) {
             Ok(k) => k,
             Err(err) => {
                 out::bad_command_err(config.output_stream.clone(), &command, script, err);
@@ -243,6 +243,7 @@ fn evaluate_part(part: &ArgPart, config: &ExecConfig) -> Result<Vec<String>, Com
     }
 }
 
+#[cfg(unix)]
 use std::os::raw::{c_int, c_char};
 
 #[cfg(unix)]
@@ -263,5 +264,5 @@ fn signal(status: &ExitStatus) -> String {
 
 #[cfg(not(unix))]
 fn signal(_status: &ExitStatus) -> String {
-    panic!("Process had no exit code")
+    panic!("Non-unix program terminated with signal");
 }
