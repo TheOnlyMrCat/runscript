@@ -54,7 +54,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
     let matches = match options.parse(args) {
         Ok(m) => m,
         Err(x) => {
-            out::option_parse_err(output_stream, x);
+            out::option_parse_err(&output_stream, x);
             return (false, vec![]);
         },
     };
@@ -140,7 +140,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
     let (runfile, runfile_path) = match runfile_data {
         Some(r) => r,
         None => {
-            out::file_read_err(output_stream);
+            out::file_read_err(&output_stream);
             return (false, vec![])
         }
 	};
@@ -149,7 +149,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
         Ok(rf) => {
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
-				output_stream: output_stream.clone(),
+				output_stream: &output_stream,
 				verbosity: match matches.opt_count("quiet") {
 					0 => Verbosity::Normal,
 					1 => Verbosity::Quiet,
@@ -165,6 +165,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
                 if run_target == "" {
 					match rf.get_default_script(phase) {
 						Some(script) => {
+							out::phase_message(&output_stream, phase, "default");
 							let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
 							if capture_stdout {
 								output_acc.extend(output.into_iter());
@@ -179,6 +180,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 					match rf.get_target(&run_target) {
 						Some(target) => match &target[phase] {
 							Some(script) => {
+								out::phase_message(&output_stream, phase, &run_target);
 								let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
 								if capture_stdout {
 									output_acc.extend(output.into_iter());
@@ -191,13 +193,14 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 						},
 						None => {
 							//TODO: Possibly pass arguments to default target
-							out::bad_target(output_stream, run_target);
+							out::bad_target(&output_stream, run_target);
 							return (expect_fail, output_acc);
 						}
 					}
 				}
 				match &rf.get_global_script(phase) {
 					Some(script) => {
+						out::phase_message(&output_stream, phase, "global");
 						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
 						if capture_stdout {
 							output_acc.extend(output.into_iter());
@@ -212,7 +215,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
             (!expect_fail, output_acc)
         },
         Err(parser::ParseOrIOError::ParseError(e)) => {
-            out::file_parse_err(output_stream.clone(), e);
+            out::file_parse_err(&output_stream, e);
             (false, vec![])
 		},
 		Err(parser::ParseOrIOError::IOError(_)) => {

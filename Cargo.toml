@@ -1,6 +1,6 @@
 [package]
 name = "runscript"
-version = "1.3.0-rc.1"
+version = "1.3.0-pre.1"
 description = "Like make, but for running"
 license = "MIT"
 readme = "README.md"
