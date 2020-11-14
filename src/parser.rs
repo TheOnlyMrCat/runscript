@@ -363,62 +363,31 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 				command.args.push(Argument::Single(buf));
 			},
 			Some((_, '"')) => {
-				//TODO
 				context.iterator.next();
+				let mut acc = Vec::new();
 				let mut buf = String::new();
 				loop {
 					match context.iterator.next() {
 						Some((_, '"')) => break,
+						Some((_, '$')) => {
+							if !buf.is_empty() {
+								acc.push(ArgPart::Str(std::mem::replace(&mut buf, String::new())))
+							}
+							acc.push(parse_interpolate(context)?);
+						}
 						Some((_, c)) => buf.push(c),
 						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`\"`".to_owned() }),
 					}
 				}
-				command.args.push(Argument::Single(buf));
+				if !buf.is_empty() {
+					acc.push(ArgPart::Str(buf))
+				}
+				command.args.push(Argument::Double(acc));
 			},
 			Some((_, ' ')) | Some((_, '\t')) => { context.iterator.next(); }
 			Some((_, '$')) => {
 				context.iterator.next();
-				match context.iterator.peek() {
-					Some((i, '(')) => {
-						let i = *i;
-						context.iterator.next();
-						command.args.push(Argument::Unquoted(ArgPart::Cmd(parse_command(context, ChainedCommand::None, Some(')'))?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?)))
-					},
-					Some((_, c)) if c.is_ascii_digit() => {
-						let mut acc = *c as usize - '0' as usize;
-						context.iterator.next();
-						loop {
-							let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
-							match c.to_digit(10) {
-								Some(i) => {
-									context.iterator.next();
-									acc = acc * 10 + i as usize;
-								},
-								None => break,
-							}
-						}
-						command.args.push(Argument::Unquoted(ArgPart::Arg(acc)))
-					},
-					Some((_, c)) if c.is_ascii_alphabetic() || *c == '_' => {
-						context.iterator.next();
-						let mut buf = String::new();
-						loop {
-							let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
-							if c.is_ascii_alphanumeric() {
-								buf.push(*c);
-								context.iterator.next();
-							} else {
-								break;
-							}
-						}
-						command.args.push(Argument::Unquoted(ArgPart::Var(buf)))
-					},
-					Some((i, c)) => {
-						let i = *i; let c = *c;
-						return Err(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i), found: c.to_string(), expected: "environment variable".to_owned() })
-					},
-					None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "environment variable".to_owned() })
-				}
+				command.args.push(Argument::Unquoted(parse_interpolate(context)?));
 			},
 			Some((_, '|')) => {
 				context.iterator.next();
@@ -472,6 +441,52 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 	}
 
 	Ok(Some(command))
+}
+
+#[cfg_attr(feature="trace", trace)]
+fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<ArgPart, RunscriptParseErrorData> {
+	let end_loc = context.get_loc(context.runfile.source.len());
+	match context.iterator.peek() {
+		Some((i, '(')) => {
+			let i = *i;
+			context.iterator.next();
+			Ok(ArgPart::Cmd(parse_command(context, ChainedCommand::None, Some(')'))?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?))
+		},
+		Some((_, c)) if c.is_ascii_digit() => {
+			let mut acc = *c as usize - '0' as usize;
+			context.iterator.next();
+			loop {
+				let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
+				match c.to_digit(10) {
+					Some(i) => {
+						context.iterator.next();
+						acc = acc * 10 + i as usize;
+					},
+					None => break,
+				}
+			}
+			Ok(ArgPart::Arg(acc))
+		},
+		Some((_, c)) if c.is_ascii_alphabetic() || *c == '_' => {
+			let mut buf = String::from(*c);
+			context.iterator.next();
+			loop {
+				let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
+				if c.is_ascii_alphanumeric() {
+					buf.push(*c);
+					context.iterator.next();
+				} else {
+					break;
+				}
+			}
+			Ok(ArgPart::Var(buf))
+		},
+		Some((i, c)) => {
+			let i = *i; let c = *c;
+			Err(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i), found: c.to_string(), expected: "environment variable".to_owned() })
+		},
+		None => Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "environment variable".to_owned() })
+	}
 }
 
 #[derive(Debug)]

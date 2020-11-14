@@ -11,7 +11,7 @@ use crate::script::{self, Runscript, ArgPart, ChainedCommand, Argument};
 
 pub struct ExecConfig<'a> {
 	pub verbosity: Verbosity,
-	pub output_stream: std::rc::Rc<termcolor::StandardStream>,
+	pub output_stream: &'a std::rc::Rc<termcolor::StandardStream>,
 	pub working_directory: &'a Path,
 	pub positional_args: Vec<String>,
 }
@@ -93,7 +93,7 @@ pub fn shell(commands: &Vec<script::Command>, script: &Runscript, config: &ExecC
         let output = match exec(&command, config, capture_stdout) {
             Ok(k) => k,
             Err(err) => {
-                out::bad_command_err(config.output_stream.clone(), &command, script, err);
+                out::bad_command_err(config.output_stream, &command, script, err);
                 return (false, output_acc)
             },
 		};
