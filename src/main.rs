@@ -147,7 +147,6 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 
     match parser::parse_runfile(&runfile_path) {
         Ok(rf) => {
-			println!("{:?}", &rf);
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
 				output_stream: output_stream.clone(),
@@ -156,7 +155,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 					1 => Verbosity::Quiet,
 					_ => Verbosity::Silent,
 				},
-				working_directory: cwd,
+				working_directory: runfile_path.parent().expect("Expected file to have parent"),
 				positional_args: matches.free.get(1..).unwrap_or(&[]).to_owned(),
 			};
 
