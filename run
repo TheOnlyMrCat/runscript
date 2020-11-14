@@ -4,6 +4,10 @@ cargo build
 #/
 
 #-
+cargo run -- test -r
+#/
+
+#trace
 cargo run --features trace -- test -r
 #/
 
