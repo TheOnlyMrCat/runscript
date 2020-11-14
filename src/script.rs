@@ -84,6 +84,63 @@ impl Runscript {
 			Some(file_ref)
 		}
 	}
+
+	pub fn get_target(&self, target: &String) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
+		match self.scripts.targets.get(target).as_ref() {
+			Some(map) if map.values().any(Option::is_some) => {
+				Some(map)
+			},
+			_ => {
+				for include in &self.includes {
+					match include.runscript.scripts.targets.get(target) {
+						Some(map) if map.values().any(Option::is_some) => {
+							return Some(map);
+						},
+						_ => {}
+					}
+				}
+				None
+			}
+		}
+	}
+
+	pub fn get_default_script(&self, phase: ScriptPhase) -> Option<&Script> {
+		match self.scripts.default_target[phase].as_ref() {
+			Some(script) => {
+				Some(&script)
+			},
+			_ => {
+				for include in &self.includes {
+					match include.runscript.scripts.default_target[phase].as_ref() {
+						Some(script) => {
+							return Some(&script);
+						},
+						_ => {}
+					}
+				}
+				None
+			}
+		}
+	}
+
+	pub fn get_global_script(&self, phase: ScriptPhase) -> Option<&Script> {
+		match self.scripts.global_target[phase].as_ref() {
+			Some(script) => {
+				Some(&script)
+			},
+			_ => {
+				for include in &self.includes {
+					match include.runscript.scripts.global_target[phase].as_ref() {
+						Some(script) => {
+							return Some(&script);
+						},
+						_ => {}
+					}
+				}
+				None
+			}
+		}
+	}
 }
 
 impl Display for Command {
