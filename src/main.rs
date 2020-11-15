@@ -165,18 +165,15 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 			//TODO: Instead, find all scripts that would run given the target and phases?
             for &phase in phases {
                 if run_target == "" {
-					match rf.get_default_script(phase) {
-						Some(script) => {
-							out::phase_message(&output_stream, phase, "default");
-							let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
-							if capture_stdout {
-								output_acc.extend(output.into_iter());
-							}
-							if !success {
-								return (expect_fail, output_acc);
-							}
-						},
-						None => {}
+					if let Some(script) = rf.get_default_script(phase) {
+						out::phase_message(&output_stream, phase, "default");
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
+						if capture_stdout {
+							output_acc.extend(output.into_iter());
+						}
+						if !success {
+							return (expect_fail, output_acc);
+						}
 					}
 				} else {
 					match rf.get_target(&run_target) {
