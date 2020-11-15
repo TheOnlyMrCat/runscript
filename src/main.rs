@@ -137,7 +137,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
         }
     }
 
-    let (runfile, runfile_path) = match runfile_data {
+    let (runfile_source, runfile_path) = match runfile_data {
         Some(r) => r,
         None => {
             out::file_read_err(&output_stream);
@@ -145,7 +145,9 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
         }
 	};
 
-    match parser::parse_runfile(&runfile_path) {
+	let runfile_cwd = runfile_path.parent().expect("Expected runfile to have parent");
+
+    match parser::parse_runscript(parser::RunscriptSource { file: runfile_path.clone(), base: runfile_cwd.to_owned(), index: vec![], source: runfile_source }) {
         Ok(rf) => {
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
@@ -154,8 +156,8 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 					0 => Verbosity::Normal,
 					1 => Verbosity::Quiet,
 					_ => Verbosity::Silent,
-				},
-				working_directory: runfile_path.parent().expect("Expected file to have parent"),
+				}.max(inherit_verbosity),
+				working_directory: runfile_cwd,
 				positional_args: matches.free.get(1..).unwrap_or(&[]).to_owned(),
 			};
 
@@ -214,12 +216,9 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
             }
             (!expect_fail, output_acc)
         },
-        Err(parser::ParseOrIOError::ParseError(e)) => {
+        Err(e) => {
             out::file_parse_err(&output_stream, e);
             (false, vec![])
 		},
-		Err(parser::ParseOrIOError::IOError(_)) => {
-			todo!();
-		}
     }
 }
