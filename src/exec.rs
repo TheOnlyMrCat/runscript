@@ -16,7 +16,7 @@ pub struct ExecConfig<'a> {
 	pub positional_args: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Verbosity {
 	Normal,
 	Quiet,
