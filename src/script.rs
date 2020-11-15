@@ -1,42 +1,39 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 
-use crate::out::Location;
+use enum_map::EnumMap;
+
+use crate::parser::RunscriptLocation;
 
 #[derive(Debug)]
-pub struct RunFileRef {
-	pub file: Option<RunFile>,
+pub struct Runscript {
 	pub name: String,
-	pub source: Box<str>,
-	pub line_ends: Vec<usize>,
+	pub source: String,
+	pub includes: Vec<RunscriptInclude>,
+	pub scripts: Scripts,
 }
 
 #[derive(Debug)]
-pub struct RunFile {
-    pub global_target: Option<Target>,
-    pub default_target: Option<Target>,
-	pub targets: HashMap<String, Target>,
-	pub includes: Vec<RunFileRef>,
+pub struct RunscriptInclude {
+	pub runscript: Runscript,
+	pub location: RunscriptLocation,
 }
 
 #[derive(Debug)]
-pub struct Target {
-    pub commands: HashMap<TargetMeta, TargetInfo>,
-}
-
-#[derive(Debug,PartialEq,Hash,Eq)]
-pub struct TargetMeta {
-    pub script: ScriptType,
+pub struct Scripts {
+    pub global_target: EnumMap<ScriptPhase, Option<Script>>,
+    pub default_target: EnumMap<ScriptPhase, Option<Script>>,
+	pub targets: HashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
 #[derive(Debug)]
-pub struct TargetInfo {
+pub struct Script {
 	pub commands: Vec<Command>,
-    pub loc: Location,
+    pub location: RunscriptLocation,
 }
 
-#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy)]
-pub enum ScriptType {
+#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy,Enum)]
+pub enum ScriptPhase {
     BuildOnly,   // b!
     Build,       // b
     BuildAndRun, // br (default)
@@ -49,12 +46,12 @@ pub struct Command {
     pub target: String,
     pub args: Vec<Argument>,
     pub chained: Box<ChainedCommand>,
-    pub loc: Location,
+    pub loc: RunscriptLocation,
 }
 
 #[derive(Debug, Clone)]
 pub enum Argument {
-    Unquoted(ArgPart, Location),
+    Unquoted(ArgPart),
     Single(String),
     Double(Vec<ArgPart>),
 }
@@ -75,64 +72,69 @@ pub enum ArgPart {
     Cmd(Command),
 }
 
-impl RunFile {
-	pub fn get_default_target(&self) -> Option<&Target> {
-		if let Some(t) = &self.default_target {
-			return Some(t);
-		}
-		for included in &self.includes {
-			if let Some(t) = &included.file.as_ref()?.get_default_target() {
-				return Some(t);
-			}
-		}
-		None
-	}
-
-	pub fn get_global_target(&self) -> Option<&Target> {
-		if let Some(t) = &self.global_target {
-			return Some(t);
-		}
-		for included in &self.includes {
-			if let Some(t) = &included.file.as_ref()?.get_global_target() {
-				return Some(t);
-			}
-		}
-		None
-	}
-
-	pub fn get_target(&self, name: &String) -> Option<&Target> {
-		if let Some(t) = &self.targets.get(name) {
-			return Some(t);
-		}
-		for included in &self.includes {
-			if let Some(t) = &included.file.as_ref()?.get_target(name) {
-				return Some(t);
-			}
-		}
-		None
-	}
-}
-
-impl RunFileRef {
-	pub fn unwind_fileid(&self, id: &[usize]) -> Option<&RunFileRef> {
-		if id.len() == 0 {
+impl Runscript {
+	pub fn unwind_fileid(&self, id: &[usize]) -> Option<&Runscript> {
+		if id.is_empty() {
 			Some(&self)
 		} else {
 			let mut file_ref = self;
 			for index in id {
-				file_ref = file_ref.file.as_ref()?.includes.get(*index)?
+				file_ref = &file_ref.includes.get(*index)?.runscript;
 			}
 			Some(file_ref)
 		}
 	}
-}
 
-impl Default for Target {
-    fn default() -> Self {
-        Target {
-            commands: HashMap::default(),
-        }
-    }
+	pub fn get_target(&self, target: &str) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
+		match self.scripts.targets.get(target).as_ref() {
+			Some(map) if map.values().any(Option::is_some) => {
+				Some(map)
+			},
+			_ => {
+				for include in &self.includes {
+					match include.runscript.scripts.targets.get(target) {
+						Some(map) if map.values().any(Option::is_some) => {
+							return Some(map);
+						},
+						_ => {}
+					}
+				}
+				None
+			}
+		}
+	}
+
+	pub fn get_default_script(&self, phase: ScriptPhase) -> Option<&Script> {
+		match self.scripts.default_target[phase].as_ref() {
+			Some(script) => {
+				Some(&script)
+			},
+			_ => {
+				for include in &self.includes {
+					if let Some(script) = include.runscript.scripts.default_target[phase].as_ref() {
+						return Some(&script);
+					}
+				}
+				None
+			}
+		}
+	}
+
+	pub fn get_global_script(&self, phase: ScriptPhase) -> Option<&Script> {
+		match self.scripts.global_target[phase].as_ref() {
+			Some(script) => {
+				Some(&script)
+			},
+			_ => {
+				for include in &self.includes {
+					if let Some(script) = include.runscript.scripts.global_target[phase].as_ref() {
+						return Some(&script);
+					}
+				}
+				None
+			}
+		}
+	}
 }
 
 impl Display for Command {
@@ -152,7 +154,7 @@ impl Display for Command {
 impl Display for Argument {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", match self {
-            Argument::Unquoted(p, _) => match p {
+            Argument::Unquoted(p) => match p {
                 ArgPart::Str(s) => s.clone(),
                 ArgPart::Arg(n) => format!("${}", n),
                 ArgPart::Var(v) => format!("${}", v),
@@ -176,14 +178,14 @@ impl Display for Argument {
     }
 }
 
-impl Display for ScriptType {
+impl Display for ScriptPhase {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         write!(f, "{}", match self {
-            ScriptType::BuildOnly =>   "Build!",
-            ScriptType::Build =>       "Build",
-            ScriptType::BuildAndRun => "Build & Run",
-            ScriptType::Run =>         "Run",
-            ScriptType::RunOnly =>     "Run!"
+            ScriptPhase::BuildOnly =>   "Build!",
+            ScriptPhase::Build =>       "Build",
+            ScriptPhase::BuildAndRun => "Build & Run",
+            ScriptPhase::Run =>         "Run",
+            ScriptPhase::RunOnly =>     "Run!"
         })
     }
 }

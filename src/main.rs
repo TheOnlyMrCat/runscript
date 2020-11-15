@@ -1,4 +1,8 @@
-#[macro_use] extern crate lalrpop_util;
+#[macro_use] extern crate enum_map;
+
+#[cfg(feature="trace")]
+#[macro_use]
+extern crate trace;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -11,28 +15,28 @@ use termcolor::{StandardStream, ColorChoice};
 
 mod out;
 mod exec;
-mod runfile;
+mod parser;
+mod script;
 
-lalrpop_mod!(pub parser);
-lalrpop_mod!(pub doubled);
+use exec::Verbosity;
+use script::ScriptPhase;
 
-use out::*;
-use exec::shell;
-use runfile::{TargetMeta, ScriptType, Target, RunFileRef};
+#[cfg(feature="trace")]
+trace::init_depth_var!();
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-const PHASES_B: [ScriptType; 2] = [ScriptType::BuildOnly, ScriptType::Build];
-const PHASES_T: [ScriptType; 3] = [ScriptType::Build, ScriptType::BuildAndRun, ScriptType::Run];
-const PHASES_R: [ScriptType; 2] = [ScriptType::Run, ScriptType::RunOnly];
+const PHASES_B: [ScriptPhase; 2] = [ScriptPhase::BuildOnly, ScriptPhase::Build];
+const PHASES_T: [ScriptPhase; 3] = [ScriptPhase::Build, ScriptPhase::BuildAndRun, ScriptPhase::Run];
+const PHASES_R: [ScriptPhase; 2] = [ScriptPhase::Run, ScriptPhase::RunOnly];
 
 fn main() {
-    if !run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), 0, false).0 {
+    if let (false, _) = run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), Verbosity::Normal, false) {
 		std::process::exit(1);
     }
 }
 
-pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool) -> (bool, Vec<u8>)
+pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool) -> (bool, Vec<u8>)
     where T::Item: AsRef<OsStr>
 {
 	let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
@@ -41,7 +45,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
 
     options.optflag("h", "help", "Show this very helpful text");
     options.optflag("", "version", "Print version information");
-    options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Do not print commands as they are being run");
+    options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Produce no output");
     options.optflag("b", "build-only", "Only execute `b!` and `b` scripts");
     options.optflag("", "build-and-run", "Execute `b`, `br`, and `r` scripts (default)");
     options.optflag("r", "run-only", "Only execute `r` and `r!` scripts");
@@ -50,7 +54,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
     let matches = match options.parse(args) {
         Ok(m) => m,
         Err(x) => {
-            option_parse_err(output_stream, x);
+            out::option_parse_err(&output_stream, x);
             return (false, vec![]);
         },
     };
@@ -65,7 +69,9 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
 		println!("Written by TheOnlyMrCat");
         println!("Source code available at https://github.com/TheOnlyMrCat/runscript");
         return (true, vec![]);
-    }
+	}
+	
+	let expect_fail = matches.opt_present("expect-fail");
 
     let path_branch_file: String;
     let path_branch_dir: String;
@@ -104,7 +110,7 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
     let t_pos = matches.opt_positions("build-and-run").iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
     let r_pos = matches.opt_positions("run-only")     .iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
 
-    let phases: &[ScriptType];
+    let phases: &[ScriptPhase];
     if b_pos + t_pos + r_pos == -3
     || t_pos > b_pos && t_pos > r_pos {
         phases = &PHASES_T;
@@ -131,89 +137,85 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_quiet: i32, piped: bool
         }
     }
 
-    let (runfile, runfile_path) = match runfile_data {
+    let (runfile_source, runfile_path) = match runfile_data {
         Some(r) => r,
         None => {
-            file_read_err(output_stream);
+            out::file_read_err(&output_stream);
             return (false, vec![])
         }
 	};
 
-    let config = Config {
-        quiet: matches.opt_present("quiet") || inherit_quiet > 0 || piped,
-        silent: matches.opt_count("quiet") > 1 || inherit_quiet > 1 || piped,
-		parsed_file: RunFileRef {
-			file: None,
-			name: runfile_path.file_stem().unwrap().to_string_lossy().to_owned().to_string(),
-			line_ends: runfile.char_indices().filter_map(|(i, c)| if c == '\n' { Some(i) } else { None }).collect(),
-			source: runfile.into_boxed_str(),
-		},
-        expect_fail: matches.opt_present("expect-fail"),
-        file: runfile_path,
-        args: if matches.free.len() > 1 { matches.free[1..].to_vec() } else { vec![] },
-		output_stream,
-    };
+	let runfile_cwd = runfile_path.parent().expect("Expected runfile to have parent");
 
-    match parser::RunFileParser::new().parse(&[], &config.file, &config.parsed_file.source) {
+    match parser::parse_runscript(parser::RunscriptSource { file: runfile_path.clone(), base: runfile_cwd.to_owned(), index: vec![], source: runfile_source }) {
         Ok(rf) => {
-            let mut output_acc = Vec::new();
+			use crate::exec::ExecConfig;
+			let exec_config = ExecConfig {
+				output_stream: &output_stream,
+				verbosity: match matches.opt_count("quiet") {
+					0 => Verbosity::Normal,
+					1 => Verbosity::Quiet,
+					_ => Verbosity::Silent,
+				}.max(inherit_verbosity),
+				working_directory: runfile_cwd,
+				positional_args: matches.free.get(1..).unwrap_or(&[]).to_owned(),
+			};
+
+			let mut output_acc = Vec::new();
+			//TODO: Instead, find all scripts that would run given the target and phases?
             for &phase in phases {
                 if run_target == "" {
-                    match do_run_target(rf.get_default_target(), "default", phase, &config, piped) {
-                        Ok(mut v) => output_acc.append(&mut v),
-                        Err(_) => return (config.expect_fail, output_acc)
-                    }
-                } else {
-                    let target = rf.get_target(&run_target);
-                    if target.is_none() {
-                        bad_target(&config, run_target);
-                        return (config.expect_fail, output_acc);
-                    }
-                    match do_run_target(target, &run_target, phase, &config, piped) {
-                        Ok(mut v) => output_acc.append(&mut v),
-                        Err(_) => return (config.expect_fail, output_acc)
-                    }
-                }
-                match do_run_target(rf.get_global_target(), "global", phase, &config, piped) {
-                    Ok(mut v) => output_acc.append(&mut v),
-                    Err(_) => return (config.expect_fail, output_acc)
-                }
+					if let Some(script) = rf.get_default_script(phase) {
+						out::phase_message(&output_stream, phase, "default");
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
+						if capture_stdout {
+							output_acc.extend(output.into_iter());
+						}
+						if !success {
+							return (expect_fail, output_acc);
+						}
+					}
+				} else {
+					match rf.get_target(&run_target) {
+						Some(target) => match &target[phase] {
+							Some(script) => {
+								out::phase_message(&output_stream, phase, &run_target);
+								let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
+								if capture_stdout {
+									output_acc.extend(output.into_iter());
+								}
+								if !success {
+									return (expect_fail, output_acc);
+								}
+							},
+							None => {}
+						},
+						None => {
+							//TODO: Possibly pass arguments to default target
+							out::bad_target(&output_stream, run_target);
+							return (expect_fail, output_acc);
+						}
+					}
+				}
+				match &rf.get_global_script(phase) {
+					Some(script) => {
+						out::phase_message(&output_stream, phase, "global");
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
+						if capture_stdout {
+							output_acc.extend(output.into_iter());
+						}
+						if !success {
+							return (expect_fail, output_acc);
+						}
+					},
+					None => {}
+				}
             }
-            (!config.expect_fail, output_acc)
+            (!expect_fail, output_acc)
         },
         Err(e) => {
-            file_parse_err(&config, e);
+            out::file_parse_err(&output_stream, e);
             (false, vec![])
-        }
+		},
     }
-}
-
-fn do_run_target(target: Option<&Target>, name: &str, phase: ScriptType, config: &Config, piped: bool) -> Result<Vec<u8>, Vec<u8>> {
-    match target {
-        Some(target) => {
-            match target.commands.get(&TargetMeta { script: phase }) {
-                Some(c) => {
-                    phase_message(&config, phase, name);
-                    let (status, output) = shell(&c.commands, &config, piped);
-                    if status {
-                        Ok(output)
-                    } else {
-                        Err(output)
-                    }
-                }
-                None => Ok(vec![])
-            }
-        },
-        None => Ok(vec![])
-    }
-}
-
-pub struct Config {
-    quiet: bool,
-    silent: bool,
-    expect_fail: bool,
-    file: PathBuf,
-    args: Vec<String>,
-    parsed_file: RunFileRef,
-    output_stream: Rc<StandardStream>,
 }

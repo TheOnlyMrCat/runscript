@@ -4,7 +4,11 @@ cargo build
 #/
 
 #-
-cargo run -q -- test -r
+cargo run -- test -r
+#/
+
+#trace
+cargo run --features trace -- test -r
 #/
 
 !The program is tested by an earlier version of itself. Pretty epic
