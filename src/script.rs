@@ -74,7 +74,7 @@ pub enum ArgPart {
 
 impl Runscript {
 	pub fn unwind_fileid(&self, id: &[usize]) -> Option<&Runscript> {
-		if id.len() == 0 {
+		if id.is_empty() {
 			Some(&self)
 		} else {
 			let mut file_ref = self;
@@ -85,7 +85,7 @@ impl Runscript {
 		}
 	}
 
-	pub fn get_target(&self, target: &String) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
+	pub fn get_target(&self, target: &str) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
 		match self.scripts.targets.get(target).as_ref() {
 			Some(map) if map.values().any(Option::is_some) => {
 				Some(map)
@@ -111,11 +111,8 @@ impl Runscript {
 			},
 			_ => {
 				for include in &self.includes {
-					match include.runscript.scripts.default_target[phase].as_ref() {
-						Some(script) => {
-							return Some(&script);
-						},
-						_ => {}
+					if let Some(script) = include.runscript.scripts.default_target[phase].as_ref() {
+						return Some(&script);
 					}
 				}
 				None
@@ -130,11 +127,8 @@ impl Runscript {
 			},
 			_ => {
 				for include in &self.includes {
-					match include.runscript.scripts.global_target[phase].as_ref() {
-						Some(script) => {
-							return Some(&script);
-						},
-						_ => {}
+					if let Some(script) = include.runscript.scripts.global_target[phase].as_ref() {
+						return Some(&script);
 					}
 				}
 				None

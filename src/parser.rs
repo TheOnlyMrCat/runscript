@@ -80,21 +80,21 @@ pub enum RunscriptParseErrorData {
 pub fn parse_runfile(path: impl Into<PathBuf>) -> Result<Runscript, ParseOrIOError> {
 	let path = path.into();
 	parse_runscript(RunscriptSource {
-		source: std::fs::read_to_string(&path).map_err(|e| ParseOrIOError::IOError(e))?,
+		source: std::fs::read_to_string(&path).map_err(ParseOrIOError::IOError)?,
 		base: path.parent().expect("Runfile has no parent!").to_owned(),
 		file: path,
 		index: Vec::new(),
-	}).map_err(|e| ParseOrIOError::ParseError(e))
+	}).map_err(ParseOrIOError::ParseError)
 }
 
-pub fn parse_runfile_nested<'a>(path: impl Into<PathBuf>, base: impl Into<PathBuf>, index: Vec<usize>) -> Result<Runscript, ParseOrIOError> {
+pub fn parse_runfile_nested(path: impl Into<PathBuf>, base: impl Into<PathBuf>, index: Vec<usize>) -> Result<Runscript, ParseOrIOError> {
 	let path = path.into();
 	parse_runscript(RunscriptSource {
-		source: std::fs::read_to_string(&path).map_err(|e| ParseOrIOError::IOError(e))?,
-		file: path.into(),
+		source: std::fs::read_to_string(&path).map_err(ParseOrIOError::IOError)?,
+		file: path,
 		base: base.into(),
 		index,
-	}).map_err(|e| ParseOrIOError::ParseError(e))
+	}).map_err(ParseOrIOError::ParseError)
 }
 
 #[derive(Debug)]
@@ -325,7 +325,7 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 				break *i;
 			},
 			None => {
-				return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_string() })
+				return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "#/".to_string() })
 			}
 		}
 	};

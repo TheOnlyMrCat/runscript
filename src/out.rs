@@ -34,14 +34,14 @@ pub fn file_parse_err(output_stream: &Rc<StandardStream>, RunscriptParseError { 
 		},
 		RunscriptParseErrorData::MultipleDefinition { new_location: loc, previous_location: prev, target_name: t } => {
 			emit_error(output_stream, loc, &script, format!("Multiple definitions of `{}`", match &**t { "#" => "global target".to_owned(), "-" => "default target".to_owned(), s => format!("`{}`", s)}));
-			emit_error(output_stream, prev, &script, format!("Previous definition is here"));
+			emit_error(output_stream, prev, &script, "Previous definition is here".to_owned());
 		},
 		RunscriptParseErrorData::BadInclude { location: loc, .. } => {
-			emit_error(output_stream, loc, &script, format!("Could not include referenced runfile"));
+			emit_error(output_stream, loc, &script, "Could not include referenced runfile".to_owned());
 			//TODO: I/O error notes
 		},
 		RunscriptParseErrorData::NestedError { include_location: loc, .. } => {
-			emit_error(output_stream, loc, &script, format!("Parse error in included file"));
+			emit_error(output_stream, loc, &script, "Parse error in included file".to_owned());
 		}
 	}
 }
@@ -83,6 +83,7 @@ fn emit_error(output_stream: &Rc<StandardStream>, location: &RunscriptLocation, 
 	match script.unwind_fileid(&location.index) {
 		Some(file) => {
 			writeln!(lock, "{}({}:{}): {}", file.name, location.line, location.column, error_msg).expect("Failed to write");
+			//TODO: Backtrace
 		},
 		None => {
 			writeln!(lock, "run: Error in included file").expect("Failed to write");
