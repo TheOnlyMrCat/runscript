@@ -83,11 +83,23 @@ fn emit_error(output_stream: &Rc<StandardStream>, location: &RunscriptLocation, 
 	match script.unwind_fileid(&location.index) {
 		Some(file) => {
 			writeln!(lock, "{}({}:{}): {}", file.name, location.line, location.column, error_msg).expect("Failed to write");
-			//TODO: Backtrace
+			fn recursive_include_unwind(lock: &mut termcolor::StandardStreamLock, script: &Runscript, fileid: &[usize]) {
+				let (first, rest) = match fileid.split_first() { Some(x) => x, None => return };
+				let mut name = &script.name;
+				let mut loc_ref = &script.includes[*first];
+				for index in rest {
+					name = &loc_ref.runscript.name;
+					loc_ref = &loc_ref.runscript.includes[*index];
+				}
+				let line = loc_ref.location.line;
+				writeln!(lock, "-> In file included from {}:{}", name, line).expect("Failed to write");
+				recursive_include_unwind(lock, script, fileid.split_last().unwrap().1);
+			}
+			recursive_include_unwind(&mut lock, script, &location.index);
 		},
 		None => {
-			writeln!(lock, "run: Error in included file").expect("Failed to write");
-			writeln!(lock, "-> note: A full backtrace of the error location will be included in future versions of runscript").expect("Failed to write");
+			writeln!(lock, "run: Failed to build include tree for error").expect("Failed to write");
+			writeln!(lock, "-> Error at {}:{}: {}", location.line, location.column, error_msg);
 		}
 	}
 }
