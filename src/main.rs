@@ -5,13 +5,14 @@
 extern crate trace;
 
 use std::env;
-use std::path::{Path, PathBuf};
 use std::ffi::OsStr;
+use std::io::Write;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use getopts::Options;
 
-use termcolor::{StandardStream, ColorChoice};
+use termcolor::{StandardStream, ColorChoice, WriteColor, ColorSpec, Color};
 
 mod out;
 mod exec;
@@ -19,7 +20,7 @@ mod parser;
 mod script;
 
 use exec::Verbosity;
-use script::ScriptPhase;
+use script::{Runscript, Script, ScriptPhase};
 
 #[cfg(feature="trace")]
 trace::init_depth_var!();
@@ -45,7 +46,8 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 
     options.optflag("h", "help", "Show this very helpful text");
     options.optflag("", "version", "Print version information");
-    options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Produce no output");
+	options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Produce no output");
+	options.optflag("l", "list", "Lists targets and scripts in the target runfile");
     options.optflag("b", "build-only", "Only execute `b!` and `b` scripts");
     options.optflag("", "build-and-run", "Execute `b`, `br`, and `r` scripts (default)");
     options.optflag("r", "run-only", "Only execute `r` and `r!` scripts");
@@ -149,6 +151,71 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
 
     match parser::parse_runscript(parser::RunscriptSource { file: runfile_path.clone(), base: runfile_cwd.to_owned(), index: vec![], source: runfile_source }) {
         Ok(rf) => {
+			if matches.opt_present("list") {
+				
+				fn list_scripts_for(lock: &mut termcolor::StandardStreamLock, name_length: usize, runscript: &Runscript) {
+					fn print_phase_list(lock: &mut termcolor::StandardStreamLock, name: &str, name_length: usize, target: &enum_map::EnumMap<ScriptPhase, Option<Script>>) {
+						write!(lock, "{0:1$} ", name, name_length).expect("Failed to write");
+						for (phase, opt) in target.iter() {
+							lock.set_color(ColorSpec::new().set_bold(opt.is_some()).set_intense(opt.is_some()).set_fg(Some(match phase {
+								ScriptPhase::BuildOnly => Color::Red,
+								ScriptPhase::Build => Color::Yellow,
+								ScriptPhase::BuildAndRun => Color::Green,
+								ScriptPhase::Run => Color::Blue,
+								ScriptPhase::RunOnly => Color::Magenta,
+							}))).expect("Failed to set colour");
+							if opt.is_some() {
+								write!(lock, "{}", match phase {
+									ScriptPhase::BuildOnly => "B",
+									ScriptPhase::Build => "b",
+									ScriptPhase::BuildAndRun => "&",
+									ScriptPhase::Run => "r",
+									ScriptPhase::RunOnly => "R",
+								}).expect("Failed to write");
+							} else {
+								write!(lock, ".");
+							}
+						}
+						lock.reset().expect("Failed to reset colour");
+						writeln!(lock).expect("Failed to write");
+					}
+					
+					if runscript.scripts.default_target.values().any(|opt| opt.is_some()) {
+						print_phase_list(lock, "default", name_length, &runscript.scripts.default_target);
+					}
+					
+					if runscript.scripts.global_target.values().any(|opt| opt.is_some()) {
+						print_phase_list(lock, "global", name_length, &runscript.scripts.global_target);
+					}
+					
+					for (target, map) in &runscript.scripts.targets {
+						print_phase_list(lock, &target, name_length, &map);
+					}
+				}
+				
+				let mut longest_target = rf.scripts.targets.keys().map(|s| s.len()).max().unwrap_or(7);
+				for include in &rf.includes {
+					longest_target = std::cmp::max(longest_target, include.runscript.scripts.targets.keys().map(|s| s.len()).max().unwrap_or(7));
+				}
+
+				let mut lock = output_stream.lock();
+				
+				list_scripts_for(&mut lock, longest_target, &rf);
+
+				fn recursive_list_includes(lock: &mut termcolor::StandardStreamLock, name_length: usize, runscript: &Runscript) {
+					for include in &runscript.includes {
+						writeln!(lock).expect("Failed to write");
+						writeln!(lock, "From {}:", include.runscript.name).expect("Failed to write");
+						list_scripts_for(lock, name_length, &include.runscript);
+						recursive_list_includes(lock, name_length, &include.runscript);
+					}
+				}
+				
+				recursive_list_includes(&mut lock, longest_target, &rf);
+
+				return (true, vec![]);
+			}
+
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
 				output_stream: &output_stream,

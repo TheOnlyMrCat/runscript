@@ -99,7 +99,7 @@ fn emit_error(output_stream: &Rc<StandardStream>, location: &RunscriptLocation, 
 		},
 		None => {
 			writeln!(lock, "run: Failed to build include tree for error").expect("Failed to write");
-			writeln!(lock, "-> Error at {}:{}: {}", location.line, location.column, error_msg);
+			writeln!(lock, "-> Error at {}:{}: {}", location.line, location.column, error_msg).expect("Failed to write");
 		}
 	}
 }
