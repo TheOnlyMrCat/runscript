@@ -4,6 +4,7 @@ use std::path::Path;
 use std::process::{Command, Stdio, Output, ExitStatus};
 
 use filenamegen::Glob;
+use termcolor::ColorSpec;
 
 use crate::out;
 use crate::parser::RunscriptLocation;
@@ -85,13 +86,10 @@ impl From<Output> for ProcessOutput {
 	}
 }
 
-pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, capture_stdout: bool) -> (bool, Vec<u8>) {
-	let mut env = HashMap::new();
+pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, capture_stdout: bool, env_remap: &HashMap<String, String>) -> (bool, Vec<u8>) {
+	let mut env = env_remap.clone();
 	let mut output_acc = Vec::new();
 	for entry in entries {
-		if config.verbosity < Verbosity::Silent {
-			eprintln!("> {}", entry);
-		}
 		match entry {
 			ScriptEntry::Command(command) => {
 				let output = match exec(&command, config, &env, capture_stdout) {
@@ -115,6 +113,9 @@ pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, c
 				}
 			},
 			ScriptEntry::Env { var, val, loc } => {
+				if config.verbosity < Verbosity::Silent {
+					eprintln!("> {}", entry);
+				}
 				match evaluate_arg(val, loc.clone(), config, &env, false) {
 					Ok(arg) => { env.insert(var.clone(), arg.join(" ")); },
 					Err(_) => {
@@ -131,6 +132,9 @@ pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, c
 fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
 	let target = &evaluate_arg(&command.target, command.loc.clone(), config, env_remap, false)?[0];
 	if target == "run" {
+		if config.verbosity < Verbosity::Silent {
+			eprintln!("> {}", command);
+		}
 		let args = command.args.iter()
 			.map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true))
 			.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
@@ -142,7 +146,8 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 			&args.iter().map(|s| &**s).collect::<Vec<_>>(),
 			config.working_directory,
 			config.verbosity,
-			piped
+			piped,
+			env_remap,
 		);
 		return Ok(ProcessOutput {
 			status: ProcessExit::Bool(success),
@@ -175,8 +180,49 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 		ChainedCommand::None => None
 	};
 
+	let mut args = Vec::with_capacity(command.args.len());
+	let mut args_did_evaluate = false;
+	for arg in &command.args {
+		match arg {
+			Argument::Unquoted(ArgPart::Str(_)) | Argument::Single(_) => {}
+			Argument::Double(v) if v.iter().all(|p| matches!(p, ArgPart::Str(_))) => {}
+			_ => args_did_evaluate = true,
+		}
+		match evaluate_arg(arg, command.loc.clone(), config, env_remap, true) {
+			Ok(v) => args.extend(v),
+			Err(e) => {
+				eprintln!("> {}", command);
+				return Err(e);
+			}
+		}
+	}
+
+	if config.verbosity < Verbosity::Silent {
+		let mut lock = config.output_stream.lock();
+		write!(lock, "> {}", command).expect("Failed to write");
+		if args_did_evaluate {
+			use termcolor::WriteColor;
+
+			lock.set_color(ColorSpec::new().set_italic(true)).expect("Failed to set italic");
+			write!(
+				lock,
+				" = {}{}",
+				target,
+				args.iter()
+					.map(|arg| if arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+						arg.clone()
+					} else {
+						format!("'{}'", arg)
+					})
+					.fold("".to_owned(), |mut acc, s| { acc.push(' '); acc.push_str(&s); acc })
+			).expect("Failed to write");
+			lock.reset().expect("Failed to reset colour");
+		}
+		writeln!(lock).expect("Failed to write");
+	}
+
 	let mut child = match Command::new(target)
-		.args(command.args.iter().map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+		.args(args)
 		.current_dir(config.working_directory)
 		.envs(env_remap)
 		.stdin(match stdin { Some(_) => Stdio::piped(), None => if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() } })
