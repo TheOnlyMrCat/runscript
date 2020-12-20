@@ -7,7 +7,7 @@ use enum_map::EnumMap;
 use crate::DEPTH;
 use crate::script::*;
 
-/// Source code of a runscript which can be consumed by [`parse_runscript`](method.parse_runscript.html)
+/// Source code of a runscript which can be consumed by [`parse_runscript`](fn.parse_runscript.html)
 #[derive(Debug)]
 pub struct RunscriptSource {
 	/// The name of the runfile this runscript belongs to, for location-tracking purposes.
