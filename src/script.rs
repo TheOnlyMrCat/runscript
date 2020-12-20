@@ -5,24 +5,41 @@ use enum_map::EnumMap;
 
 use crate::parser::RunscriptLocation;
 
+/// A parsed runscript
 #[derive(Debug)]
 pub struct Runscript {
+	/// The name of the runscript for the location tracker
 	pub name: String,
+	/// The source of the runscript for emitting errors
 	pub source: String,
+	/// The runscripts this runscript includes.
 	pub includes: Vec<RunscriptInclude>,
+	/// The scripts this runscript declares
 	pub scripts: Scripts,
 }
 
+/// The script and source location of an included runscript
 #[derive(Debug)]
 pub struct RunscriptInclude {
 	pub runscript: Runscript,
+	/// Where the include statement is in the runscript which is including the other
 	pub location: RunscriptLocation,
 }
 
+/// The exectable scripts defined by a [`Runscript`](struct.Runscript.html)
 #[derive(Debug)]
 pub struct Scripts {
-    pub global_target: EnumMap<ScriptPhase, Option<Script>>,
-    pub default_target: EnumMap<ScriptPhase, Option<Script>>,
+	/// The scripts defined under `##`
+	/// 
+	/// These scripts are executed in their respective `ScriptPhase` after the targeted target.
+	pub global_target: EnumMap<ScriptPhase, Option<Script>>,
+	/// The scripts defined under `#-`
+	/// 
+	/// These scripts are executed in their respective `ScriptPhase` as the targeted target if no target is specified
+	pub default_target: EnumMap<ScriptPhase, Option<Script>>,
+	/// The scripts defined under `#name`
+	/// 
+	/// These scripts are executed in their respective `ScriptPhase` if they were chosen as the target
 	pub targets: HashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
