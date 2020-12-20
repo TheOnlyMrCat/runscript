@@ -42,6 +42,9 @@ pub fn file_parse_err(output_stream: &Rc<StandardStream>, RunscriptParseError { 
 		},
 		RunscriptParseErrorData::NestedError { include_location: loc, .. } => {
 			emit_error(output_stream, loc, &script, "Parse error in included file".to_owned());
+		},
+		RunscriptParseErrorData::IllegalEnv { location: loc, msg } => {
+			emit_error(output_stream, loc, &script, format!("Environment variables illegal {}", msg));
 		}
 	}
 }
