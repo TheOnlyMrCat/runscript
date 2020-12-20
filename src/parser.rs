@@ -7,6 +7,7 @@ use enum_map::EnumMap;
 use crate::DEPTH;
 use crate::script::*;
 
+/// Source code of a runscript which can be consumed by [`parse_runscript`](method.parse_runscript.html)
 #[derive(Debug)]
 pub struct RunscriptSource {
 	/// The name of the runfile this runscript belongs to, for location-tracking purposes.
@@ -19,6 +20,9 @@ pub struct RunscriptSource {
 	pub source: String,
 }
 
+/// A location in a runscript
+/// 
+/// Runscript locations include the line and column number, as well as an index used to track include-nesting
 #[derive(Clone, Debug)]
 pub struct RunscriptLocation {
 	/// The include-nesting index of this runscript
@@ -29,54 +33,85 @@ pub struct RunscriptLocation {
 	pub column: usize,
 }
 
+/// An error from a parse function which involves an I/O operation
+/// 
+/// This enum exists only to propagate [`std::io::Error`](https://doc.rust-lang.org/std/io/struct.Error.html)s to the
+/// calling function without including it in the main [`RunscriptParseError`](struct.RunscriptParseError)
 #[derive(Debug)]
 pub enum ParseOrIOError {
 	IOError(std::io::Error),
 	ParseError(RunscriptParseError),
 }
 
+/// An error which occurred during parsing of a runscript
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct RunscriptParseError {
+	/// The semi-complete runscript which failed to parse
 	pub script: Runscript,
+	/// The type of error and data related to that type of error
 	pub data: RunscriptParseErrorData,
 }
 
+/// Data related to a `RunscriptParseError`
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum RunscriptParseErrorData {
+	/// End-of-file in an unexpected location
 	UnexpectedEOF {
 		location: RunscriptLocation,
+		/// The token or token type which was expected to come before an end-of-file.
+		/// 
+		/// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
 		expected: String,
 	},
+	/// Found a token in a place which does not match the context
 	UnexpectedToken {
 		location: RunscriptLocation,
+		/// The text of the token which triggered the error
 		found: String,
+		/// The token or token type which was expected to come before or instead of the `found` token.
+		/// 
+		/// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
 		expected: String,
 	},
+	/// Found a token which is reserved for later use
 	ReservedToken {
 		location: RunscriptLocation,
+		/// The text of the token which triggered the error
 		token: String,
+		/// The reason the token is reserved
 		reason: String,
 	},
+	/// Found a name of a script which contains characters outside of `[A-Za-z_-]`
 	InvalidID {
 		location: RunscriptLocation,
+		/// The text of the identifier that triggered the error
 		found: String,
 	},
+	/// Tried to include a runfile but couldn't access the file
 	BadInclude {
 		location: RunscriptLocation,
+		/// The I/O error which occurred when trying to access `path/to/file.run`
 		file_err: std::io::Error,
+		/// The I/O error which occurred when trying to access `path/to/dir/run`
 		dir_err: std::io::Error,
 	},
+	/// An error occurred in a nested runscript
 	NestedError {
 		include_location: RunscriptLocation,
 		error: Box<RunscriptParseError>,
 	},
+	/// Attempted to define the same script twice
 	MultipleDefinition {
 		previous_location: RunscriptLocation,
 		new_location: RunscriptLocation,
 		target_name: String,
 	},
+	/// An environment variable declaration was found in an illegal location
 	IllegalEnv {
 		location: RunscriptLocation,
+		/// The message to continue the string `"Environment variables illegal "`
 		msg: String,
 	}
 }

@@ -1,5 +1,3 @@
-#[macro_use] extern crate enum_map;
-
 #[cfg(feature="trace")]
 #[macro_use]
 extern crate trace;
