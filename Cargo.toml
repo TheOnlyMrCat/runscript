@@ -16,6 +16,9 @@ panic = "abort"
 name = "run"
 path = "src/main.rs"
 
+[lib]
+name = "runscript"
+
 [dependencies]
 getopts = "0.2"     # Command-line option parsing
 termcolor = "1.1"   # Terminal colouring

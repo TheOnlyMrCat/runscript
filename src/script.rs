@@ -32,7 +32,7 @@ pub struct Script {
     pub location: RunscriptLocation,
 }
 
-#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy,Enum)]
+#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy,enum_map::Enum)]
 pub enum ScriptPhase {
     BuildOnly,   // b!
     Build,       // b
