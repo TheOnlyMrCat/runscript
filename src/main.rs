@@ -170,7 +170,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 									ScriptPhase::RunOnly => "R",
 								}).expect("Failed to write");
 							} else {
-								write!(lock, ".");
+								write!(lock, ".").expect("Failed to write");
 							}
 						}
 						lock.reset().expect("Failed to reset colour");
