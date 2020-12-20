@@ -39,6 +39,8 @@ run test/parent:
 run test/include:
 run test/include:internal || sh -c "exit 0"
 run test/include:bad -rx
+
+run test/env:
 #/
 
 #parent-check r

@@ -28,7 +28,7 @@ pub struct Scripts {
 
 #[derive(Debug)]
 pub struct Script {
-	pub commands: Vec<Command>,
+	pub commands: Vec<ScriptEntry>,
     pub location: RunscriptLocation,
 }
 
@@ -39,6 +39,25 @@ pub enum ScriptPhase {
     BuildAndRun, // br (default)
     Run,         // r
     RunOnly,     // r!
+}
+
+#[derive(Debug, Clone)]
+pub enum ScriptEntry {
+	Command(Command),
+	Env {
+		var: String,
+		val: Argument,
+		loc: RunscriptLocation,
+	},
+}
+
+impl ScriptEntry {
+	pub fn expect_command(self) -> Option<Command> {
+		match self {
+			ScriptEntry::Command(c) => Some(c),
+			_ => None,
+		}
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +152,15 @@ impl Runscript {
 				}
 				None
 			}
+		}
+	}
+}
+
+impl Display for ScriptEntry {
+	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+		match self {
+			ScriptEntry::Command(c) => c.fmt(f),
+			ScriptEntry::Env { var, val, .. } => write!(f, "{}={}", var, val),
 		}
 	}
 }

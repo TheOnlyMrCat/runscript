@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio, Output, ExitStatus};
@@ -7,7 +8,7 @@ use filenamegen::Glob;
 use crate::out;
 use crate::parser::RunscriptLocation;
 use crate::run;
-use crate::script::{self, Runscript, ArgPart, ChainedCommand, Argument};
+use crate::script::{self, Runscript, ArgPart, ChainedCommand, Argument, ScriptEntry};
 
 pub struct ExecConfig<'a> {
 	pub verbosity: Verbosity,
@@ -84,45 +85,64 @@ impl From<Output> for ProcessOutput {
 	}
 }
 
-pub fn shell(commands: &[script::Command], script: &Runscript, config: &ExecConfig, capture_stdout: bool) -> (bool, Vec<u8>) {
+pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, capture_stdout: bool) -> (bool, Vec<u8>) {
+	let mut env = HashMap::new();
 	let mut output_acc = Vec::new();
-	for command in commands {
+	for entry in entries {
 		if config.verbosity < Verbosity::Silent {
-			eprintln!("> {}", command);
+			eprintln!("> {}", entry);
 		}
-		let output = match exec(&command, config, capture_stdout) {
-			Ok(k) => k,
-			Err(err) => {
-				out::bad_command_err(config.output_stream, &command, script, err);
-				return (false, output_acc)
+		match entry {
+			ScriptEntry::Command(command) => {
+				let output = match exec(&command, config, &env, capture_stdout) {
+					Ok(k) => k,
+					Err(err) => {
+						out::bad_command_err(config.output_stream, &command, script, err);
+						return (false, output_acc)
+					},
+				};
+				if capture_stdout {
+					output_acc.extend(output.stdout.into_iter());
+				}
+				if !output.status.success() {
+					if config.verbosity < Verbosity::Silent {
+						match output.status.code() {
+							Some(i) => eprintln!("=> exit {}", i),
+							None => eprintln!("=> {}", signal(&output.status.status())),
+						}
+					}
+					return (false, output_acc);
+				}
 			},
-		};
-		if capture_stdout {
-			output_acc.extend(output.stdout.into_iter());
-		}
-		if !output.status.success() {
-			if config.verbosity < Verbosity::Silent {
-				match output.status.code() {
-					Some(i) => eprintln!("=> exit {}", i),
-					None => eprintln!("=> {}", signal(&output.status.status())),
+			ScriptEntry::Env { var, val, loc } => {
+				match evaluate_arg(val, loc.clone(), config, &env, false) {
+					Ok(arg) => { env.insert(var.clone(), arg.join(" ")); },
+					Err(_) => {
+						eprintln!("Failed to evaluate arg"); //TODO: Use out module
+						return (false, output_acc);
+					}
 				}
 			}
-			return (false, output_acc);
 		}
 	}
 	(true, output_acc)
 }
 
-fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
+fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
 	if command.target == "run" {
+		let args = command.args.iter()
+			.map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true))
+			.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
+			.into_iter()
+			.flatten()
+			.collect::<Vec<_>>();
+		//TODO: Pass env
 		let (success, output) = run(
-			command.args.iter()
-				.map(|x| evaluate_arg(x, command.loc.clone(), config))
-				.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
-				.iter()
-				.fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }),
+			&args.iter().map(|s| &**s).collect::<Vec<_>>(),
 			config.working_directory,
-			config.verbosity, piped);
+			config.verbosity,
+			piped
+		);
 		return Ok(ProcessOutput {
 			status: ProcessExit::Bool(success),
 			stdout: output,
@@ -133,19 +153,19 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
 
 	let chained_output = match &*command.chained {
 		ChainedCommand::Pipe(c) => {
-			let h = exec(&c, config, true)?;
+			let h = exec(&c, config, env_remap, true)?;
 			stdin = Some(h.stdout);
 			None
 		},
 		ChainedCommand::And(c) => {
-			let h = exec(&c, config, piped)?;
+			let h = exec(&c, config, env_remap, piped)?;
 			if !h.status.success() {
 				return Ok(h);
 			}
 			Some(h.stdout)
 		},
 		ChainedCommand::Or(c) => {
-			let h = exec(&c, config, piped)?;
+			let h = exec(&c, config, env_remap, piped)?;
 			if h.status.success() {
 				return Ok(h);
 			}
@@ -155,8 +175,9 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
 	};
 
 	let mut child = match Command::new(command.target.clone())
-		.args(command.args.iter().map(|x| evaluate_arg(x, command.loc.clone(), config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+		.args(command.args.iter().map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
 		.current_dir(config.working_directory)
+		.envs(env_remap)
 		.stdin(match stdin { Some(_) => Stdio::piped(), None => if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() } })
 		.stdout(if piped { Stdio::piped() } else if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
 		.stderr(if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
@@ -184,11 +205,11 @@ fn exec(command: &script::Command, config: &ExecConfig, piped: bool) -> Result<P
 	Ok(output)
 }
 
-fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
+fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecConfig, env_override: &HashMap<String, String>, match_globs: bool) -> Result<Vec<String>, CommandExecErr> {
 	match arg {
 		Argument::Unquoted(p) => match p {
 			ArgPart::Str(s) => {
-				if s.chars().any(|c| c == '*' || c == '(' || c == '|' || c == '<' || c == '[' || c == '?') {
+				if match_globs && s.chars().any(|c| c == '*' || c == '(' || c == '|' || c == '<' || c == '[' || c == '?') {
 					match Glob::new(&s) {
 						Ok(walker) => {
 							let cwd = config.working_directory;
@@ -207,26 +228,26 @@ fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecCon
 					Ok(vec![s.clone()])
 				}
 			},
-			_ => evaluate_part(p, config),
+			_ => evaluate_part(p, env_override, config),
 		},
 		Argument::Single(s) => Ok(vec![s.clone()]),
 		Argument::Double(p) => {
-			let args = p.iter().map(|x| evaluate_part(x, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc });
+			let args = p.iter().map(|x| evaluate_part(x, env_override, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc });
 			Ok(vec![args.iter().fold(String::new(), |acc, s| acc + &s)])
 		}
 	}
 }
 
-fn evaluate_part(part: &ArgPart, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
+fn evaluate_part(part: &ArgPart, env_override: &HashMap<String, String>, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
 	use std::env::VarError::*;
 	match part {
 		ArgPart::Str(s) => Ok(vec![s.clone()]),
 		ArgPart::Arg(n) => Ok(vec![config.positional_args.get(*n - 1).cloned().unwrap_or_else(|| "".to_owned())]),
-		ArgPart::Var(v) => Ok(vec![std::env::var(v).unwrap_or_else(|err| match err { NotPresent => "".to_owned(), NotUnicode(s) => s.to_string_lossy().into_owned() })]),
+		ArgPart::Var(v) => Ok(vec![env_override.get(v).cloned().unwrap_or_else(|| std::env::var(v).unwrap_or_else(|err| match err { NotPresent => "".to_owned(), NotUnicode(s) => s.to_string_lossy().into_owned() }))]),
 		ArgPart::Cmd(c) => {
 			Ok(vec![String::from_utf8_lossy(
 				&match Command::new(c.target.clone())
-					.args(c.args.iter().map(|x| evaluate_arg(x, c.loc.clone(), config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+					.args(c.args.iter().map(|x| evaluate_arg(x, c.loc.clone(), config, env_override, true)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
 					.current_dir(config.working_directory)
 					.output() {
 						Ok(o) => o.stdout,

@@ -5,7 +5,6 @@
 extern crate trace;
 
 use std::env;
-use std::ffi::OsStr;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -32,14 +31,13 @@ const PHASES_T: [ScriptPhase; 3] = [ScriptPhase::Build, ScriptPhase::BuildAndRun
 const PHASES_R: [ScriptPhase; 2] = [ScriptPhase::Run, ScriptPhase::RunOnly];
 
 fn main() {
-    if let (false, _) = run(env::args().skip(1), &env::current_dir().expect("Working environment is not sane"), Verbosity::Normal, false) {
+	let args = env::args().skip(1).collect::<Vec<String>>();
+    if let (false, _) = run(&args.iter().map(|s| &**s).collect::<Vec<_>>(), &env::current_dir().expect("Working environment is not sane"), Verbosity::Normal, false) {
 		std::process::exit(1);
     }
 }
 
-pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool) -> (bool, Vec<u8>)
-    where T::Item: AsRef<OsStr>
-{
+pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool) -> (bool, Vec<u8>) {
 	let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
 	
     let mut options = Options::new();
@@ -152,7 +150,6 @@ pub fn run<T: IntoIterator>(args: T, cwd: &Path, inherit_verbosity: Verbosity, c
     match parser::parse_runscript(parser::RunscriptSource { file: runfile_path.clone(), base: runfile_cwd.to_owned(), index: vec![], source: runfile_source }) {
         Ok(rf) => {
 			if matches.opt_present("list") {
-				
 				fn list_scripts_for(lock: &mut termcolor::StandardStreamLock, name_length: usize, runscript: &Runscript) {
 					fn print_phase_list(lock: &mut termcolor::StandardStreamLock, name: &str, name_length: usize, target: &enum_map::EnumMap<ScriptPhase, Option<Script>>) {
 						write!(lock, "{0:1$} ", name, name_length).expect("Failed to write");

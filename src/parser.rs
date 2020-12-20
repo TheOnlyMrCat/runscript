@@ -74,6 +74,10 @@ pub enum RunscriptParseErrorData {
 		previous_location: RunscriptLocation,
 		new_location: RunscriptLocation,
 		target_name: String,
+	},
+	IllegalEnv {
+		location: RunscriptLocation,
+		msg: String,
 	}
 }
 
@@ -304,7 +308,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 }
 
 #[cfg_attr(feature="trace", trace)]
-fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<Vec<Command>, RunscriptParseErrorData> {
+fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<Vec<ScriptEntry>, RunscriptParseErrorData> {
 	let mut cmds = Vec::new();
 	while let Some(cmd) = parse_command(context, ChainedCommand::None, None)? {
 		// parse_command returns None when the first 'word' it encounters is `#/`
@@ -314,7 +318,7 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: 
 }
 
 #[cfg_attr(feature="trace", trace)]
-fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, chained: ChainedCommand, nest_terminate: Option<char>) -> Result<Option<Command>, RunscriptParseErrorData> {
+fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, chained: ChainedCommand, nest_terminate: Option<char>) -> Result<Option<ScriptEntry>, RunscriptParseErrorData> {
 	let end_loc = context.get_loc(context.runfile.source.len());
 	let start_loc = loop {
 		match context.iterator.peek() {
@@ -329,12 +333,71 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 			}
 		}
 	};
-	let (target, bk) = consume_word(&mut context.iterator);
+	let (target, bk) = consume_word_break_punctuation(&mut context.iterator, &['=']);
 	if target == "#/" {
 		if !matches!(bk, BreakCondition::Newline(_)) {
 			consume_line(&mut context.iterator);
 		}
 		return Ok(None);
+	}
+
+	if matches!(bk, BreakCondition::Punctuation('=')) {
+		let (var_argument, bk) = match context.iterator.peek() {
+			Some((_, '\'')) => {
+				context.iterator.next();
+				let mut buf = String::new();
+				loop {
+					match context.iterator.next() {
+						Some((_, '\'')) => break,
+						Some((_, c)) => buf.push(c),
+						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
+					}
+				}
+				(Argument::Single(buf), BreakCondition::Parse)
+			},
+			Some((_, '"')) => {
+				context.iterator.next();
+				let mut acc = Vec::new();
+				let mut buf = String::new();
+				loop {
+					match context.iterator.next() {
+						Some((_, '"')) => break,
+						Some((_, '$')) => {
+							if !buf.is_empty() {
+								acc.push(ArgPart::Str(std::mem::replace(&mut buf, String::new())))
+							}
+							acc.push(parse_interpolate(context)?);
+						}
+						Some((_, c)) => buf.push(c),
+						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`\"`".to_owned() }),
+					}
+				}
+				if !buf.is_empty() {
+					acc.push(ArgPart::Str(buf))
+				}
+				(Argument::Double(acc), BreakCondition::Parse)
+			},
+			Some((_, '$')) => {
+				context.iterator.next();
+				(Argument::Unquoted(parse_interpolate(context)?), BreakCondition::Parse)
+			},
+			Some(_) => { // This also captures newlines, which causes it to return an empty string. This is expected behaviour.
+				let (s, bk) = match nest_terminate {
+					Some(c) => consume_word_break_punctuation(&mut context.iterator, &[c]),
+					None => consume_word(&mut context.iterator),
+				};
+				(Argument::Unquoted(ArgPart::Str(s)), bk)
+			},
+			None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "#/".to_owned() })
+		};
+		if !matches!(bk, BreakCondition::Newline(_)) {
+			consume_line(&mut context.iterator);
+		}
+		return Ok(Some(ScriptEntry::Env {
+			var: target,
+			val: var_argument,
+			loc: context.get_loc(start_loc),
+		}));
 	}
 
 	let mut command = Command {
@@ -345,7 +408,7 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 	};
 
 	if matches!(bk, BreakCondition::Newline(_)) {
-		return Ok(Some(command));
+		return Ok(Some(ScriptEntry::Command(command)));
 	}
 
 	loop {
@@ -440,7 +503,7 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 		}
 	}
 
-	Ok(Some(command))
+	Ok(Some(ScriptEntry::Command(command)))
 }
 
 #[cfg_attr(feature="trace", trace)]
@@ -450,7 +513,11 @@ fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(contex
 		Some((i, '(')) => {
 			let i = *i;
 			context.iterator.next();
-			Ok(ArgPart::Cmd(parse_command(context, ChainedCommand::None, Some(')'))?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?))
+			Ok(ArgPart::Cmd(
+				parse_command(context, ChainedCommand::None, Some(')'))?
+					.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?
+					.expect_command().ok_or(RunscriptParseErrorData::IllegalEnv { location: context.get_loc(i + 1), msg: "in interpolated command arguments".to_owned()})?
+			))
 		},
 		Some((_, c)) if c.is_ascii_digit() => {
 			let mut acc = *c as usize - '0' as usize;
@@ -472,7 +539,7 @@ fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(contex
 			context.iterator.next();
 			loop {
 				let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
-				if c.is_ascii_alphanumeric() {
+				if c.is_ascii_alphanumeric() || *c == '_' {
 					buf.push(*c);
 					context.iterator.next();
 				} else {
