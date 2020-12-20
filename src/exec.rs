@@ -129,7 +129,8 @@ pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, c
 }
 
 fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
-	if command.target == "run" {
+	let target = &evaluate_arg(&command.target, command.loc.clone(), config, env_remap, false)?[0];
+	if target == "run" {
 		let args = command.args.iter()
 			.map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true))
 			.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
@@ -174,7 +175,7 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 		ChainedCommand::None => None
 	};
 
-	let mut child = match Command::new(command.target.clone())
+	let mut child = match Command::new(target)
 		.args(command.args.iter().map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
 		.current_dir(config.working_directory)
 		.envs(env_remap)
@@ -246,7 +247,7 @@ fn evaluate_part(part: &ArgPart, env_override: &HashMap<String, String>, config:
 		ArgPart::Var(v) => Ok(vec![env_override.get(v).cloned().unwrap_or_else(|| std::env::var(v).unwrap_or_else(|err| match err { NotPresent => "".to_owned(), NotUnicode(s) => s.to_string_lossy().into_owned() }))]),
 		ArgPart::Cmd(c) => {
 			Ok(vec![String::from_utf8_lossy(
-				&match Command::new(c.target.clone())
+				&match Command::new(&evaluate_arg(&c.target, c.loc.clone(), config, env_override, false)?[0])
 					.args(c.args.iter().map(|x| evaluate_arg(x, c.loc.clone(), config, env_override, true)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
 					.current_dir(config.working_directory)
 					.output() {

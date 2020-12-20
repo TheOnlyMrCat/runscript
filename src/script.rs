@@ -62,7 +62,7 @@ impl ScriptEntry {
 
 #[derive(Debug, Clone)]
 pub struct Command {
-    pub target: String,
+    pub target: Box<Argument>,
     pub args: Vec<Argument>,
     pub chained: Box<ChainedCommand>,
     pub loc: RunscriptLocation,
