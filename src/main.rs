@@ -2,6 +2,7 @@
 #[macro_use]
 extern crate trace;
 
+use std::collections::HashMap;
 use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -30,12 +31,18 @@ const PHASES_R: [ScriptPhase; 2] = [ScriptPhase::Run, ScriptPhase::RunOnly];
 
 fn main() {
 	let args = env::args().skip(1).collect::<Vec<String>>();
-    if let (false, _) = run(&args.iter().map(|s| &**s).collect::<Vec<_>>(), &env::current_dir().expect("Working environment is not sane"), Verbosity::Normal, false) {
+    if let (false, _) = run(
+		&args.iter().map(|s| &**s).collect::<Vec<_>>(),
+		&env::current_dir().expect("Working environment is not sane"),
+		Verbosity::Normal,
+		false,
+		&HashMap::new()
+	) {
 		std::process::exit(1);
     }
 }
 
-pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool) -> (bool, Vec<u8>) {
+pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool, env_remap: &HashMap<String, String>) -> (bool, Vec<u8>) {
 	let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
 	
     let mut options = Options::new();
@@ -229,7 +236,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
                 if run_target == "" {
 					if let Some(script) = rf.get_default_script(phase) {
 						out::phase_message(&output_stream, phase, "default");
-						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
 						if capture_stdout {
 							output_acc.extend(output.into_iter());
 						}
@@ -242,7 +249,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 						Some(target) => match &target[phase] {
 							Some(script) => {
 								out::phase_message(&output_stream, phase, &run_target);
-								let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
+								let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
 								if capture_stdout {
 									output_acc.extend(output.into_iter());
 								}
@@ -262,7 +269,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				match &rf.get_global_script(phase) {
 					Some(script) => {
 						out::phase_message(&output_stream, phase, "global");
-						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout);
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
 						if capture_stdout {
 							output_acc.extend(output.into_iter());
 						}
