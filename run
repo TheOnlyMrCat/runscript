@@ -43,6 +43,7 @@ DEFINED_ABOVE='Yes thanks'
 run test/env:
 
 run test/opts:
+run nonexistent-target
 #/
 
 #parent-check r

@@ -62,9 +62,15 @@ pub fn bad_command_err(output_stream: &Rc<StandardStream>, cmd: &Command, script
 	//TODO Verbose output option
 }
 
-pub fn bad_target(output_stream: &Rc<StandardStream>, target: String) {
+pub fn bad_target(output_stream: &Rc<StandardStream>, target: &str) {
 	let mut lock = output_stream.lock();
 	writeln!(lock, "No target with name {}", target).expect("Failed to write");
+	if atty::is(atty::Stream::Stderr) {
+		write!(lock, "-> ").expect("Failed to write");
+		lock.set_color(ColorSpec::new().set_italic(true)).expect("Failed to set italic");
+		writeln!(lock, "(If `{}` was intended as a positional argument, add `$opt default_positionals` to your runscript)", target).expect("Failed to write");
+		lock.reset().expect("Failed to reset colour");
+	}
 }
 
 pub fn phase_message(output_stream: &Rc<StandardStream>, phase: ScriptPhase, name: &str) {

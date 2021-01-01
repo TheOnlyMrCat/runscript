@@ -279,7 +279,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 									}
 								}
 							} else {
-								out::bad_target(&output_stream, run_target);
+								out::bad_target(&output_stream, &run_target);
 								return (expect_fail, output_acc);
 							}
 						}

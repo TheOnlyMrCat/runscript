@@ -25,5 +25,6 @@ termcolor = "1.1"   # Terminal colouring
 filenamegen = "0.2" # Glob parsing and walking
 anyhow = "1.0"      # Trait-based error type
 enum-map = "0.6"    # Array-based map over enum constants
+atty = "0.2"
 
 trace = { version = "0.1", optional = true }
