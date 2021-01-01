@@ -11,6 +11,7 @@ use crate::parser::RunscriptLocation;
 use crate::run;
 use crate::script::{self, Runscript, ArgPart, ChainedCommand, Argument, ScriptEntry};
 
+#[derive(Clone)]
 pub struct ExecConfig<'a> {
 	pub verbosity: Verbosity,
 	pub output_stream: &'a std::rc::Rc<termcolor::StandardStream>,

@@ -178,7 +178,8 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
 				global_target: EnumMap::new(),
 				default_target: EnumMap::new(),
 				targets: HashMap::new(),
-			}
+			},
+			options: Vec::new(),
 		},
 		index: &source.index,
 	};
@@ -265,6 +266,9 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 						}
 					}
 				},
+				"opt" => {
+					context.runfile.options.push(consume_line(&mut context.iterator).0);
+				}
 				_ => return Err(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: special, expected: "include".to_owned() })
 			}
 		},
@@ -680,12 +684,15 @@ fn consume_word_break_punctuation(iterator: &mut (impl Iterator<Item = (usize, c
 }
 
 #[cfg_attr(feature="trace", trace)]
-fn consume_line(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> BreakCondition {
-	loop {
+fn consume_line(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> (String, BreakCondition) {
+	let mut buf = String::new();
+	let bk = loop {
 		match iterator.next() {
 			Some((i, '\n')) => break BreakCondition::Newline(i),
+			Some((_, '\r')) => continue,
+			Some((_, c)) => buf.push(c),
 			None => break BreakCondition::EOF, //TODO: Get an index for this
-			_ => continue,
 		}
-	}
+	};
+	(buf, bk)
 }

@@ -16,6 +16,8 @@ pub struct Runscript {
 	pub includes: Vec<RunscriptInclude>,
 	/// The scripts this runscript declares
 	pub scripts: Scripts,
+	/// Runtime options to change the behaviour of the interpreter
+	pub options: Vec<String>,
 }
 
 /// The script and source location of an included runscript
