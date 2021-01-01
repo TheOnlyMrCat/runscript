@@ -1,0 +1,15 @@
+! In a subfolder in order to properly test this
+$opt default_positionals
+
+#-
+run -r target
+run -r positional
+#/
+
+#- r!
+echo $1
+#/
+
+#target r!
+echo In named target
+#/

@@ -218,6 +218,8 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				return (true, vec![]);
 			}
 
+			let passthrough = rf.options.iter().any(|x| x == "default_positionals");
+
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
 				output_stream: &output_stream,
@@ -228,6 +230,11 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				}.max(inherit_verbosity),
 				working_directory: runfile_cwd,
 				positional_args: matches.free.get(1..).unwrap_or(&[]).to_owned(),
+			};
+			//TODO: Don't bother initialising this if passthrough isn't enabled
+			let exec_config_passthrough = ExecConfig {
+				positional_args: matches.free.clone(),
+				..exec_config.clone()
 			};
 
 			let mut output_acc = Vec::new();
@@ -260,9 +267,21 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 							None => {}
 						},
 						None => {
-							//TODO: Possibly pass arguments to default target
-							out::bad_target(&output_stream, run_target);
-							return (expect_fail, output_acc);
+							if passthrough {
+								if let Some(script) = rf.get_default_script(phase) {
+									out::phase_message(&output_stream, phase, "default");
+									let (success, output) = exec::shell(&script.commands, &rf, &exec_config_passthrough, capture_stdout, env_remap);
+									if capture_stdout {
+										output_acc.extend(output.into_iter());
+									}
+									if !success {
+										return (expect_fail, output_acc);
+									}
+								}
+							} else {
+								out::bad_target(&output_stream, run_target);
+								return (expect_fail, output_acc);
+							}
 						}
 					}
 				}
