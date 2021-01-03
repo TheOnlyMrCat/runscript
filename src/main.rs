@@ -23,6 +23,25 @@ use script::{Runscript, Script, ScriptPhase};
 #[cfg(feature="trace")]
 trace::init_depth_var!();
 
+const HELP_TEXT: &str = "\
+Usage: run [options] target
+
+Runscript looks for a file named `run` in the current directory
+(or otherwise specified) and interprets that as a runscript.
+Syntax documentation is available on the github page:
+https://github.com/TheOnlyMrCat/runscript
+
+PHASE SELECTION:
+    -b, --build-only: Execute `b!` and `b` scripts
+     --build-and-run: Execute `b`, `br`, and `r` scripts (default)
+       -r --run-only: Execute `r` and `r!` scripts
+
+OUTPUT:
+     -l: List targets and scripts in the target runfile in a colourful fashion
+     -q: Do not show output of executed commands
+    -qq: Produce no output to stderr either
+";
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const PHASES_B: [ScriptPhase; 2] = [ScriptPhase::BuildOnly, ScriptPhase::Build];
@@ -47,14 +66,14 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 	
     let mut options = Options::new();
 
-    options.optflag("h", "help", "Show this very helpful text");
-    options.optflag("", "version", "Print version information");
-	options.optflagmulti("q", "quiet", "Passed once: Do not show output of run commands. Twice: Produce no output");
-	options.optflag("l", "list", "Lists targets and scripts in the target runfile");
-    options.optflag("b", "build-only", "Only execute `b!` and `b` scripts");
-    options.optflag("", "build-and-run", "Execute `b`, `br`, and `r` scripts (default)");
-    options.optflag("r", "run-only", "Only execute `r` and `r!` scripts");
-    options.optflag("x", "expect-fail", "Invert exit code");
+    options.optflag("h", "help", "");
+    options.optflag("", "version", "");
+	options.optflagmulti("q", "quiet", "");
+	options.optflag("l", "list", "");
+    options.optflag("b", "build-only", "");
+    options.optflag("", "build-and-run", "");
+    options.optflag("r", "run-only", "");
+    options.optflag("x", "expect-fail", "");
 
     let matches = match options.parse(args) {
         Ok(m) => m,
@@ -65,7 +84,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
     };
 
     if matches.opt_present("help") {
-        print!("{}", options.usage("Usage: run [options] target"));
+		print!("{}", HELP_TEXT); // There's a trailing newline in the string anyway
         return (true, vec![]);
     }
 
