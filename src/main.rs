@@ -42,13 +42,26 @@ OUTPUT:
     -qq: Produce no output to stderr either
 ";
 
+const ERROR_TEXT: &str = "\
+An unexpected error occurred in runscript.
+THIS IS A BUG! Please report this to the developer
+(https://github.com/TheOnlyMrCat/runscript/issues)
+along with the following payload:
+";
+
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const PHASES_B: [ScriptPhase; 2] = [ScriptPhase::BuildOnly, ScriptPhase::Build];
 const PHASES_T: [ScriptPhase; 3] = [ScriptPhase::Build, ScriptPhase::BuildAndRun, ScriptPhase::Run];
 const PHASES_R: [ScriptPhase; 2] = [ScriptPhase::Run, ScriptPhase::RunOnly];
 
+fn panic_hook(info: &std::panic::PanicInfo) {
+	eprint!("{}", ERROR_TEXT); // Trailing newline already in literal
+	eprintln!("{}", info);
+}
+
 fn main() {
+	std::panic::set_hook(Box::new(panic_hook));
 	let args = env::args().skip(1).collect::<Vec<String>>();
     if let (false, _) = run(
 		&args.iter().map(|s| &**s).collect::<Vec<_>>(),
