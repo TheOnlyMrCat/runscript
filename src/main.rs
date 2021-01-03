@@ -42,6 +42,11 @@ OUTPUT:
     -qq: Produce no output to stderr either
 ";
 
+const VERSION_TEXT: &str = "\
+Written by TheOnlyMrCat
+Source code available at https://github.com/TheOnlyMrCat/runscript
+";
+
 const ERROR_TEXT: &str = "\
 An unexpected error occurred in runscript.
 THIS IS A BUG! Please report this to the developer
@@ -103,8 +108,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 
     if matches.opt_present("version") {
         println!("Runscript {}", VERSION);
-		println!("Written by TheOnlyMrCat");
-        println!("Source code available at https://github.com/TheOnlyMrCat/runscript");
+		print!("{}", VERSION_TEXT);
         return (true, vec![]);
 	}
 	
