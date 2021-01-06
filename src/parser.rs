@@ -38,6 +38,7 @@ pub struct RunscriptLocation {
 /// This enum exists only to propagate [`std::io::Error`](https://doc.rust-lang.org/std/io/struct.Error.html)s to the
 /// calling function without including it in the main [`RunscriptParseError`](struct.RunscriptParseError)
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum ParseOrIOError {
 	IOError(std::io::Error),
 	ParseError(RunscriptParseError),
@@ -606,6 +607,10 @@ fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(contex
 					.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?
 					.expect_command().ok_or(RunscriptParseErrorData::IllegalEnv { location: context.get_loc(i + 1), msg: "in interpolated command arguments".to_owned()})?
 			))
+		},
+		Some((_, '@')) => {
+			context.iterator.next();
+			Ok(ArgPart::AllArgs)
 		},
 		Some((_, c)) if c.is_ascii_digit() => {
 			let mut acc = *c as usize - '0' as usize;

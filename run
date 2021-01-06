@@ -43,7 +43,9 @@ DEFINED_ABOVE='Yes thanks'
 run test/env:
 
 run test/opts:
-run nonexistent-target
+run nonexistent-target -x
+
+run test/all_positionals: Have some positional arguments
 #/
 
 #parent-check r

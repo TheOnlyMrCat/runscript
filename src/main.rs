@@ -269,7 +269,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 			};
 			//TODO: Don't bother initialising this if passthrough isn't enabled
 			let exec_config_passthrough = ExecConfig {
-				positional_args: matches.free.clone(),
+				positional_args: matches.free,
 				..exec_config.clone()
 			};
 

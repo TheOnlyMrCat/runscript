@@ -105,7 +105,8 @@ pub enum ChainedCommand {
 #[derive(Debug, Clone)]
 pub enum ArgPart {
     Str(String),
-    Arg(usize),
+	Arg(usize),
+	AllArgs,
     Var(String),
     Cmd(Command),
 }
@@ -205,7 +206,8 @@ impl Display for Argument {
                 ArgPart::Str(s) => s.clone(),
                 ArgPart::Arg(n) => format!("${}", n),
                 ArgPart::Var(v) => format!("${}", v),
-                ArgPart::Cmd(c) => format!("$({})", c),
+				ArgPart::Cmd(c) => format!("$({})", c),
+				ArgPart::AllArgs => "$@".to_owned(),
             },
             Argument::Single(s) => format!("'{}'", s),
             Argument::Double(p) =>
@@ -215,9 +217,10 @@ impl Display for Argument {
                         "".to_owned(),
                         |acc, part| match part {
                             ArgPart::Str(s) => acc + s,
-                            ArgPart::Arg(n) => { acc + &format!("${}", n) },
+							ArgPart::Arg(n) => { acc + &format!("${}", n) },
                             ArgPart::Var(v) => { acc + &format!("${}", v) },
                             ArgPart::Cmd(c) => { acc + &format!("$({})", c) },
+							ArgPart::AllArgs => { acc + "$@" },
                         }
                     )
                 )
