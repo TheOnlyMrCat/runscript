@@ -292,6 +292,7 @@ fn evaluate_part(part: &ArgPart, env_override: &HashMap<String, String>, config:
 		ArgPart::Str(s) => Ok(vec![s.clone()]),
 		ArgPart::Arg(n) => Ok(vec![config.positional_args.get(*n - 1).cloned().unwrap_or_else(|| "".to_owned())]),
 		ArgPart::Var(v) => Ok(vec![env_override.get(v).cloned().unwrap_or_else(|| std::env::var(v).unwrap_or_else(|err| match err { NotPresent => "".to_owned(), NotUnicode(s) => s.to_string_lossy().into_owned() }))]),
+		ArgPart::AllArgs => Ok(config.positional_args.clone()),
 		ArgPart::Cmd(c) => {
 			Ok(vec![String::from_utf8_lossy(
 				&match Command::new(&evaluate_arg(&c.target, c.loc.clone(), config, env_override, false)?[0])
