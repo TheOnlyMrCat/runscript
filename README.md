@@ -65,4 +65,6 @@ features are currently supported, however. A list of supported features follows:
   * `$1` positional arguments
 * Single and double-quoted arguments
 * Command chaining by `&&`, `||`, and `|` (no `;`, just use newlines)
+
+(In the latest pre-release):
 * `VAR=val` Environment variable setting (with interpolation)
