@@ -300,6 +300,19 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 			let mut output_acc = Vec::new();
 			//TODO: Instead, find all scripts that would run given the target and phases?
             for &phase in phases {
+				match &rf.get_pre_global_script(phase) {
+					Some(script) => {
+						out::phase_message(&output_stream, phase, "pre-global");
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
+						if capture_stdout {
+							output_acc.extend(output.into_iter());
+						}
+						if !success {
+							return (expect_fail, output_acc);
+						}
+					},
+					None => {}
+				}
                 if let Some(ref run_target) = run_target {
 					match rf.get_target(&run_target) {
 						Some(target) => match &target[phase] {

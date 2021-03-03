@@ -176,6 +176,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
 			source: source.source.clone(),
 			includes: Vec::new(),
 			scripts: Scripts {
+				pre_global_target: EnumMap::new(),
 				global_target: EnumMap::new(),
 				default_target: EnumMap::new(),
 				targets: HashMap::new(),
@@ -325,6 +326,15 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 					});
 				}
 				context.runfile.scripts.global_target[phase] = Some(script);
+			} else if name == "<" {
+				if let Some(prev_script) = &context.runfile.scripts.pre_global_target[phase] {
+					return Err(RunscriptParseErrorData::MultipleDefinition {
+						previous_location: prev_script.location.clone(),
+						new_location: script.location,
+						target_name: name,
+					})
+				}
+				context.runfile.scripts.pre_global_target[phase] = Some(script);
 			} else {
 				if name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')) {
 					return Err(RunscriptParseErrorData::InvalidID { location: context.get_loc(i + 1), found: name });

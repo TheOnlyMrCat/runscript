@@ -31,6 +31,10 @@ pub struct RunscriptInclude {
 /// The exectable scripts defined by a [`Runscript`](struct.Runscript.html)
 #[derive(Debug)]
 pub struct Scripts {
+	/// The scripts defined under `#<`
+	/// 
+	/// These scripts are executed in their respective `ScriptPhase` before the targeted target.
+	pub pre_global_target: EnumMap<ScriptPhase, Option<Script>>,
 	/// The scripts defined under `##`
 	/// 
 	/// These scripts are executed in their respective `ScriptPhase` after the targeted target.
@@ -167,6 +171,22 @@ impl Runscript {
 			_ => {
 				for include in &self.includes {
 					if let Some(script) = include.runscript.scripts.global_target[phase].as_ref() {
+						return Some(&script);
+					}
+				}
+				None
+			}
+		}
+	}
+
+	pub fn get_pre_global_script(&self, phase: ScriptPhase) -> Option<&Script> {
+		match self.scripts.pre_global_target[phase].as_ref() {
+			Some(script) => {
+				Some(&script)
+			},
+			_ => {
+				for include in &self.includes {
+					if let Some(script) = include.runscript.scripts.pre_global_target[phase].as_ref() {
 						return Some(&script);
 					}
 				}

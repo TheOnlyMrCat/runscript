@@ -63,8 +63,7 @@ features are currently supported, however. A list of supported features follows:
   * `$VAR` environment variables
   * `$(echo)` internal subcommands
   * `$1` positional arguments
+  * `$@` all positional arguments
 * Single and double-quoted arguments
 * Command chaining by `&&`, `||`, and `|` (no `;`, just use newlines)
-
-(In the latest pre-release):
 * `VAR=val` Environment variable setting (with interpolation)
