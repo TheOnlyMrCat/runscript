@@ -78,15 +78,27 @@ pub fn bad_target(output_stream: &Rc<StandardStream>, target: &str) {
 	}
 }
 
+pub fn phase_color(phase: ScriptPhase) -> Color {
+	if std::env::var_os("RUNSCRIPT_TRANS").is_some() {
+		match phase {
+			ScriptPhase::BuildOnly | ScriptPhase::RunOnly => Color::Cyan,
+			ScriptPhase::Build | ScriptPhase::Run => Color::Magenta,
+			ScriptPhase::BuildAndRun => Color::White,
+		}
+	} else {
+		match phase {
+			ScriptPhase::BuildOnly => Color::Red,
+			ScriptPhase::Build => Color::Yellow,
+			ScriptPhase::BuildAndRun => Color::Green,
+			ScriptPhase::Run => Color::Blue,
+			ScriptPhase::RunOnly => Color::Magenta,
+		}
+	}
+}
+
 pub fn phase_message(output_stream: &Rc<StandardStream>, phase: ScriptPhase, name: &str) {
 	let mut lock = output_stream.lock();
-	lock.set_color(ColorSpec::new().set_bold(true).set_intense(true).set_fg(Some(match phase {
-		ScriptPhase::BuildOnly => Color::Red,
-		ScriptPhase::Build => Color::Yellow,
-		ScriptPhase::BuildAndRun => Color::Green,
-		ScriptPhase::Run => Color::Blue,
-		ScriptPhase::RunOnly => Color::Magenta,
-	}))).expect("Failed to set colour");
+	lock.set_color(ColorSpec::new().set_bold(true).set_intense(true).set_fg(Some(phase_color(phase)))).expect("Failed to set colour");
 	write!(lock, "{}", phase).expect("Failed to write");
 	lock.reset().expect("Failed to reset colour");
 	writeln!(lock, " {}", name).expect("Failed to write");

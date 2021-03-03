@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use getopts::Options;
 
-use termcolor::{StandardStream, ColorChoice, WriteColor, ColorSpec, Color};
+use termcolor::{StandardStream, ColorChoice, WriteColor, ColorSpec};
 
 mod out;
 mod exec;
@@ -146,7 +146,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 			} else {
 				run_target = Some(v[1].to_owned());
 			}
-			
+
 			if v.len() >= 3 {
 				run_phase = Some(v[2].to_owned());
 			} else {
@@ -225,13 +225,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 					fn print_phase_list(lock: &mut termcolor::StandardStreamLock, name: &str, name_length: usize, target: &enum_map::EnumMap<ScriptPhase, Option<Script>>) {
 						write!(lock, "{0:1$} ", name, name_length).expect("Failed to write");
 						for (phase, opt) in target.iter() {
-							lock.set_color(ColorSpec::new().set_bold(opt.is_some()).set_intense(opt.is_some()).set_fg(Some(match phase {
-								ScriptPhase::BuildOnly => Color::Red,
-								ScriptPhase::Build => Color::Yellow,
-								ScriptPhase::BuildAndRun => Color::Green,
-								ScriptPhase::Run => Color::Blue,
-								ScriptPhase::RunOnly => Color::Magenta,
-							}))).expect("Failed to set colour");
+							lock.set_color(ColorSpec::new().set_bold(opt.is_some()).set_intense(opt.is_some()).set_fg(Some(out::phase_color(phase)))).expect("Failed to set colour");
 							if opt.is_some() {
 								write!(lock, "{}", match phase {
 									ScriptPhase::BuildOnly => "B",
