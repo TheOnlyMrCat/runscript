@@ -116,35 +116,53 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 
     let path_branch_file: String;
     let path_branch_dir: String;
-    let run_target: String;
+    let run_target: Option<String>;
+	let run_phase: Option<String>;
     if let Some(target) = matches.free.get(0) {
         let v = target.split(':').collect::<Vec<&str>>();
         
         if v.len() == 1 {
             path_branch_file = "".to_owned();
             path_branch_dir = "run".to_owned();
-            run_target = v[0].to_owned();
-        } else if v.len() == 2 {
+            run_target = Some(v[0].to_owned());
+			run_phase = None;
+        } else if v.len() >= 2 {
             let path_branch = v[0].to_owned();
+			if path_branch.is_empty() {
+				path_branch_file = "".to_owned();
+				path_branch_dir = "run".to_owned();
+			} else {
+				let mut pbf = path_branch.clone();
+				pbf.push_str(".run");
+				path_branch_file = pbf;
 
-            let mut pbf = path_branch.clone();
-            pbf.push_str(".run");
-            path_branch_file = pbf;
+				let mut pbd = path_branch;
+				pbd.push_str("/run");
+				path_branch_dir = pbd;
+			}
 
-            let mut pbd = path_branch;
-            pbd.push_str("/run");
-            path_branch_dir = pbd;
-
-            run_target = v[1].to_owned();
-        } else {
+			if v[1].is_empty() {
+				run_target = None
+			} else {
+				run_target = Some(v[1].to_owned());
+			}
+			
+			if v.len() >= 3 {
+				run_phase = Some(v[2].to_owned());
+			} else {
+				run_phase = None;
+			}
+		} else {
             path_branch_file = "".to_owned();
             path_branch_dir = "run".to_owned();
-            run_target = "".to_owned();
+            run_target = None;
+			run_phase = None;
         }
     } else {
         path_branch_file = "".to_owned();
         path_branch_dir = "run".to_owned();
-        run_target = "".to_owned();
+        run_target = None;
+		run_phase = None;
     }
 
     let b_pos = matches.opt_positions("build-only")   .iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
@@ -152,7 +170,19 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
     let r_pos = matches.opt_positions("run-only")     .iter().fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
 
     let phases: &[ScriptPhase];
-    if b_pos + t_pos + r_pos == -3
+	if let Some(run_phase) = run_phase {
+		phases = match &*run_phase {
+			"b!" => &[ScriptPhase::BuildOnly],
+			"b" => &[ScriptPhase::Build],
+			"br" => &[ScriptPhase::BuildAndRun],
+			"r" => &[ScriptPhase::Run],
+			"r!" => &[ScriptPhase::RunOnly],
+			_ => {
+				out::bad_phase_err(&output_stream, &run_phase);
+				return (false, vec![]);
+			}
+		}
+	} else if b_pos + t_pos + r_pos == -3
     || t_pos > b_pos && t_pos > r_pos {
         phases = &PHASES_T;
     } else if b_pos > t_pos && b_pos > r_pos {
@@ -276,18 +306,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 			let mut output_acc = Vec::new();
 			//TODO: Instead, find all scripts that would run given the target and phases?
             for &phase in phases {
-                if run_target == "" {
-					if let Some(script) = rf.get_default_script(phase) {
-						out::phase_message(&output_stream, phase, "default");
-						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
-						if capture_stdout {
-							output_acc.extend(output.into_iter());
-						}
-						if !success {
-							return (expect_fail, output_acc);
-						}
-					}
-				} else {
+                if let Some(ref run_target) = run_target {
 					match rf.get_target(&run_target) {
 						Some(target) => match &target[phase] {
 							Some(script) => {
@@ -318,6 +337,17 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 								out::bad_target(&output_stream, &run_target);
 								return (expect_fail, output_acc);
 							}
+						}
+					}
+				} else {
+					if let Some(script) = rf.get_default_script(phase) {
+						out::phase_message(&output_stream, phase, "default");
+						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
+						if capture_stdout {
+							output_acc.extend(output.into_iter());
+						}
+						if !success {
+							return (expect_fail, output_acc);
 						}
 					}
 				}

@@ -10,8 +10,6 @@ cargo run -- test -r
 cargo run --features trace -- test -r
 #/
 
-!The program is tested by an earlier version of itself. Pretty epic
-
 #test r!
 run test/basic: -q
 
@@ -19,6 +17,7 @@ run test/phases:
 run test/phases: -b
 run test/phases: --build-and-run
 run test/phases: -r
+run test/phases::br
 
 run test/error:phase || sh -c "exit 0"
 run test/error:internal || sh -c "exit 0"

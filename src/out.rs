@@ -13,6 +13,11 @@ pub fn file_read_err(output_stream: &Rc<StandardStream>) {
 	writeln!(lock, "Could not find runfile to execute").expect("Failed to write");
 }
 
+pub fn bad_phase_err(output_stream: &Rc<StandardStream>, phase: &str) {
+	let mut lock = output_stream.lock();
+	writeln!(lock, "`{}` is not a valid phase identifier; expected [`b!`, `b`, `br`, `r`, `r!`]", phase).expect("Failed to write");
+}
+
 pub fn option_parse_err(output_stream: &Rc<StandardStream>, err: getopts::Fail) {
 	let mut lock = output_stream.lock();
 	writeln!(lock, "{}", err).expect("Failed to write");
