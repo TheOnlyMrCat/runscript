@@ -6,17 +6,26 @@ use std::process::{Command, Stdio, Output, ExitStatus};
 use filenamegen::Glob;
 use termcolor::ColorSpec;
 
-use crate::out;
 use crate::parser::RunscriptLocation;
 use crate::run;
-use crate::script::{self, Runscript, ArgPart, ChainedCommand, Argument, ScriptEntry};
+use crate::script::{self, ArgPart, Argument, ChainedCommand, Script, ScriptEntry};
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
+	/// The verbosity of output to the supplied output stream
 	pub verbosity: Verbosity,
-	pub output_stream: &'a std::rc::Rc<termcolor::StandardStream>,
+	/// The output stream to output to, or `None` to produce no output
+	pub output_stream: Option<std::rc::Rc<termcolor::StandardStream>>,
+	/// The working directory to execute the script's commands in
 	pub working_directory: &'a Path,
+	/// Positional arguments to pass to the script.
+	///
+	///The first argument replaces `$1`, the second replaces `$2`, etc.
 	pub positional_args: Vec<String>,
+	/// Whether to store the text printed to stdout by the executed programs
+	pub capture_stdout: bool,
+	/// A map of environment variables to remap
+	pub env_remap: &'a HashMap<String, String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -27,19 +36,19 @@ pub enum Verbosity {
 }
 
 #[derive(Debug)]
-enum ProcessExit {
+pub enum ProcessExit {
 	Bool(bool),
 	Status(ExitStatus),
 }
 
 #[derive(Debug)]
-struct ProcessOutput {
-	status: ProcessExit,
-	stdout: Vec<u8>
+pub struct ProcessOutput {
+	pub status: ProcessExit,
+	pub stdout: Vec<u8>
 }
 
 #[derive(Debug)]
-pub enum CommandExecErr {
+pub enum CommandExecError {
 	InvalidGlob {
 		glob: String,
 		err: anyhow::Error,
@@ -56,26 +65,54 @@ pub enum CommandExecErr {
 }
 
 impl ProcessExit {
-	fn success(&self) -> bool {
+	/// Whether the process was successful or not.
+	///
+	/// Returns the value of a `Bool` variant, or calls the `success` function on a `Status` variant
+	pub fn success(&self) -> bool {
 		match self {
 			ProcessExit::Bool(b) => *b,
 			ProcessExit::Status(s) => s.success(),
 		}
 	}
 
-	fn code(&self) -> Option<i32> {
+	/// The exit code the process exited with, if any.
+	///
+	/// Coerces the `Bool` variant into `true = 0`, `false = 1`
+	pub fn code(&self) -> Option<i32> {
 		match self {
-			ProcessExit::Bool(b) => Some(if *b { 0 } else { 1 }),
+			ProcessExit::Bool(b) => Some(!b as i32),
 			ProcessExit::Status(s) => s.code(),
 		}
 	}
 
-	fn status(self) -> ExitStatus {
+	/// The `ExitStatus` the process exited with.
+	///
+	/// Panics on the `Bool` variant if on neither unix nor windows
+	pub fn status(self) -> ExitStatus {
 		match self {
 			ProcessExit::Status(s) => s,
-			ProcessExit::Bool(_) => panic!("Expected ExitStatus")
+			ProcessExit::Bool(b) => convert_bool(b)
 		}
 	}
+}
+
+#[cfg(unix)]
+fn convert_bool(b: bool) -> ExitStatus {
+	use std::os::unix::process::ExitStatusExt;
+
+	ExitStatus::from_raw(!b as i32)
+}
+
+#[cfg(windows)]
+fn convert_bool(b: bool) -> ExitStatus {
+	use std::os::windows::process::ExitStatusExt;
+
+	ExitStatus::from_raw(!b as i32)
+}
+
+#[cfg(not(any(unix, windows)))]
+fn convert_bool(_: bool) -> ExitStatus {
+	panic!("Expected ExitStatus")
 }
 
 impl From<Output> for ProcessOutput {
@@ -87,20 +124,14 @@ impl From<Output> for ProcessOutput {
 	}
 }
 
-pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, capture_stdout: bool, env_remap: &HashMap<String, String>) -> (bool, Vec<u8>) {
-	let mut env = env_remap.clone();
+pub fn shell(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
+	let mut env = config.env_remap.clone();
 	let mut output_acc = Vec::new();
-	for entry in entries {
+	for entry in &script.commands {
 		match entry {
 			ScriptEntry::Command(command) => {
-				let output = match exec(&command, config, &env, capture_stdout) {
-					Ok(k) => k,
-					Err(err) => {
-						out::bad_command_err(config.output_stream, &command, script, err);
-						return (false, output_acc)
-					},
-				};
-				if capture_stdout {
+				let output = exec(&command, config, &env, config.capture_stdout).map_err(|e| (e, entry.clone()))?;
+				if config.capture_stdout {
 					output_acc.extend(output.stdout.into_iter());
 				}
 				if !output.status.success() {
@@ -110,27 +141,30 @@ pub fn shell(entries: &[ScriptEntry], script: &Runscript, config: &ExecConfig, c
 							None => eprintln!("=> {}", signal(&output.status.status())),
 						}
 					}
-					return (false, output_acc);
+					return Ok(ProcessOutput {
+						status: ProcessExit::Bool(false),
+						stdout: output_acc,
+					});
 				}
 			},
 			ScriptEntry::Env { var, val, loc } => {
 				if config.verbosity < Verbosity::Silent {
 					eprintln!("> {}", entry);
 				}
-				match evaluate_arg(val, loc.clone(), config, &env, false) {
-					Ok(arg) => { env.insert(var.clone(), arg.join(" ")); },
-					Err(_) => {
-						eprintln!("Failed to evaluate arg"); //TODO: Use out module
-						return (false, output_acc);
-					}
-				}
+				env.insert(
+					var.clone(),
+					evaluate_arg(val, loc.clone(), config, &env, false).map_err(|e| (e, entry.clone()))?.join(" ")
+				);
 			}
 		}
 	}
-	(true, output_acc)
+	Ok(ProcessOutput {
+	    status: ProcessExit::Bool(true),
+	    stdout: output_acc,
+	})
 }
 
-fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecErr> {
+fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecError> {
 	let target = &evaluate_arg(&command.target, command.loc.clone(), config, env_remap, false)?[0];
 	if target == "run" {
 		if config.verbosity < Verbosity::Silent {
@@ -138,7 +172,7 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 		}
 		let args = command.args.iter()
 			.map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true))
-			.collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?
+			.collect::<Result<Vec<Vec<String>>, CommandExecError>>()?
 			.into_iter()
 			.flatten()
 			.collect::<Vec<_>>();
@@ -199,27 +233,28 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 	}
 
 	if config.verbosity < Verbosity::Silent {
-		let mut lock = config.output_stream.lock();
-		write!(lock, "> {}", command).expect("Failed to write");
-		if args_did_evaluate {
-			use termcolor::WriteColor;
+		if let Some(mut lock) = config.output_stream.as_deref().map(termcolor::StandardStream::lock) {
+			write!(lock, "> {}", command).expect("Failed to write");
+			if args_did_evaluate {
+				use termcolor::WriteColor;
 
-			lock.set_color(ColorSpec::new().set_italic(true)).expect("Failed to set italic");
-			write!(
-				lock,
-				" = {}{}",
-				target,
-				args.iter()
-					.map(|arg| if arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
-						arg.clone()
-					} else {
-						format!("'{}'", arg)
-					})
-					.fold("".to_owned(), |mut acc, s| { acc.push(' '); acc.push_str(&s); acc })
-			).expect("Failed to write");
-			lock.reset().expect("Failed to reset colour");
+				lock.set_color(ColorSpec::new().set_italic(true)).expect("Failed to set italic");
+				write!(
+					lock,
+					" = {}{}",
+					target,
+					args.iter()
+						.map(|arg| if arg.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+							arg.clone()
+						} else {
+							format!("'{}'", arg)
+						})
+						.fold("".to_owned(), |mut acc, s| { acc.push(' '); acc.push_str(&s); acc })
+				).expect("Failed to write");
+				lock.reset().expect("Failed to reset colour");
+			}
+			writeln!(lock).expect("Failed to write");
 		}
-		writeln!(lock).expect("Failed to write");
 	}
 
 	let mut child = match Command::new(target)
@@ -232,7 +267,7 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 		.spawn() {
 		Ok(c) => c,
 		Err(e) => {
-			return Err(CommandExecErr::BadCommand{
+			return Err(CommandExecError::BadCommand{
 				err: e,
 				loc: command.loc.clone(),
 			})
@@ -253,7 +288,7 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 	Ok(output)
 }
 
-fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecConfig, env_override: &HashMap<String, String>, match_globs: bool) -> Result<Vec<String>, CommandExecErr> {
+fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecConfig, env_override: &HashMap<String, String>, match_globs: bool) -> Result<Vec<String>, CommandExecError> {
 	match arg {
 		Argument::Unquoted(p) => match p {
 			ArgPart::Str(s) => {
@@ -265,12 +300,12 @@ fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecCon
 								.map(|k| k.to_string_lossy().into_owned())
 								.collect::<Vec<String>>();
 							if strings.is_empty() {
-								Err(CommandExecErr::NoGlobMatches { glob: s.clone(), loc: command_loc })
+								Err(CommandExecError::NoGlobMatches { glob: s.clone(), loc: command_loc })
 							} else {
 								Ok(strings)
 							}
 						},
-						Err(err) => Err(CommandExecErr::InvalidGlob { glob: s.clone(), err, loc: command_loc })
+						Err(err) => Err(CommandExecError::InvalidGlob { glob: s.clone(), err, loc: command_loc })
 					}
 				} else {
 					Ok(vec![s.clone()])
@@ -280,13 +315,13 @@ fn evaluate_arg(arg: &Argument, command_loc: RunscriptLocation, config: &ExecCon
 		},
 		Argument::Single(s) => Ok(vec![s.clone()]),
 		Argument::Double(p) => {
-			let args = p.iter().map(|x| evaluate_part(x, env_override, config)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc });
+			let args = p.iter().map(|x| evaluate_part(x, env_override, config)).collect::<Result<Vec<Vec<String>>, CommandExecError>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc });
 			Ok(vec![args.iter().fold(String::new(), |acc, s| acc + &s)])
 		}
 	}
 }
 
-fn evaluate_part(part: &ArgPart, env_override: &HashMap<String, String>, config: &ExecConfig) -> Result<Vec<String>, CommandExecErr> {
+fn evaluate_part(part: &ArgPart, env_override: &HashMap<String, String>, config: &ExecConfig) -> Result<Vec<String>, CommandExecError> {
 	use std::env::VarError::*;
 	match part {
 		ArgPart::Str(s) => Ok(vec![s.clone()]),
@@ -296,11 +331,11 @@ fn evaluate_part(part: &ArgPart, env_override: &HashMap<String, String>, config:
 		ArgPart::Cmd(c) => {
 			Ok(vec![String::from_utf8_lossy(
 				&match Command::new(&evaluate_arg(&c.target, c.loc.clone(), config, env_override, false)?[0])
-					.args(c.args.iter().map(|x| evaluate_arg(x, c.loc.clone(), config, env_override, true)).collect::<Result<Vec<Vec<String>>, CommandExecErr>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
+					.args(c.args.iter().map(|x| evaluate_arg(x, c.loc.clone(), config, env_override, true)).collect::<Result<Vec<Vec<String>>, CommandExecError>>()?.iter().fold(vec![], |mut acc, x| { acc.append(&mut x.clone()); acc }))
 					.current_dir(config.working_directory)
 					.output() {
 						Ok(o) => o.stdout,
-						Err(e) => return Err(CommandExecErr::BadCommand {
+						Err(e) => return Err(CommandExecError::BadCommand {
 							err: e,
 							loc: c.loc.clone(),
 						})
@@ -325,11 +360,12 @@ fn signal(status: &ExitStatus) -> String {
 	
 	let signal = status.signal().expect("Expected signal");
 
+	// SAFETY: Function is guaranteed by POSIX to exist.
 	let sigstr = unsafe { CStr::from_ptr(strsignal(signal as c_int)) };
-	format!("signal {}", sigstr.to_str().expect("Expected returned string to be valid UTF-8"))
+	format!("signal {} ({})", signal, sigstr.to_string_lossy().to_owned())
 }
 
 #[cfg(not(unix))]
-fn signal(_status: &ExitStatus) -> String {
+fn signal(_: &ExitStatus) -> String {
 	panic!("Non-unix program terminated with signal");
 }
