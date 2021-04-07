@@ -282,14 +282,16 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 
 			use crate::exec::ExecConfig;
 			let exec_config = ExecConfig {
-				output_stream: &output_stream,
 				verbosity: match matches.opt_count("quiet") {
 					0 => Verbosity::Normal,
 					1 => Verbosity::Quiet,
 					_ => Verbosity::Silent,
 				}.max(inherit_verbosity),
+				output_stream: Some(output_stream.clone()),
 				working_directory: runfile_cwd,
 				positional_args: matches.free.get(1..).unwrap_or(&[]).to_owned(),
+			    capture_stdout,
+			    env_remap,
 			};
 			//TODO: Don't bother initialising this if passthrough isn't enabled
 			let exec_config_passthrough = ExecConfig {
@@ -303,12 +305,19 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				match &rf.get_pre_global_script(phase) {
 					Some(script) => {
 						out::phase_message(&output_stream, phase, "pre-global");
-						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
-						if capture_stdout {
-							output_acc.extend(output.into_iter());
-						}
-						if !success {
-							return (expect_fail, output_acc);
+						match exec::shell(&script, &exec_config) {
+						    Ok(output) => {
+								if capture_stdout {
+									output_acc.extend(output.stdout.into_iter());
+								}
+								if !output.status.success() {
+									return (expect_fail, output_acc);
+								}
+							}
+						    Err((err, entry)) => {
+								out::bad_command_err(&output_stream, &entry, &rf, err);
+								return (expect_fail, output_acc);
+							}
 						}
 					},
 					None => {}
@@ -318,12 +327,19 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 						Some(target) => match &target[phase] {
 							Some(script) => {
 								out::phase_message(&output_stream, phase, &run_target);
-								let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
-								if capture_stdout {
-									output_acc.extend(output.into_iter());
-								}
-								if !success {
-									return (expect_fail, output_acc);
+								match exec::shell(&script, &exec_config) {
+									Ok(output) => {
+										if capture_stdout {
+											output_acc.extend(output.stdout.into_iter());
+										}
+										if !output.status.success() {
+											return (expect_fail, output_acc);
+										}
+									}
+									Err((err, entry)) => {
+										out::bad_command_err(&output_stream, &entry, &rf, err);
+										return (expect_fail, output_acc);
+									}
 								}
 							},
 							None => {}
@@ -332,12 +348,19 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 							if passthrough {
 								if let Some(script) = rf.get_default_script(phase) {
 									out::phase_message(&output_stream, phase, "default");
-									let (success, output) = exec::shell(&script.commands, &rf, &exec_config_passthrough, capture_stdout, env_remap);
-									if capture_stdout {
-										output_acc.extend(output.into_iter());
-									}
-									if !success {
-										return (expect_fail, output_acc);
+									match exec::shell(&script, &exec_config_passthrough) {
+										Ok(output) => {
+											if capture_stdout {
+												output_acc.extend(output.stdout.into_iter());
+											}
+											if !output.status.success() {
+												return (expect_fail, output_acc);
+											}
+										}
+										Err((err, entry)) => {
+											out::bad_command_err(&output_stream, &entry, &rf, err);
+											return (expect_fail, output_acc);
+										}
 									}
 								}
 							} else {
@@ -349,24 +372,38 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				} else {
 					if let Some(script) = rf.get_default_script(phase) {
 						out::phase_message(&output_stream, phase, "default");
-						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
-						if capture_stdout {
-							output_acc.extend(output.into_iter());
-						}
-						if !success {
-							return (expect_fail, output_acc);
+						match exec::shell(&script, &exec_config) {
+						    Ok(output) => {
+								if capture_stdout {
+									output_acc.extend(output.stdout.into_iter());
+								}
+								if !output.status.success() {
+									return (expect_fail, output_acc);
+								}
+							}
+						    Err((err, entry)) => {
+								out::bad_command_err(&output_stream, &entry, &rf, err);
+								return (expect_fail, output_acc);
+							}
 						}
 					}
 				}
 				match &rf.get_global_script(phase) {
 					Some(script) => {
 						out::phase_message(&output_stream, phase, "global");
-						let (success, output) = exec::shell(&script.commands, &rf, &exec_config, capture_stdout, env_remap);
-						if capture_stdout {
-							output_acc.extend(output.into_iter());
-						}
-						if !success {
-							return (expect_fail, output_acc);
+						match exec::shell(&script, &exec_config) {
+						    Ok(output) => {
+								if capture_stdout {
+									output_acc.extend(output.stdout.into_iter());
+								}
+								if !output.status.success() {
+									return (expect_fail, output_acc);
+								}
+							}
+						    Err((err, entry)) => {
+								out::bad_command_err(&output_stream, &entry, &rf, err);
+								return (expect_fail, output_acc);
+							}
 						}
 					},
 					None => {}
