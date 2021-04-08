@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::str::CharIndices;
 
 use enum_map::EnumMap;
 
@@ -138,17 +139,39 @@ pub fn parse_runfile_nested(path: impl Into<PathBuf>, base: impl Into<PathBuf>, 
 }
 
 #[derive(Debug)]
-struct ParsingContext<'a, T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
+pub struct ParsingContext<'a, T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
 	iterator: std::iter::Peekable<T>,
 	runfile: Runscript,
 	index: &'a Vec<usize>,
 	line_indices: Vec<usize>,
 }
 
-impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> {
+impl ParsingContext<'_, CharIndices<'_>> {
+	pub fn new(source: &RunscriptSource) -> ParsingContext<'_, CharIndices<'_>> {
+		ParsingContext {
+			iterator: source.source.char_indices().peekable(),
+			line_indices: source.source.char_indices().filter_map(|(index, ch)| if ch == '\n' { Some(index) } else { None }).collect(),
+			runfile: Runscript {
+				name: (&source.file).strip_prefix(&source.base).unwrap() //TODO: Something other than unwrap
+						.to_string_lossy().into_owned(), 
+				source: source.source.clone(),
+				includes: Vec::new(),
+				scripts: Scripts {
+					pre_global_target: EnumMap::new(),
+					global_target: EnumMap::new(),
+					default_target: EnumMap::new(),
+					targets: HashMap::new(),
+				},
+				options: Vec::new(),
+			},
+			index: &source.index,
+		}
+	}
+}
 
+impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> {
 	#[cfg_attr(feature="trace", trace)]
-	fn get_loc(&self, index: usize) -> RunscriptLocation {
+	pub fn get_loc(&self, index: usize) -> RunscriptLocation {
 		let (line, column) = self.line_indices.iter()
 			.enumerate()
 			.find_map(|(line, &end)| if end > index {
@@ -167,24 +190,7 @@ impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> 
 
 #[cfg_attr(feature="trace", trace)]
 pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptParseError> {
-	let mut context = ParsingContext {
-		iterator: source.source.char_indices().peekable(),
-		line_indices: source.source.char_indices().filter_map(|(index, ch)| if ch == '\n' { Some(index) } else { None }).collect(),
-		runfile: Runscript {
-			name: (&source.file).strip_prefix(&source.base).unwrap() //TODO: Something other than unwrap
-					.to_string_lossy().into_owned(), 
-			source: source.source.clone(),
-			includes: Vec::new(),
-			scripts: Scripts {
-				pre_global_target: EnumMap::new(),
-				global_target: EnumMap::new(),
-				default_target: EnumMap::new(),
-				targets: HashMap::new(),
-			},
-			options: Vec::new(),
-		},
-		index: &source.index,
-	};
+	let mut context = ParsingContext::new(&source);
 	match parse_root(&mut context, &source) {
 		Ok(()) => Ok(context.runfile),
 		Err(data) => Err(RunscriptParseError { script: context.runfile, data })
@@ -357,8 +363,9 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 	Ok(())
 }
 
+/// Parses a block of commands for the given `ParsingContext`, terminating when it reaches a `#/`
 #[cfg_attr(feature="trace", trace)]
-fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<Vec<ScriptEntry>, RunscriptParseErrorData> {
+pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<Vec<ScriptEntry>, RunscriptParseErrorData> {
 	let mut cmds = Vec::new();
 	while let Some(cmd) = parse_command(context, ChainedCommand::None, None)? {
 		// parse_command returns None when the first 'word' it encounters is `#/`
@@ -367,8 +374,9 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: 
 	Ok(cmds)
 }
 
+/// Parses for the given `ParsingContext`, returning the next command found or `None` if the next command is `#/`
 #[cfg_attr(feature="trace", trace)]
-fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, chained: ChainedCommand, nest_terminate: Option<char>) -> Result<Option<ScriptEntry>, RunscriptParseErrorData> {
+pub fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, chained: ChainedCommand, nest_terminate: Option<char>) -> Result<Option<ScriptEntry>, RunscriptParseErrorData> {
 	let end_loc = context.get_loc(context.runfile.source.len());
 	let start_loc = loop {
 		match context.iterator.peek() {
@@ -605,8 +613,9 @@ fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &
 	Ok(Some(ScriptEntry::Command(command)))
 }
 
+/// Parses an argument interpolation, expecting the first `$` to have already been consumed.
 #[cfg_attr(feature="trace", trace)]
-fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<ArgPart, RunscriptParseErrorData> {
+pub fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<ArgPart, RunscriptParseErrorData> {
 	let end_loc = context.get_loc(context.runfile.source.len());
 	match context.iterator.peek() {
 		Some((i, '(')) => {
