@@ -44,7 +44,8 @@ pub enum ProcessExit {
 #[derive(Debug)]
 pub struct ProcessOutput {
 	pub status: ProcessExit,
-	pub stdout: Vec<u8>
+	pub stdout: Vec<u8>,
+	pub stderr: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -115,24 +116,37 @@ fn convert_bool(_: bool) -> ExitStatus {
 	panic!("Expected ExitStatus")
 }
 
-impl From<Output> for ProcessOutput {
-	fn from(o: Output) -> Self {
+impl ProcessOutput {
+	pub fn new(success: bool) -> ProcessOutput {
 		ProcessOutput {
-			status: ProcessExit::Status(o.status),
-			stdout: o.stdout
+			status: ProcessExit::Bool(success),
+			stdout: vec![],
+			stderr: vec![],
 		}
 	}
 }
 
-pub fn shell(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
+impl From<Output> for ProcessOutput {
+	fn from(o: Output) -> Self {
+		ProcessOutput {
+			status: ProcessExit::Status(o.status),
+			stdout: o.stdout,
+			stderr: o.stderr,
+		}
+	}
+}
+
+pub fn exec_script(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
 	let mut env = config.env_remap.clone();
-	let mut output_acc = Vec::new();
+	let mut stdout_acc = Vec::new();
+	let mut stderr_acc = Vec::new();
 	for entry in &script.commands {
 		match entry {
 			ScriptEntry::Command(command) => {
-				let output = exec(&command, config, &env, config.capture_stdout).map_err(|e| (e, entry.clone()))?;
+				let output = exec_cmd(&command, config, &env, config.capture_stdout).map_err(|e| (e, entry.clone()))?;
 				if config.capture_stdout {
-					output_acc.extend(output.stdout.into_iter());
+					stdout_acc.extend(output.stdout.into_iter());
+					stderr_acc.extend(output.stderr.into_iter());
 				}
 				if !output.status.success() {
 					if config.verbosity < Verbosity::Silent {
@@ -143,7 +157,8 @@ pub fn shell(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (Com
 					}
 					return Ok(ProcessOutput {
 						status: ProcessExit::Bool(false),
-						stdout: output_acc,
+						stdout: stdout_acc,
+						stderr: stderr_acc,
 					});
 				}
 			},
@@ -160,11 +175,12 @@ pub fn shell(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (Com
 	}
 	Ok(ProcessOutput {
 	    status: ProcessExit::Bool(true),
-	    stdout: output_acc,
+	    stdout: stdout_acc,
+		stderr: stderr_acc,
 	})
 }
 
-fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecError> {
+fn exec_cmd(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecError> {
 	let target = &evaluate_arg(&command.target, command.loc.clone(), config, env_remap, false)?[0];
 	if target == "run" {
 		if config.verbosity < Verbosity::Silent {
@@ -177,36 +193,32 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 			.flatten()
 			.collect::<Vec<_>>();
 		//TODO: Pass env
-		let (success, output) = run(
+		return run(
 			&args.iter().map(|s| &**s).collect::<Vec<_>>(),
 			config.working_directory,
 			config.verbosity,
 			piped,
 			env_remap,
-		);
-		return Ok(ProcessOutput {
-			status: ProcessExit::Bool(success),
-			stdout: output,
-		})
+		).map_err(|err| CommandExecError::BadCommand { err, loc: command.loc.clone() });
 	}
 
 	let mut stdin: Option<Vec<u8>> = None;
 
 	let chained_output = match &*command.chained {
 		ChainedCommand::Pipe(c) => {
-			let h = exec(&c, config, env_remap, true)?;
+			let h = exec_cmd(&c, config, env_remap, true)?;
 			stdin = Some(h.stdout);
 			None
 		},
 		ChainedCommand::And(c) => {
-			let h = exec(&c, config, env_remap, piped)?;
+			let h = exec_cmd(&c, config, env_remap, piped)?;
 			if !h.status.success() {
 				return Ok(h);
 			}
 			Some(h.stdout)
 		},
 		ChainedCommand::Or(c) => {
-			let h = exec(&c, config, env_remap, piped)?;
+			let h = exec_cmd(&c, config, env_remap, piped)?;
 			if h.status.success() {
 				return Ok(h);
 			}
@@ -263,7 +275,7 @@ fn exec(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<Stri
 		.envs(env_remap)
 		.stdin(match stdin { Some(_) => Stdio::piped(), None => if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() } })
 		.stdout(if piped { Stdio::piped() } else if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
-		.stderr(if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
+		.stderr(if piped { Stdio::piped() } else if config.verbosity >= Verbosity::Quiet { Stdio::null() } else { Stdio::inherit() })
 		.spawn() {
 		Ok(c) => c,
 		Err(e) => {

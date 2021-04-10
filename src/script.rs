@@ -6,7 +6,7 @@ use enum_map::EnumMap;
 use crate::parser::RunscriptLocation;
 
 /// A parsed runscript
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Runscript {
 	/// The name of the runscript for the location tracker
 	pub name: String,
@@ -21,7 +21,7 @@ pub struct Runscript {
 }
 
 /// The script and source location of an included runscript
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct RunscriptInclude {
 	pub runscript: Runscript,
 	/// Where the include statement is in the runscript which is including the other
@@ -29,7 +29,7 @@ pub struct RunscriptInclude {
 }
 
 /// The exectable scripts defined by a [`Runscript`](struct.Runscript.html)
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Scripts {
 	/// The scripts defined under `#<`
 	/// 
@@ -49,7 +49,7 @@ pub struct Scripts {
 	pub targets: HashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Script {
 	pub commands: Vec<ScriptEntry>,
     pub location: RunscriptLocation,
