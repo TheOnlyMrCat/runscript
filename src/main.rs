@@ -17,7 +17,7 @@ mod exec;
 mod parser;
 mod script;
 
-use exec::Verbosity;
+use exec::{ProcessExit, ProcessOutput, Verbosity};
 use script::{Runscript, Script, ScriptPhase};
 
 #[cfg(feature="trace")]
@@ -68,18 +68,18 @@ fn panic_hook(info: &std::panic::PanicInfo) {
 fn main() {
 	std::panic::set_hook(Box::new(panic_hook));
 	let args = env::args().skip(1).collect::<Vec<String>>();
-    if let (false, _) = run(
+    if !run(
 		&args.iter().map(|s| &**s).collect::<Vec<_>>(),
 		&env::current_dir().expect("Working environment is not sane"),
 		Verbosity::Normal,
 		false,
 		&HashMap::new()
-	) {
+	).expect("Definition of run in this file doesn't error").status.success() {
 		std::process::exit(1);
     }
 }
 
-pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool, env_remap: &HashMap<String, String>) -> (bool, Vec<u8>) {
+pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool, env_remap: &HashMap<String, String>) -> Result<ProcessOutput, std::io::Error> {
 	let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
 	
     let mut options = Options::new();
@@ -97,19 +97,19 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
         Ok(m) => m,
         Err(x) => {
             out::option_parse_err(&output_stream, x);
-            return (false, vec![]);
+            return Ok(ProcessOutput::new(false));
         },
     };
 
     if matches.opt_present("help") {
 		print!("{}", HELP_TEXT); // There's a trailing newline in the string anyway
-        return (true, vec![]);
+        return Ok(ProcessOutput::new(true));
     }
 
     if matches.opt_present("version") {
         println!("Runscript {}", VERSION);
 		print!("{}", VERSION_TEXT);
-        return (true, vec![]);
+        return Ok(ProcessOutput::new(true));
 	}
 	
 	let expect_fail = matches.opt_present("expect-fail");
@@ -179,7 +179,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 			"r!" => &[ScriptPhase::RunOnly],
 			_ => {
 				out::bad_phase_err(&output_stream, &run_phase);
-				return (false, vec![]);
+				return Ok(ProcessOutput::new(false));
 			}
 		}
 	} else if b_pos + t_pos + r_pos == -3
@@ -190,7 +190,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
     } else if r_pos > t_pos && r_pos > b_pos {
         phases = &PHASES_R;
     } else {
-        panic!("Failed to identify script phases to run. This is a bug.")
+        panic!("Failed to identify script phases to run; b_pos={},t_pos={},r_pos={}", b_pos, t_pos, r_pos)
 	}
 
     let mut runfile_data: Option<(String, PathBuf)> = None;
@@ -212,7 +212,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
         Some(r) => r,
         None => {
             out::file_read_err(&output_stream);
-            return (false, vec![])
+            return Ok(ProcessOutput::new(false))
         }
 	};
 
@@ -275,7 +275,7 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				
 				recursive_list_includes(&mut lock, longest_target, &rf);
 
-				return (true, vec![]);
+				return Ok(ProcessOutput::new(true));
 			}
 
 			let passthrough = rf.options.iter().any(|x| x == "default_positionals");
@@ -299,24 +299,26 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				..exec_config.clone()
 			};
 
-			let mut output_acc = Vec::new();
+			let mut stdout_acc = Vec::new();
+			let mut stderr_acc = Vec::new();
 			//TODO: Instead, find all scripts that would run given the target and phases?
             for &phase in phases {
 				match &rf.get_pre_global_script(phase) {
 					Some(script) => {
 						out::phase_message(&output_stream, phase, "pre-global");
-						match exec::shell(&script, &exec_config) {
+						match exec::exec_script(&script, &exec_config) {
 						    Ok(output) => {
 								if capture_stdout {
-									output_acc.extend(output.stdout.into_iter());
+									stdout_acc.extend(output.stdout.into_iter());
+									stderr_acc.extend(output.stderr.into_iter());
 								}
 								if !output.status.success() {
-									return (expect_fail, output_acc);
+									return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 								}
 							}
 						    Err((err, entry)) => {
 								out::bad_command_err(&output_stream, &entry, &rf, err);
-								return (expect_fail, output_acc);
+								return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 							}
 						}
 					},
@@ -327,18 +329,19 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 						Some(target) => match &target[phase] {
 							Some(script) => {
 								out::phase_message(&output_stream, phase, &run_target);
-								match exec::shell(&script, &exec_config) {
+								match exec::exec_script(&script, &exec_config) {
 									Ok(output) => {
 										if capture_stdout {
-											output_acc.extend(output.stdout.into_iter());
+											stdout_acc.extend(output.stdout.into_iter());
+											stderr_acc.extend(output.stderr.into_iter());
 										}
 										if !output.status.success() {
-											return (expect_fail, output_acc);
+											return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 										}
 									}
 									Err((err, entry)) => {
 										out::bad_command_err(&output_stream, &entry, &rf, err);
-										return (expect_fail, output_acc);
+										return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 									}
 								}
 							},
@@ -348,42 +351,44 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 							if passthrough {
 								if let Some(script) = rf.get_default_script(phase) {
 									out::phase_message(&output_stream, phase, "default");
-									match exec::shell(&script, &exec_config_passthrough) {
+									match exec::exec_script(&script, &exec_config_passthrough) {
 										Ok(output) => {
 											if capture_stdout {
-												output_acc.extend(output.stdout.into_iter());
+												stdout_acc.extend(output.stdout.into_iter());
+												stderr_acc.extend(output.stderr.into_iter());
 											}
 											if !output.status.success() {
-												return (expect_fail, output_acc);
+												return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 											}
 										}
 										Err((err, entry)) => {
 											out::bad_command_err(&output_stream, &entry, &rf, err);
-											return (expect_fail, output_acc);
+											return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 										}
 									}
 								}
 							} else {
 								out::bad_target(&output_stream, &run_target);
-								return (expect_fail, output_acc);
+								return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 							}
 						}
 					}
 				} else {
 					if let Some(script) = rf.get_default_script(phase) {
 						out::phase_message(&output_stream, phase, "default");
-						match exec::shell(&script, &exec_config) {
+						match exec::exec_script(&script, &exec_config) {
 						    Ok(output) => {
 								if capture_stdout {
-									output_acc.extend(output.stdout.into_iter());
+									stdout_acc.extend(output.stdout.into_iter());
+									stderr_acc.extend(output.stderr.into_iter());
 								}
 								if !output.status.success() {
-									return (expect_fail, output_acc);
+									return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 								}
 							}
 						    Err((err, entry)) => {
 								out::bad_command_err(&output_stream, &entry, &rf, err);
-								return (expect_fail, output_acc);
+								return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 							}
 						}
 					}
@@ -391,29 +396,30 @@ pub fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdo
 				match &rf.get_global_script(phase) {
 					Some(script) => {
 						out::phase_message(&output_stream, phase, "global");
-						match exec::shell(&script, &exec_config) {
+						match exec::exec_script(&script, &exec_config) {
 						    Ok(output) => {
 								if capture_stdout {
-									output_acc.extend(output.stdout.into_iter());
+									stdout_acc.extend(output.stdout.into_iter());
+									stderr_acc.extend(output.stderr.into_iter());
 								}
 								if !output.status.success() {
-									return (expect_fail, output_acc);
+									return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 								}
 							}
 						    Err((err, entry)) => {
 								out::bad_command_err(&output_stream, &entry, &rf, err);
-								return (expect_fail, output_acc);
+								return Ok(ProcessOutput { status: ProcessExit::Bool(expect_fail), stdout: stdout_acc, stderr: stderr_acc, });
 							}
 						}
 					},
 					None => {}
 				}
             }
-            (!expect_fail, output_acc)
+			Ok(ProcessOutput { status: ProcessExit::Bool(!expect_fail), stdout: stdout_acc, stderr: stderr_acc, })
         },
         Err(e) => {
             out::file_parse_err(&output_stream, e);
-            (false, vec![])
+            Ok(ProcessOutput::new(false))
 		},
     }
 }

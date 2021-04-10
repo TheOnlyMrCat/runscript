@@ -9,10 +9,10 @@ pub mod exec;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use exec::Verbosity;
+use exec::{CommandExecError, ProcessOutput, Verbosity};
 
 /// Alternate definition of `run` for `exec` when it makes a recursive call
-pub(crate) fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool, env_remap: &HashMap<String, String>) -> (bool, Vec<u8>) {
+pub(crate) fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool, env_remap: &HashMap<String, String>) -> Result<ProcessOutput, std::io::Error> {
 	let mut command = Command::new("run");
 	command
 		.args(args)
@@ -26,6 +26,6 @@ pub(crate) fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, captu
 	    Verbosity::Quiet => command.arg("-q"),
 	    Verbosity::Silent => command.arg("-qq"),
 	};
-	let output = command.output().unwrap();
-	(output.status.success(), output.stdout)
+	let output = command.output()?;
+	Ok(ProcessOutput::from(output))
 }

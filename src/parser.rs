@@ -47,7 +47,6 @@ pub enum ParseOrIOError {
 
 /// An error which occurred during parsing of a runscript
 #[derive(Debug)]
-#[non_exhaustive]
 pub struct RunscriptParseError {
 	/// The semi-complete runscript which failed to parse
 	pub script: Runscript,
@@ -140,10 +139,10 @@ pub fn parse_runfile_nested(path: impl Into<PathBuf>, base: impl Into<PathBuf>, 
 
 #[derive(Debug)]
 pub struct ParsingContext<'a, T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
-	iterator: std::iter::Peekable<T>,
-	runfile: Runscript,
-	index: &'a Vec<usize>,
-	line_indices: Vec<usize>,
+	pub iterator: std::iter::Peekable<T>,
+	pub runfile: Runscript,
+	pub index: &'a Vec<usize>,
+	pub line_indices: Vec<usize>,
 }
 
 impl ParsingContext<'_, CharIndices<'_>> {
@@ -669,7 +668,7 @@ pub fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(co
 }
 
 #[derive(Debug)]
-enum BreakCondition {
+pub enum BreakCondition {
 	Newline(usize),
 	EOF,
 	Parse,
@@ -677,7 +676,7 @@ enum BreakCondition {
 }
 
 #[cfg_attr(feature="trace", trace)]
-fn consume_word(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> (String, BreakCondition) {
+pub fn consume_word(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> (String, BreakCondition) {
 	let mut buf = String::new();
 	let nl = loop {
 		match iterator.next() {
@@ -692,7 +691,7 @@ fn consume_word(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::
 }
 
 #[cfg_attr(feature="trace", trace)]
-fn consume_word_break_punctuation(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug), brk: &[char]) -> (String, BreakCondition) {
+pub fn consume_word_break_punctuation(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug), brk: &[char]) -> (String, BreakCondition) {
 	let mut buf = String::new();
 	let nl = loop {
 		match iterator.next() {
@@ -708,7 +707,7 @@ fn consume_word_break_punctuation(iterator: &mut (impl Iterator<Item = (usize, c
 }
 
 #[cfg_attr(feature="trace", trace)]
-fn consume_line(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> (String, BreakCondition) {
+pub fn consume_line(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug)) -> (String, BreakCondition) {
 	let mut buf = String::new();
 	let bk = loop {
 		match iterator.next() {
