@@ -108,7 +108,7 @@ fn convert_bool(b: bool) -> ExitStatus {
 fn convert_bool(b: bool) -> ExitStatus {
 	use std::os::windows::process::ExitStatusExt;
 
-	ExitStatus::from_raw(!b as i32)
+	ExitStatus::from_raw(!b as u32)
 }
 
 #[cfg(not(any(unix, windows)))]
