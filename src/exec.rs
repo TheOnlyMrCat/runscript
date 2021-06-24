@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio, Output, ExitStatus};
 
+use either::{Either, Left, Right};
 use filenamegen::Glob;
 use termcolor::ColorSpec;
 
@@ -137,13 +138,18 @@ impl From<Output> for ProcessOutput {
 }
 
 pub fn exec_script(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
+	exec_script_entries(&script.commands, config, &HashMap::new())
+}
+
+fn exec_script_entries(entries: &[ScriptEntry], config: &ExecConfig, env_remap: &HashMap<String, String>) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
 	let mut env = config.env_remap.clone();
 	let mut stdout_acc = Vec::new();
 	let mut stderr_acc = Vec::new();
-	for entry in &script.commands {
+	for entry in entries {
 		match entry {
 			ScriptEntry::Command(command) => {
-				let output = exec_cmd(&command, config, &env, config.capture_stdout).map_err(|e| (e, entry.clone()))?;
+				let output = exec_tl_cmd(&command, config, &env, config.capture_stdout)
+					.map_err(|e| e.either(|e| (e, entry.clone()), |e| e))?;
 				if config.capture_stdout {
 					stdout_acc.extend(output.stdout.into_iter());
 					stderr_acc.extend(output.stderr.into_iter());
@@ -180,15 +186,22 @@ pub fn exec_script(script: &Script, config: &ExecConfig) -> Result<ProcessOutput
 	})
 }
 
-fn exec_cmd(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, CommandExecError> {
-	let target = &evaluate_arg(&command.target, command.loc.clone(), config, env_remap, false)?[0];
+fn exec_tl_cmd(command: &script::TopLevelCommand, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, Either<CommandExecError, (CommandExecError, ScriptEntry)>> {
+	match command {
+		script::TopLevelCommand::Command(c) => exec_cmd(c, config, env_remap, piped),
+		script::TopLevelCommand::BlockCommand(entries) => exec_script_entries(&entries, config, env_remap).map_err(|e| Right(e)),
+	}
+}
+
+fn exec_cmd(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<String, String>, piped: bool) -> Result<ProcessOutput, Either<CommandExecError, (CommandExecError, ScriptEntry)>> {
+	let target = &evaluate_arg(&command.target, command.loc.clone(), config, env_remap, false).map_err(|e| Left(e))?[0];
 	if target == "run" {
 		if config.verbosity < Verbosity::Silent {
 			eprintln!("> {}", command);
 		}
 		let args = command.args.iter()
 			.map(|x| evaluate_arg(x, command.loc.clone(), config, env_remap, true))
-			.collect::<Result<Vec<Vec<String>>, CommandExecError>>()?
+			.collect::<Result<Vec<Vec<String>>, CommandExecError>>().map_err(|e| Left(e))?
 			.into_iter()
 			.flatten()
 			.collect::<Vec<_>>();
@@ -199,7 +212,7 @@ fn exec_cmd(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<
 			config.verbosity,
 			piped,
 			env_remap,
-		).map_err(|err| CommandExecError::BadCommand { err, loc: command.loc.clone() });
+		).map_err(|err| Left(CommandExecError::BadCommand { err, loc: command.loc.clone() }));
 	}
 
 	let mut stdin: Option<Vec<u8>> = None;
@@ -211,14 +224,14 @@ fn exec_cmd(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<
 			None
 		},
 		ChainedCommand::And(c) => {
-			let h = exec_cmd(&c, config, env_remap, piped)?;
+			let h = exec_tl_cmd(&c, config, env_remap, piped)?;
 			if !h.status.success() {
 				return Ok(h);
 			}
 			Some(h.stdout)
 		},
 		ChainedCommand::Or(c) => {
-			let h = exec_cmd(&c, config, env_remap, piped)?;
+			let h = exec_tl_cmd(&c, config, env_remap, piped)?;
 			if h.status.success() {
 				return Ok(h);
 			}
@@ -239,7 +252,7 @@ fn exec_cmd(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<
 			Ok(v) => args.extend(v),
 			Err(e) => {
 				eprintln!("> {}", command);
-				return Err(e);
+				return Err(Left(e));
 			}
 		}
 	}
@@ -279,10 +292,10 @@ fn exec_cmd(command: &script::Command, config: &ExecConfig, env_remap: &HashMap<
 		.spawn() {
 		Ok(c) => c,
 		Err(e) => {
-			return Err(CommandExecError::BadCommand{
+			return Err(Left(CommandExecError::BadCommand{
 				err: e,
 				loc: command.loc.clone(),
-			})
+			}))
 		}
 	};
 
