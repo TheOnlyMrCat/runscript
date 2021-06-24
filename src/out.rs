@@ -6,6 +6,7 @@ use termcolor::{StandardStream, WriteColor, ColorSpec, Color};
 
 use crate::exec::CommandExecError;
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
+use crate::script::TopLevelCommand;
 use crate::script::{Runscript, ScriptEntry, ScriptPhase};
 
 pub fn file_read_err(output_stream: &Rc<StandardStream>) {
@@ -57,12 +58,12 @@ pub fn file_parse_err(output_stream: &Rc<StandardStream>, RunscriptParseError { 
 pub fn bad_command_err(output_stream: &Rc<StandardStream>, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
 	match &error {
 		CommandExecError::BadCommand { err, loc } => match cmd {
-		    ScriptEntry::Command(cmd) => emit_error(&output_stream, loc, script, match err.kind() {
+		    ScriptEntry::Command(TopLevelCommand::Command(cmd)) => emit_error(&output_stream, loc, script, match err.kind() {
 				NotFound => format!("Couldn't find executable for `{}`", cmd.target),
 				PermissionDenied => format!("Insufficient permission to execute `{}`", cmd.target),
 				_ => format!("Failed to execute `{}`", cmd.target),
 			}),
-		    ScriptEntry::Env { .. } => unreachable!()
+		    _ => unreachable!()
 		},
 		CommandExecError::InvalidGlob { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("Failed to parse `{}`", glob)),
 		CommandExecError::NoGlobMatches { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("No matches found for `{}`", glob)),

@@ -20,11 +20,12 @@ path = "src/main.rs"
 name = "runscript"
 
 [dependencies]
-getopts = "0.2"     # Command-line option parsing
-termcolor = "1.1"   # Terminal colouring
+getopts = "0.2" # Command-line option parsing
+termcolor = "1.1" # Terminal colouring
 filenamegen = "0.2" # Glob parsing and walking
-anyhow = "1.0"      # Trait-based error type
-enum-map = "0.6"    # Array-based map over enum constants
+anyhow = "1.0" # Trait-based error type
+enum-map = "0.6" # Array-based map over enum constants
 atty = "0.2"
 
 trace = { version = "0.1", optional = true }
+either = "1.6.1"

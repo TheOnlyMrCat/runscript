@@ -66,7 +66,7 @@ pub enum ScriptPhase {
 
 #[derive(Debug, Clone)]
 pub enum ScriptEntry {
-	Command(Command),
+	Command(TopLevelCommand),
 	Env {
 		var: String,
 		val: Argument,
@@ -77,10 +77,16 @@ pub enum ScriptEntry {
 impl ScriptEntry {
 	pub fn expect_command(self) -> Option<Command> {
 		match self {
-			ScriptEntry::Command(c) => Some(c),
+			ScriptEntry::Command(TopLevelCommand::Command(c)) => Some(c),
 			_ => None,
 		}
 	}
+}
+
+#[derive(Debug, Clone)]
+pub enum TopLevelCommand {
+	Command(Command),
+	BlockCommand(Vec<ScriptEntry>),
 }
 
 #[derive(Debug, Clone)]
@@ -100,8 +106,8 @@ pub enum Argument {
 
 #[derive(Debug, Clone)]
 pub enum ChainedCommand {
-    And(Command),
-    Or(Command),
+    And(TopLevelCommand),
+    Or(TopLevelCommand),
     Pipe(Command),
     None,
 }
@@ -201,6 +207,15 @@ impl Display for ScriptEntry {
 		match self {
 			ScriptEntry::Command(c) => c.fmt(f),
 			ScriptEntry::Env { var, val, .. } => write!(f, "{}={}", var, val),
+		}
+	}
+}
+
+impl Display for TopLevelCommand {
+	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+		match self {
+			TopLevelCommand::Command(c) => c.fmt(f),
+			TopLevelCommand::BlockCommand(_) => write!(f, "{{ ... }}"),
 		}
 	}
 }

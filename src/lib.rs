@@ -9,7 +9,7 @@ pub mod exec;
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
-use exec::{CommandExecError, ProcessOutput, Verbosity};
+use exec::{ProcessOutput, Verbosity};
 
 /// Alternate definition of `run` for `exec` when it makes a recursive call
 pub(crate) fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, capture_stdout: bool, env_remap: &HashMap<String, String>) -> Result<ProcessOutput, std::io::Error> {
@@ -20,7 +20,7 @@ pub(crate) fn run(args: &[&str], cwd: &Path, inherit_verbosity: Verbosity, captu
 		.current_dir(cwd)
 		.stdin(Stdio::inherit())
 		.stdout(if capture_stdout { Stdio::piped() } else { Stdio::inherit() })
-		.stderr(Stdio::inherit());
+		.stderr(if capture_stdout { Stdio::piped() } else { Stdio::inherit() });
 	match inherit_verbosity {
 	    Verbosity::Normal => &mut command,
 	    Verbosity::Quiet => command.arg("-q"),

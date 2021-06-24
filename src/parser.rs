@@ -514,7 +514,7 @@ pub fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(contex
 	};
 
 	if matches!(bk, BreakCondition::Newline(_)) {
-		return Ok(Some(ScriptEntry::Command(command)));
+		return Ok(Some(ScriptEntry::Command(TopLevelCommand::Command(command))));
 	}
 
 	loop {
@@ -564,7 +564,7 @@ pub fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(contex
 					Some((i, '|')) => {
 						let i = *i;
 						context.iterator.next();
-						return Ok(Some(parse_command(context, ChainedCommand::Or(command), nest_terminate)?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
+						return Ok(Some(parse_command(context, ChainedCommand::Or(TopLevelCommand::Command(command)), nest_terminate)?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
 					},
 					Some((i, _)) => {
 						let i = *i;
@@ -579,7 +579,7 @@ pub fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(contex
 				context.iterator.next();
 				match context.iterator.next() {
 					Some((i, '&')) => {
-						return Ok(Some(parse_command(context, ChainedCommand::And(command), nest_terminate)?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
+						return Ok(Some(parse_command(context, ChainedCommand::And(TopLevelCommand::Command(command)), nest_terminate)?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
 					},
 					Some((i, _)) => {
 						return Err(RunscriptParseErrorData::ReservedToken { location: context.get_loc(i - 1), token: "&".to_owned(), reason: "Single `&` signifies background execution, which is unsupported.".to_owned()})
@@ -609,7 +609,7 @@ pub fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(contex
 		}
 	}
 
-	Ok(Some(ScriptEntry::Command(command)))
+	Ok(Some(ScriptEntry::Command(TopLevelCommand::Command(command))))
 }
 
 /// Parses an argument interpolation, expecting the first `$` to have already been consumed.
