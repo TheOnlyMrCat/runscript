@@ -1,8 +1,8 @@
-#- b!
+# b!
 cargo build
 #/
 
-#-
+#
 cargo run -- test -r
 #/
 

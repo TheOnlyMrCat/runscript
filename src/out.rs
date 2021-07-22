@@ -4,10 +4,9 @@ use std::rc::Rc;
 
 use termcolor::{StandardStream, WriteColor, ColorSpec, Color};
 
-use crate::exec::CommandExecError;
+// use crate::exec::CommandExecError;
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
-use crate::script::TopLevelCommand;
-use crate::script::{Runscript, ScriptEntry, ScriptPhase};
+use crate::script::{Runscript, ScriptPhase};
 
 pub fn file_read_err(output_stream: &Rc<StandardStream>) {
 	let mut lock = output_stream.lock();
@@ -51,25 +50,29 @@ pub fn file_parse_err(output_stream: &Rc<StandardStream>, RunscriptParseError { 
 		},
 		RunscriptParseErrorData::IllegalEnv { location: loc, msg } => {
 			emit_error(output_stream, loc, &script, format!("Environment variables illegal {}", msg));
-		}
+		},
+		RunscriptParseErrorData::CommandParseError { location, error } => {
+			emit_error(output_stream, location, &script, format!("Error parsing command: {}", error));
+		},
+		
 	}
 }
 
-pub fn bad_command_err(output_stream: &Rc<StandardStream>, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
-	match &error {
-		CommandExecError::BadCommand { err, loc } => match cmd {
-		    ScriptEntry::Command(TopLevelCommand::Command(cmd)) => emit_error(&output_stream, loc, script, match err.kind() {
-				NotFound => format!("Couldn't find executable for `{}`", cmd.target),
-				PermissionDenied => format!("Insufficient permission to execute `{}`", cmd.target),
-				_ => format!("Failed to execute `{}`", cmd.target),
-			}),
-		    _ => unreachable!()
-		},
-		CommandExecError::InvalidGlob { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("Failed to parse `{}`", glob)),
-		CommandExecError::NoGlobMatches { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("No matches found for `{}`", glob)),
-	}
-	//TODO Verbose output option
-}
+// pub fn bad_command_err(output_stream: &Rc<StandardStream>, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
+// 	match &error {
+// 		CommandExecError::BadCommand { err, loc } => match cmd {
+// 		    ScriptEntry::Command(TopLevelCommand::Command(cmd)) => emit_error(&output_stream, loc, script, match err.kind() {
+// 				NotFound => format!("Couldn't find executable for `{}`", cmd.target),
+// 				PermissionDenied => format!("Insufficient permission to execute `{}`", cmd.target),
+// 				_ => format!("Failed to execute `{}`", cmd.target),
+// 			}),
+// 		    _ => unreachable!()
+// 		},
+// 		CommandExecError::InvalidGlob { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("Failed to parse `{}`", glob)),
+// 		CommandExecError::NoGlobMatches { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("No matches found for `{}`", glob)),
+// 	}
+// 	//TODO Verbose output option
+// }
 
 pub fn bad_target(output_stream: &Rc<StandardStream>, target: &str) {
 	let mut lock = output_stream.lock();
