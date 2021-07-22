@@ -2,6 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::CharIndices;
 
+use conch_parser::ast::TopLevelCommand;
+use conch_parser::ast::builder::{Builder, DefaultBuilder};
+use conch_parser::lexer::Lexer;
+use conch_parser::parse::{DefaultParser, ParseError, Parser};
 use enum_map::EnumMap;
 
 #[cfg(feature="trace")]
@@ -114,7 +118,12 @@ pub enum RunscriptParseErrorData {
 		location: RunscriptLocation,
 		/// The message to continue the string `"Environment variables illegal "`
 		msg: String,
-	}
+	},
+	CommandParseError {
+		location: RunscriptLocation,
+		/// Detail of the error
+		error: ParseError<<DefaultBuilder<String> as Builder>::Error>,
+	},
 }
 
 pub fn parse_runfile(path: impl Into<PathBuf>) -> Result<Runscript, ParseOrIOError> {
@@ -156,9 +165,6 @@ impl ParsingContext<'_, CharIndices<'_>> {
 				source: source.source.clone(),
 				includes: Vec::new(),
 				scripts: Scripts {
-					pre_global_target: EnumMap::new(),
-					global_target: EnumMap::new(),
-					default_target: EnumMap::new(),
 					targets: HashMap::new(),
 				},
 				options: Vec::new(),
@@ -308,52 +314,33 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 				consume_line(&mut context.iterator);
 			}
 
+			let (commands, error) = parse_commands(context);
+
+			if let Some(e) = error {
+				let index = context.iterator.peek().unwrap().0;
+				return Err(RunscriptParseErrorData::CommandParseError {
+					location: context.get_loc(index),
+					error: e
+				})
+			}
+
 			let script = Script {
 				location: context.get_loc(i),
-				commands: parse_commands(context)?,
+				commands,
 			};
 
-			if name == "-" {
-				if let Some(prev_script) = &context.runfile.scripts.default_target[phase] {
-					return Err(RunscriptParseErrorData::MultipleDefinition {
-						previous_location: prev_script.location.clone(),
-						new_location: script.location,
-						target_name: name,
-					});
-				}
-				context.runfile.scripts.default_target[phase] = Some(script);
-			} else if name == "#" {
-				if let Some(prev_script) = &context.runfile.scripts.global_target[phase] {
-					return Err(RunscriptParseErrorData::MultipleDefinition {
-						previous_location: prev_script.location.clone(),
-						new_location: script.location,
-						target_name: name,
-					});
-				}
-				context.runfile.scripts.global_target[phase] = Some(script);
-			} else if name == "<" {
-				if let Some(prev_script) = &context.runfile.scripts.pre_global_target[phase] {
-					return Err(RunscriptParseErrorData::MultipleDefinition {
-						previous_location: prev_script.location.clone(),
-						new_location: script.location,
-						target_name: name,
-					})
-				}
-				context.runfile.scripts.pre_global_target[phase] = Some(script);
-			} else {
-				if name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')) {
-					return Err(RunscriptParseErrorData::InvalidID { location: context.get_loc(i + 1), found: name });
-				}
-				let target = context.runfile.scripts.targets.entry(name.clone()).or_insert_with(EnumMap::new);
-				if let Some(prev_script) = &target[phase] {
-					return Err(RunscriptParseErrorData::MultipleDefinition {
-						previous_location: prev_script.location.clone(),
-						new_location: script.location,
-						target_name: name,
-					});
-				}
-				target[phase] = Some(script);
+			if name.chars().any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-')) {
+				return Err(RunscriptParseErrorData::InvalidID { location: context.get_loc(i + 1), found: name });
 			}
+			let target = context.runfile.scripts.targets.entry(name.clone()).or_insert_with(EnumMap::new);
+			if let Some(prev_script) = &target[phase] {
+				return Err(RunscriptParseErrorData::MultipleDefinition {
+					previous_location: prev_script.location.clone(),
+					new_location: script.location,
+					target_name: name,
+				});
+			}
+			target[phase] = Some(script);
 		},
 		(_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => continue,
 		_ => todo!(),
@@ -364,306 +351,15 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 
 /// Parses a block of commands for the given `ParsingContext`, terminating when it reaches a `#/`
 #[cfg_attr(feature="trace", trace)]
-pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<Vec<ScriptEntry>, RunscriptParseErrorData> {
-	let mut cmds = Vec::new();
-	while let Some(cmd) = parse_command(context, ChainedCommand::None, None)? {
-		// parse_command returns None when the first 'word' it encounters is `#/`
-		cmds.push(cmd);
-	}
-	Ok(cmds)
-}
-
-/// Parses for the given `ParsingContext`, returning the next command found or `None` if the next command is `#/`
-#[cfg_attr(feature="trace", trace)]
-pub fn parse_command<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>, chained: ChainedCommand, nest_terminate: Option<char>) -> Result<Option<ScriptEntry>, RunscriptParseErrorData> {
-	let end_loc = context.get_loc(context.runfile.source.len());
-	let start_loc = loop {
-		match context.iterator.peek() {
-			Some((_, ' ')) | Some((_, '\t')) | Some((_, '\n')) => {
-				context.iterator.next();
-			},
-			Some((_, '#')) => {
-				context.iterator.next();
-				if let Some((_, '/')) = context.iterator.next() {
-					return Ok(None);
-				} else {
-					consume_line(&mut context.iterator);
-				}
-			},
-			Some((i, _)) => {
-				break *i;
-			},
-			None => {
-				return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "#/".to_string() })
-			}
-		}
-	};
-	let (target, bk) = match context.iterator.peek() {
-		Some((_, '\'')) => {
-			context.iterator.next();
-			let mut buf = String::new();
-			loop {
-				match context.iterator.next() {
-					Some((_, '\'')) => break,
-					Some((_, c)) => buf.push(c),
-					None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
-				}
-			}
-			(Argument::Single(buf), BreakCondition::Parse)
-		},
-		Some((_, '"')) => {
-			context.iterator.next();
-			let mut acc = Vec::new();
-			let mut buf = String::new();
-			loop {
-				match context.iterator.next() {
-					Some((_, '"')) => break,
-					Some((_, '$')) => {
-						if !buf.is_empty() {
-							acc.push(ArgPart::Str(std::mem::replace(&mut buf, String::new())))
-						}
-						acc.push(parse_interpolate(context)?);
-					}
-					Some((_, c)) => buf.push(c),
-					None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`\"`".to_owned() }),
-				}
-			}
-			if !buf.is_empty() {
-				acc.push(ArgPart::Str(buf))
-			}
-			(Argument::Double(acc), BreakCondition::Parse)
-		},
-		Some((_, '$')) => {
-			context.iterator.next();
-			(Argument::Unquoted(parse_interpolate(context)?), BreakCondition::Parse)
-		},
-		Some(_) => {
-			let (s, bk) = match nest_terminate {
-				Some(c) => consume_word_break_punctuation(&mut context.iterator, &[c, '=']),
-				None => consume_word_break_punctuation(&mut context.iterator, &['=']),
-			};
-			(Argument::Unquoted(ArgPart::Str(s)), bk)
-		},
-		None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "#/".to_owned() })
-	};
-
-	if matches!(bk, BreakCondition::Punctuation('=')) {
-		let (var_argument, bk) = match context.iterator.peek() {
-			Some((_, '\'')) => {
-				context.iterator.next();
-				let mut buf = String::new();
-				loop {
-					match context.iterator.next() {
-						Some((_, '\'')) => break,
-						Some((_, c)) => buf.push(c),
-						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
-					}
-				}
-				(Argument::Single(buf), BreakCondition::Parse)
-			},
-			Some((_, '"')) => {
-				context.iterator.next();
-				let mut acc = Vec::new();
-				let mut buf = String::new();
-				loop {
-					match context.iterator.next() {
-						Some((_, '"')) => break,
-						Some((_, '$')) => {
-							if !buf.is_empty() {
-								acc.push(ArgPart::Str(std::mem::replace(&mut buf, String::new())))
-							}
-							acc.push(parse_interpolate(context)?);
-						}
-						Some((_, c)) => buf.push(c),
-						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`\"`".to_owned() }),
-					}
-				}
-				if !buf.is_empty() {
-					acc.push(ArgPart::Str(buf))
-				}
-				(Argument::Double(acc), BreakCondition::Parse)
-			},
-			Some((_, '$')) => {
-				context.iterator.next();
-				(Argument::Unquoted(parse_interpolate(context)?), BreakCondition::Parse)
-			},
-			Some(_) => { // This also captures newlines, which causes it to return an empty string. This is expected behaviour.
-				let (s, bk) = match nest_terminate {
-					Some(c) => consume_word_break_punctuation(&mut context.iterator, &[c]),
-					None => consume_word(&mut context.iterator),
-				};
-				(Argument::Unquoted(ArgPart::Str(s)), bk)
-			},
-			None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "#/".to_owned() })
-		};
-		if !matches!(bk, BreakCondition::Newline(_)) {
-			consume_line(&mut context.iterator);
-		}
-		return Ok(Some(ScriptEntry::Env {
-			var: match target { Argument::Unquoted(ArgPart::Str(s)) => s, a => panic!("Expected env var to be a string but was {}", a) },
-			val: var_argument,
-			loc: context.get_loc(start_loc),
-		}));
-	}
-
-	let mut command = Command {
-		target: Box::new(target),
-		args: Vec::new(),
-		chained: Box::new(chained),
-		loc: context.get_loc(start_loc),
-	};
-
-	if matches!(bk, BreakCondition::Newline(_)) {
-		return Ok(Some(ScriptEntry::Command(TopLevelCommand::Command(command))));
-	}
-
-	loop {
-		match context.iterator.peek() {
-			Some((_, '\'')) => {
-				context.iterator.next();
-				let mut buf = String::new();
-				loop {
-					match context.iterator.next() {
-						Some((_, '\'')) => break,
-						Some((_, c)) => buf.push(c),
-						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`'`".to_owned() }),
-					}
-				}
-				command.args.push(Argument::Single(buf));
-			},
-			Some((_, '"')) => {
-				context.iterator.next();
-				let mut acc = Vec::new();
-				let mut buf = String::new();
-				loop {
-					match context.iterator.next() {
-						Some((_, '"')) => break,
-						Some((_, '$')) => {
-							if !buf.is_empty() {
-								acc.push(ArgPart::Str(std::mem::replace(&mut buf, String::new())))
-							}
-							acc.push(parse_interpolate(context)?);
-						}
-						Some((_, c)) => buf.push(c),
-						None => return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "`\"`".to_owned() }),
-					}
-				}
-				if !buf.is_empty() {
-					acc.push(ArgPart::Str(buf))
-				}
-				command.args.push(Argument::Double(acc));
-			},
-			Some((_, ' ')) | Some((_, '\t')) => { context.iterator.next(); }
-			Some((_, '$')) => {
-				context.iterator.next();
-				command.args.push(Argument::Unquoted(parse_interpolate(context)?));
-			},
-			Some((_, '|')) => {
-				context.iterator.next();
-				match context.iterator.peek() {
-					Some((i, '|')) => {
-						let i = *i;
-						context.iterator.next();
-						return Ok(Some(parse_command(context, ChainedCommand::Or(TopLevelCommand::Command(command)), nest_terminate)?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
-					},
-					Some((i, _)) => {
-						let i = *i;
-						return Ok(Some(parse_command(context, ChainedCommand::Pipe(command), nest_terminate)?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
-					},
-					None => {
-						return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "command".to_owned() });
-					}
-				}
-			},
-			Some((_, '&')) => {
-				context.iterator.next();
-				match context.iterator.next() {
-					Some((i, '&')) => {
-						return Ok(Some(parse_command(context, ChainedCommand::And(TopLevelCommand::Command(command)), nest_terminate)?.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?));
-					},
-					Some((i, _)) => {
-						return Err(RunscriptParseErrorData::ReservedToken { location: context.get_loc(i - 1), token: "&".to_owned(), reason: "Single `&` signifies background execution, which is unsupported.".to_owned()})
-					},
-					None => {
-						return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "command".to_owned()});
-					}
-				}
-			},
-			Some((_, '\n')) => {
-				context.iterator.next();
-				break;
-			}
-			Some(_) => {
-				let (s, bk) = match nest_terminate {
-					Some(c) => consume_word_break_punctuation(&mut context.iterator, &[c]),
-					None => consume_word(&mut context.iterator),
-				};
-				command.args.push(Argument::Unquoted(ArgPart::Str(s)));
-				if matches!(bk, BreakCondition::Newline(_) | BreakCondition::Punctuation(_)) {
-					break;
-				}
-			},
-			None => {
-				return Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "#/".to_owned() });
-			}
-		}
-	}
-
-	Ok(Some(ScriptEntry::Command(TopLevelCommand::Command(command))))
-}
-
-/// Parses an argument interpolation, expecting the first `$` to have already been consumed.
-#[cfg_attr(feature="trace", trace)]
-pub fn parse_interpolate<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<ArgPart, RunscriptParseErrorData> {
-	let end_loc = context.get_loc(context.runfile.source.len());
-	match context.iterator.peek() {
-		Some((i, '(')) => {
-			let i = *i;
-			context.iterator.next();
-			Ok(ArgPart::Cmd(
-				parse_command(context, ChainedCommand::None, Some(')'))?
-					.ok_or(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: "#/".to_owned(), expected: "command".to_owned()})?
-					.expect_command().ok_or(RunscriptParseErrorData::IllegalEnv { location: context.get_loc(i + 1), msg: "in interpolated command arguments".to_owned()})?
-			))
-		},
-		Some((_, '@')) => {
-			context.iterator.next();
-			Ok(ArgPart::AllArgs)
-		},
-		Some((_, c)) if c.is_ascii_digit() => {
-			let mut acc = *c as usize - '0' as usize;
-			context.iterator.next();
-			loop {
-				let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
-				match c.to_digit(10) {
-					Some(i) => {
-						context.iterator.next();
-						acc = acc * 10 + i as usize;
-					},
-					None => break,
-				}
-			}
-			Ok(ArgPart::Arg(acc))
-		},
-		Some((_, c)) if c.is_ascii_alphabetic() || *c == '_' => {
-			let mut buf = String::from(*c);
-			context.iterator.next();
-			loop {
-				let (_, c) = context.iterator.peek().ok_or(RunscriptParseErrorData::UnexpectedEOF { location: end_loc.clone(), expected: "#/".to_owned() })?;
-				if c.is_ascii_alphanumeric() || *c == '_' {
-					buf.push(*c);
-					context.iterator.next();
-				} else {
-					break;
-				}
-			}
-			Ok(ArgPart::Var(buf))
-		},
-		Some((i, c)) => {
-			let i = *i; let c = *c;
-			Err(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i), found: c.to_string(), expected: "environment variable".to_owned() })
-		},
-		None => Err(RunscriptParseErrorData::UnexpectedEOF { location: end_loc, expected: "environment variable".to_owned() })
+pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> (Vec<TopLevelCommand<String>>, Option<ParseError<<DefaultBuilder<String> as Builder>::Error>>) {
+	let lexer = Lexer::new((&mut context.iterator).map(|(i, c)| c));
+	let parser = DefaultParser::new(lexer);
+	let mut commands = parser.into_iter().collect::<Vec<_>>();
+	if let Err(_) = commands.last().unwrap() {
+		let e = commands.pop().unwrap().unwrap_err();
+		return (commands.into_iter().collect::<Result<_, _>>().unwrap(), Some(e));
+	} else {
+		return (commands.into_iter().collect::<Result<_, _>>().unwrap(), None);
 	}
 }
 

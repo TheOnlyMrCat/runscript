@@ -9,7 +9,6 @@ use termcolor::ColorSpec;
 
 use crate::parser::RunscriptLocation;
 use crate::run;
-use crate::script::{self, ArgPart, Argument, ChainedCommand, Script, ScriptEntry};
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
@@ -136,6 +135,8 @@ impl From<Output> for ProcessOutput {
 		}
 	}
 }
+
+/*
 
 pub fn exec_script(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
 	exec_script_entries(&script.commands, config, &HashMap::new())
@@ -369,6 +370,8 @@ fn evaluate_part(part: &ArgPart, env_override: &HashMap<String, String>, config:
 		}
 	}
 }
+
+*/
 
 #[cfg(unix)]
 use std::os::raw::{c_int, c_char};

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 
+use conch_parser::ast::TopLevelCommand;
 use enum_map::EnumMap;
 
 use crate::parser::RunscriptLocation;
@@ -31,31 +32,13 @@ pub struct RunscriptInclude {
 /// The exectable scripts defined by a [`Runscript`](struct.Runscript.html)
 #[derive(Clone, Debug)]
 pub struct Scripts {
-	/// The scripts defined under `#<`
-	/// 
-	/// These scripts are executed in their respective `ScriptPhase` before the targeted target.
-	pub pre_global_target: EnumMap<ScriptPhase, Option<Script>>,
-	/// The scripts defined under `##`
-	/// 
-	/// These scripts are executed in their respective `ScriptPhase` after the targeted target.
-	pub global_target: EnumMap<ScriptPhase, Option<Script>>,
-	/// The scripts defined under `#-`
-	/// 
-	/// These scripts are executed in their respective `ScriptPhase` as the targeted target if no target is specified
-	pub default_target: EnumMap<ScriptPhase, Option<Script>>,
-	/// The scripts defined under `#name`
+	/// The scripts defined under `$#name`
 	/// 
 	/// These scripts are executed in their respective `ScriptPhase` if they were chosen as the target
 	pub targets: HashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
-#[derive(Clone, Debug)]
-pub struct Script {
-	pub commands: Vec<ScriptEntry>,
-    pub location: RunscriptLocation,
-}
-
-#[derive(Debug,PartialEq,Hash,Eq,Clone,Copy,enum_map::Enum)]
+#[derive(Debug, PartialEq, Hash, Eq, Clone, Copy, enum_map::Enum)]
 pub enum ScriptPhase {
     BuildOnly,   // b!
     Build,       // b
@@ -64,61 +47,10 @@ pub enum ScriptPhase {
     RunOnly,     // r!
 }
 
-#[derive(Debug, Clone)]
-pub enum ScriptEntry {
-	Command(TopLevelCommand),
-	Env {
-		var: String,
-		val: Argument,
-		loc: RunscriptLocation,
-	},
-}
-
-impl ScriptEntry {
-	pub fn expect_command(self) -> Option<Command> {
-		match self {
-			ScriptEntry::Command(TopLevelCommand::Command(c)) => Some(c),
-			_ => None,
-		}
-	}
-}
-
-#[derive(Debug, Clone)]
-pub enum TopLevelCommand {
-	Command(Command),
-	BlockCommand(Vec<ScriptEntry>),
-}
-
-#[derive(Debug, Clone)]
-pub struct Command {
-    pub target: Box<Argument>,
-    pub args: Vec<Argument>,
-    pub chained: Box<ChainedCommand>,
-    pub loc: RunscriptLocation,
-}
-
-#[derive(Debug, Clone)]
-pub enum Argument {
-    Unquoted(ArgPart),
-    Single(String),
-    Double(Vec<ArgPart>),
-}
-
-#[derive(Debug, Clone)]
-pub enum ChainedCommand {
-    And(TopLevelCommand),
-    Or(TopLevelCommand),
-    Pipe(Command),
-    None,
-}
-
-#[derive(Debug, Clone)]
-pub enum ArgPart {
-    Str(String),
-	Arg(usize),
-	AllArgs,
-    Var(String),
-    Cmd(Command),
+#[derive(Clone, Debug)]
+pub struct Script {
+	pub commands: Vec<TopLevelCommand<String>>,
+    pub location: RunscriptLocation,
 }
 
 impl Runscript {
@@ -154,13 +86,13 @@ impl Runscript {
 	}
 
 	pub fn get_default_script(&self, phase: ScriptPhase) -> Option<&Script> {
-		match self.scripts.default_target[phase].as_ref() {
+		match self.scripts.targets.get("").map(|o| o[phase].as_ref()).flatten() {
 			Some(script) => {
 				Some(&script)
 			},
 			_ => {
 				for include in &self.includes {
-					if let Some(script) = include.runscript.scripts.default_target[phase].as_ref() {
+					if let Some(script) = include.runscript.scripts.targets.get("").map(|o| o[phase].as_ref()).flatten() {
 						return Some(&script);
 					}
 				}
@@ -168,99 +100,6 @@ impl Runscript {
 			}
 		}
 	}
-
-	pub fn get_global_script(&self, phase: ScriptPhase) -> Option<&Script> {
-		match self.scripts.global_target[phase].as_ref() {
-			Some(script) => {
-				Some(&script)
-			},
-			_ => {
-				for include in &self.includes {
-					if let Some(script) = include.runscript.scripts.global_target[phase].as_ref() {
-						return Some(&script);
-					}
-				}
-				None
-			}
-		}
-	}
-
-	pub fn get_pre_global_script(&self, phase: ScriptPhase) -> Option<&Script> {
-		match self.scripts.pre_global_target[phase].as_ref() {
-			Some(script) => {
-				Some(&script)
-			},
-			_ => {
-				for include in &self.includes {
-					if let Some(script) = include.runscript.scripts.pre_global_target[phase].as_ref() {
-						return Some(&script);
-					}
-				}
-				None
-			}
-		}
-	}
-}
-
-impl Display for ScriptEntry {
-	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-		match self {
-			ScriptEntry::Command(c) => c.fmt(f),
-			ScriptEntry::Env { var, val, .. } => write!(f, "{}={}", var, val),
-		}
-	}
-}
-
-impl Display for TopLevelCommand {
-	fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-		match self {
-			TopLevelCommand::Command(c) => c.fmt(f),
-			TopLevelCommand::BlockCommand(_) => write!(f, "{{ ... }}"),
-		}
-	}
-}
-
-impl Display for Command {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}{}{}", match &*self.chained {
-            ChainedCommand::None => "".to_owned(),
-            ChainedCommand::And(c) => format!("{} && ", c),
-            ChainedCommand::Or(c) => format!("{} || ", c),
-            ChainedCommand::Pipe(c) => format!("{} | ", c),
-        }, self.target, self.args.iter().fold("".to_owned(), |mut acc, x| {
-            acc.push(' ');
-            acc + &format!("{}", x)
-        }))
-    }
-}
-
-impl Display for Argument {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{}", match self {
-            Argument::Unquoted(p) => match p {
-                ArgPart::Str(s) => s.clone(),
-                ArgPart::Arg(n) => format!("${}", n),
-                ArgPart::Var(v) => format!("${}", v),
-				ArgPart::Cmd(c) => format!("$({})", c),
-				ArgPart::AllArgs => "$@".to_owned(),
-            },
-            Argument::Single(s) => format!("'{}'", s),
-            Argument::Double(p) =>
-                format!(
-                    "\"{}\"",
-                    p.iter().fold(
-                        "".to_owned(),
-                        |acc, part| match part {
-                            ArgPart::Str(s) => acc + s,
-							ArgPart::Arg(n) => { acc + &format!("${}", n) },
-                            ArgPart::Var(v) => { acc + &format!("${}", v) },
-                            ArgPart::Cmd(c) => { acc + &format!("$({})", c) },
-							ArgPart::AllArgs => { acc + "$@" },
-                        }
-                    )
-                )
-        })
-    }
 }
 
 impl Display for ScriptPhase {
