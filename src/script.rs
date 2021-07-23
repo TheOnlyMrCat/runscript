@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 
 use conch_parser::ast::TopLevelCommand;
 use enum_map::EnumMap;
+use linked_hash_map::LinkedHashMap;
 
 use crate::parser::RunscriptLocation;
 
@@ -35,7 +35,7 @@ pub struct Scripts {
     /// The scripts defined under `$#name`
     ///
     /// These scripts are executed in their respective `ScriptPhase` if they were chosen as the target
-    pub targets: HashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
+    pub targets: LinkedHashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone, Copy, enum_map::Enum)]

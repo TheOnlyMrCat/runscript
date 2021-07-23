@@ -300,8 +300,12 @@ pub fn run(
                         writeln!(lock).expect("Failed to write");
                     }
 
-                    for (target, map) in &runscript.scripts.targets {
-                        print_phase_list(lock, &target, name_length, &map);
+                    if let Some(default_script) = runscript.scripts.targets.get("") {
+                        print_phase_list(lock, "default", name_length, default_script);
+                    }
+
+                    for (target, map) in runscript.scripts.targets.iter().filter(|(target, _)| !target.is_empty()) {
+                        print_phase_list(lock, &target, name_length, map);
                     }
                 }
 

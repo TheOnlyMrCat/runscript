@@ -59,18 +59,6 @@ pub fn file_parse_err(
                 format!("Unexpected end of file; expected {}", expected),
             );
         }
-        RunscriptParseErrorData::ReservedToken {
-            location: loc,
-            token,
-            reason,
-        } => {
-            emit_error(
-                output_stream,
-                loc,
-                &script,
-                format!("Token `{}` reserved. {}", token, reason),
-            );
-        }
         RunscriptParseErrorData::InvalidID {
             location: loc,
             found,
@@ -120,14 +108,6 @@ pub fn file_parse_err(
                 loc,
                 &script,
                 "Parse error in included file".to_owned(),
-            );
-        }
-        RunscriptParseErrorData::IllegalEnv { location: loc, msg } => {
-            emit_error(
-                output_stream,
-                loc,
-                &script,
-                format!("Environment variables illegal {}", msg),
             );
         }
         RunscriptParseErrorData::CommandParseError { location, error } => {
