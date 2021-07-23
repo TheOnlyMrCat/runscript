@@ -1,16 +1,16 @@
-# b!
+$# b!
 cargo build
 $|
 
-#
+$#
 cargo run -- test -r
 $|
 
-#trace
+$trace
 cargo run --features trace -- test -r
 $|
 
-#test r!
+$test r!
 run test/basic: -q
 
 run test/phases:
@@ -47,21 +47,21 @@ run nonexistent-target -x
 run test/all_positionals: Have some positional arguments
 $|
 
-#parent-check r
+$parent-check r
 echo true
 $|
 
-#pkg b
+$pkg b
 run pkg-win
 run pkg-nowin
 $|
 
-#pkg-win b
+$pkg-win b
 cargo build --release --target x86_64-pc-windows-gnu
 tar czf runscript-windows-x86_64.tar.gz -C target/x86_64-pc-windows-gnu/release run.exe
 $|
 
-#pkg-nowin b
+$pkg-nowin b
 cargo build --release --target x86_64-apple-darwin
 tar czf runscript-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release run
 

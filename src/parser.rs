@@ -1,13 +1,13 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::CharIndices;
 
 use conch_parser::ast::builder::{Builder, DefaultBuilder};
 use conch_parser::ast::TopLevelCommand;
 use conch_parser::lexer::Lexer;
-use conch_parser::parse::{CommandGroupDelimiters, DefaultParser, ParseError, Parser};
+use conch_parser::parse::{CommandGroupDelimiters, DefaultParser, ParseError};
 use conch_parser::token::Token;
 use enum_map::EnumMap;
+use linked_hash_map::LinkedHashMap;
 
 use crate::script::*;
 #[cfg(feature = "trace")]
@@ -81,14 +81,6 @@ pub enum RunscriptParseErrorData {
         /// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
         expected: String,
     },
-    /// Found a token which is reserved for later use
-    ReservedToken {
-        location: RunscriptLocation,
-        /// The text of the token which triggered the error
-        token: String,
-        /// The reason the token is reserved
-        reason: String,
-    },
     /// Found a name of a script which contains characters outside of `[A-Za-z_-]`
     InvalidID {
         location: RunscriptLocation,
@@ -113,12 +105,6 @@ pub enum RunscriptParseErrorData {
         previous_location: RunscriptLocation,
         new_location: RunscriptLocation,
         target_name: String,
-    },
-    /// An environment variable declaration was found in an illegal location
-    IllegalEnv {
-        location: RunscriptLocation,
-        /// The message to continue the string `"Environment variables illegal "`
-        msg: String,
     },
     CommandParseError {
         location: RunscriptLocation,
@@ -179,7 +165,7 @@ impl ParsingContext<'_, CharIndices<'_>> {
                 source: source.source.clone(),
                 includes: Vec::new(),
                 scripts: Scripts {
-                    targets: HashMap::new(),
+                    targets: LinkedHashMap::new(),
                 },
                 options: Vec::new(),
             },
@@ -244,11 +230,11 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     while let Some(tk) = context.iterator.next() {
         match tk {
             // Comment
-            (_, '!') => {
+            (_, '#') => {
                 consume_line(&mut context.iterator);
             }
-            // Annotation (Better name?)
-            (i, '$') => {
+            // Annotation
+            (i, '%') => {
                 let (special, bk) = consume_word(&mut context.iterator);
 
                 if matches!(bk, BreakCondition::EOF) {
@@ -336,8 +322,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                 }
             }
             // Script
-            (i, '#') => {
-                let (name, bk) = consume_word(&mut context.iterator);
+            (i, '$') => {
+                let (mut name, bk) = consume_word(&mut context.iterator);
 
                 // Don't ask...
                 let (phase, bk) = match bk {
@@ -387,6 +373,10 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     commands,
                 };
 
+                if name == "#" {
+                    name = "".to_owned();
+                }
+
                 if name
                     .chars()
                     .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
@@ -396,6 +386,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         found: name,
                     });
                 }
+
                 let target = context
                     .runfile
                     .scripts
