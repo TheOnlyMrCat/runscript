@@ -5,7 +5,8 @@ use std::str::CharIndices;
 use conch_parser::ast::builder::{Builder, DefaultBuilder};
 use conch_parser::ast::TopLevelCommand;
 use conch_parser::lexer::Lexer;
-use conch_parser::parse::{DefaultParser, ParseError, Parser};
+use conch_parser::parse::{CommandGroupDelimiters, DefaultParser, ParseError, Parser};
+use conch_parser::token::Token;
 use enum_map::EnumMap;
 
 use crate::script::*;
@@ -365,15 +366,21 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     consume_line(&mut context.iterator);
                 }
 
-                let (commands, error) = parse_commands(context);
-
-                if let Some(e) = error {
-                    let index = context.iterator.peek().unwrap().0;
-                    return Err(RunscriptParseErrorData::CommandParseError {
-                        location: context.get_loc(index),
-                        error: e,
-                    });
-                }
+                let commands = match parse_commands(context) {
+                    Ok(commands) => commands,
+                    Err(e) => {
+                        let index = context
+                            .iterator
+                            .peek()
+                            .copied()
+                            .unwrap_or((source.source.len(), '\0'))
+                            .0;
+                        return Err(RunscriptParseErrorData::CommandParseError {
+                            location: context.get_loc(index),
+                            error: e,
+                        });
+                    }
+                };
 
                 let script = Script {
                     location: context.get_loc(i),
@@ -416,25 +423,26 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 #[cfg_attr(feature = "trace", trace)]
 pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> (
-    Vec<TopLevelCommand<String>>,
-    Option<ParseError<<DefaultBuilder<String> as Builder>::Error>>,
-) {
-    let lexer = Lexer::new((&mut context.iterator).map(|(i, c)| c));
-    let parser = DefaultParser::new(lexer);
-    let mut commands = parser.into_iter().collect::<Vec<_>>();
-    if let Err(_) = commands.last().unwrap() {
-        let e = commands.pop().unwrap().unwrap_err();
-        return (
-            commands.into_iter().collect::<Result<_, _>>().unwrap(),
-            Some(e),
+) -> Result<Vec<TopLevelCommand<String>>, ParseError<<DefaultBuilder<String> as Builder>::Error>> {
+    let lexer = Lexer::new((&mut context.iterator).map(|(_, c)| c));
+    let mut parser = DefaultParser::new(lexer);
+    let mut commands = vec![];
+    loop {
+        commands.extend(
+            parser
+                .command_group(CommandGroupDelimiters {
+                    reserved_tokens: &[Token::Dollar],
+                    ..Default::default()
+                })?
+                .commands,
         );
-    } else {
-        return (
-            commands.into_iter().collect::<Result<_, _>>().unwrap(),
-            None,
-        );
+        parser.reserved_token(&[Token::Dollar]).unwrap();
+        if let Some(&Token::Pipe) = parser.peek_reserved_token(&[Token::Pipe]) {
+            break;
+        }
     }
+    context.iterator.next();
+    Ok(commands)
 }
 
 #[derive(Debug)]
