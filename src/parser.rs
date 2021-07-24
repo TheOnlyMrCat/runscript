@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::str::CharIndices;
 
-use conch_parser::ast::builder::{Builder, DefaultBuilder};
-use conch_parser::ast::TopLevelCommand;
+use conch_parser::ast::builder::{ArcBuilder, AtomicDefaultBuilder, Builder, DefaultBuilder};
+use conch_parser::ast::{AtomicTopLevelCommand, TopLevelCommand};
 use conch_parser::lexer::Lexer;
-use conch_parser::parse::{CommandGroupDelimiters, DefaultParser, ParseError};
+use conch_parser::parse::{CommandGroupDelimiters, DefaultParser, ParseError, Parser};
 use conch_parser::token::Token;
 use enum_map::EnumMap;
 use linked_hash_map::LinkedHashMap;
@@ -414,9 +414,9 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 #[cfg_attr(feature = "trace", trace)]
 pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<Vec<TopLevelCommand<String>>, ParseError<<DefaultBuilder<String> as Builder>::Error>> {
+) -> Result<Vec<AtomicTopLevelCommand<String>>, ParseError<<DefaultBuilder<String> as Builder>::Error>> {
     let lexer = Lexer::new((&mut context.iterator).map(|(_, c)| c));
-    let mut parser = DefaultParser::new(lexer);
+    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
     let mut commands = vec![];
     loop {
         commands.extend(

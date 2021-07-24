@@ -1,21 +1,30 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, ExitStatus, Output, Stdio};
+use std::process::{ExitStatus, Output, Stdio};
+use std::sync::atomic::AtomicBool;
+use std::sync::{Arc, mpsc};
+use std::sync::mpsc::{Receiver, Sender};
 
+use conch_parser::ast::{
+    Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
+    AtomicTopLevelWord, ComplexWord, DefaultAndOrList, DefaultSimpleCommand, ListableCommand,
+    Parameter, ParameterSubstitution, PipeableCommand, Redirect, RedirectOrCmdWord, SimpleCommand,
+    SimpleWord, TopLevelCommand, Word,
+};
 use either::{Either, Left, Right};
 use filenamegen::Glob;
 use termcolor::ColorSpec;
 
 use crate::parser::RunscriptLocation;
-use crate::run;
+use crate::{run, Script};
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
     /// The verbosity of output to the supplied output stream
     pub verbosity: Verbosity,
     /// The output stream to output to, or `None` to produce no output
-    pub output_stream: Option<std::rc::Rc<termcolor::StandardStream>>,
+    pub output_stream: Option<Arc<termcolor::StandardStream>>,
     /// The working directory to execute the script's commands in
     pub working_directory: &'a Path,
     /// Positional arguments to pass to the script.
@@ -136,11 +145,226 @@ impl From<Output> for ProcessOutput {
     }
 }
 
-/*
+struct Interrupt;
 
-pub fn exec_script(script: &Script, config: &ExecConfig) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
+struct Interruptable(Receiver<Interrupt>, AtomicBool);
+struct Interrupter(Sender<Interrupt>);
+
+impl Interruptable {
+    fn was_interrupted(&self) -> bool {
+        self.1.fetch_or(self.0.try_recv().is_ok(), std::sync::atomic::Ordering::AcqRel)
+    }
+}
+
+impl Interrupter {
+    fn new() -> (Interrupter, Interruptable) {
+        let (sender, receiver) = mpsc::channel();
+        (Interrupter(sender), Interruptable(receiver, AtomicBool::new(false)))
+    }
+
+    fn interrupt(&self) {
+        self.0.send(Interrupt);
+    }
+}
+
+pub fn exec_script(
+    script: &Script,
+    config: &ExecConfig,
+) -> Result<ProcessOutput, CommandExecError> {
     exec_script_entries(&script.commands, config, &HashMap::new())
 }
+
+fn exec_script_entries(
+    commands: &[AtomicTopLevelCommand<String>],
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+) -> Result<ProcessOutput, CommandExecError> {
+    // let mut stdout = vec![];
+    // let mut stderr = vec![];
+    crossbeam_utils::thread::scope(|s| {
+        let mut jobs = vec![];
+
+        for AtomicTopLevelCommand(command) in commands {
+            use conch_parser::ast::Command;
+
+            let (command, is_job) = match command {
+                Command::Job(job) => (job, true),
+                Command::List(list) => (list, false),
+            };
+
+            let (interrupter, interruptable) = Interrupter::new();
+
+            if is_job {
+                s.spawn(move |_| exec_andor_list(command, config, env, interruptable));
+                jobs.push(interrupter);
+            } else {
+                exec_andor_list(command, config, env, interruptable);
+            }
+        }
+
+        for job in jobs {
+            job.interrupt();
+        }
+    });
+
+    Ok(ProcessOutput::new(true))
+}
+
+fn exec_andor_list(
+    command: &AtomicCommandList<String, AtomicTopLevelWord<String>, AtomicTopLevelCommand<String>>,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+    interrupter: Interruptable,
+) -> Result<ProcessOutput, CommandExecError> {
+    let mut previous_output = exec_listable_command(&command.first, config, env, &interrupter);
+    //TODO: Chain
+    Ok(ProcessOutput::new(true))
+}
+
+fn exec_listable_command(
+    command: &ListableCommand<
+        AtomicShellPipeableCommand<
+            String,
+            AtomicTopLevelWord<String>,
+            AtomicTopLevelCommand<String>,
+        >,
+    >,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+    interrupter: &Interruptable,
+) -> Result<ProcessOutput, CommandExecError> {
+    match command {
+        ListableCommand::Pipe(negate, commands) => todo!(),
+        ListableCommand::Single(command) => exec_pipeable_command(&command, config, env, interrupter),
+    }
+}
+
+fn exec_pipeable_command(
+    command: &AtomicShellPipeableCommand<
+        String,
+        AtomicTopLevelWord<String>,
+        AtomicTopLevelCommand<String>,
+    >,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+    interrupter: &Interruptable,
+) -> Result<ProcessOutput, CommandExecError> {
+    match command {
+        PipeableCommand::Simple(command) => exec_simple_command(&command, config, env, interrupter),
+        PipeableCommand::Compound(command) => {
+            // Stuff like if, while, until, etc.
+            todo!();
+        }
+        PipeableCommand::FunctionDef(name, body) => {
+            todo!() //TODO: What to do here?? Store it in a hashmap?
+                    // Should I even support functions at all?
+                    // Probably not, since that's kinda what I'm doing anyway.
+        }
+    }
+}
+
+fn exec_simple_command(
+    command: &SimpleCommand<
+        String,
+        AtomicTopLevelWord<String>,
+        Redirect<AtomicTopLevelWord<String>>,
+    >,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+    interrupter: &Interruptable,
+) -> Result<ProcessOutput, CommandExecError> {
+    use std::process::Command;
+
+    // TODO: Env variables
+    // TODO: Redirects
+
+    let mut command_words = command.redirects_or_cmd_words.iter().filter_map(|r| {
+        if let RedirectOrCmdWord::CmdWord(w) = r {
+            Some(evaluate_tl_word(w, config, env))
+        } else {
+            None
+        }
+    });
+
+    Command::new(command_words.next().unwrap()).args(command_words);
+
+    Ok(ProcessOutput::new(true))
+}
+
+fn evaluate_tl_word(
+    AtomicTopLevelWord(word): &AtomicTopLevelWord<String>,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+) -> String {
+    match word {
+        ComplexWord::Concat(words) => words
+            .iter()
+            .map(|w| evaluate_word(w, config, env))
+            .collect(),
+        ComplexWord::Single(word) => evaluate_word(word, config, env),
+    }
+}
+
+fn evaluate_word(
+    word: &Word<
+        String,
+        SimpleWord<
+            String,
+            Parameter<String>,
+            Box<
+                ParameterSubstitution<
+                    Parameter<String>,
+                    AtomicTopLevelWord<String>,
+                    AtomicTopLevelCommand<String>,
+                    Arithmetic<String>,
+                >,
+            >,
+        >,
+    >,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+) -> String {
+    match word {
+        Word::SingleQuoted(word) => word.clone(),
+        Word::DoubleQuoted(words) => words
+            .iter()
+            .map(|w| evaluate_simple_word(w, config, env))
+            .collect(),
+        Word::Simple(word) => evaluate_simple_word(word, config, env),
+    }
+}
+
+fn evaluate_simple_word(
+    word: &SimpleWord<
+        String,
+        Parameter<String>,
+        Box<
+            ParameterSubstitution<
+                Parameter<String>,
+                AtomicTopLevelWord<String>,
+                AtomicTopLevelCommand<String>,
+                Arithmetic<String>,
+            >,
+        >,
+    >,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+) -> String {
+    match word {
+        SimpleWord::Literal(s) => s.clone(),
+        SimpleWord::Escaped(s) => s.clone(),
+        SimpleWord::Param(_) => todo!(),
+        SimpleWord::Subst(_) => todo!(),
+        SimpleWord::Star => todo!(),
+        SimpleWord::Question => todo!(),
+        SimpleWord::SquareOpen => todo!(),
+        SimpleWord::SquareClose => todo!(),
+        SimpleWord::Tilde => todo!(),
+        SimpleWord::Colon => todo!(),
+    }
+}
+
+/*
 
 fn exec_script_entries(entries: &[ScriptEntry], config: &ExecConfig, env_remap: &HashMap<String, String>) -> Result<ProcessOutput, (CommandExecError, ScriptEntry)> {
     let mut env = config.env_remap.clone();
