@@ -1,6 +1,6 @@
 use std::fmt::{self, Display, Formatter};
 
-use conch_parser::ast::TopLevelCommand;
+use conch_parser::ast::{AtomicTopLevelCommand, TopLevelCommand};
 use enum_map::EnumMap;
 use linked_hash_map::LinkedHashMap;
 
@@ -49,7 +49,7 @@ pub enum ScriptPhase {
 
 #[derive(Clone, Debug)]
 pub struct Script {
-    pub commands: Vec<TopLevelCommand<String>>,
+    pub commands: Vec<AtomicTopLevelCommand<String>>,
     pub location: RunscriptLocation,
 }
 
