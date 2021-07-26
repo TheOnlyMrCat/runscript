@@ -205,7 +205,7 @@ fn exec_script_entries(
         for job in jobs {
             job.interrupt();
         }
-    });
+    }).unwrap();
 
     Ok(ProcessOutput::new(true))
 }
@@ -278,17 +278,29 @@ fn exec_simple_command(
     // TODO: Env variables
     // TODO: Redirects
 
-    let mut command_words = command.redirects_or_cmd_words.iter().filter_map(|r| {
+    let command_words = command.redirects_or_cmd_words.iter().filter_map(|r| {
         if let RedirectOrCmdWord::CmdWord(w) = r {
             Some(evaluate_tl_word(w, config, env))
         } else {
             None
         }
-    });
+    }).collect::<Vec<_>>();
 
-    Command::new(command_words.next().unwrap()).args(command_words);
+    // TODO: Print pre-evaluated command words
+    eprintln!(">{}", command_words.iter().fold("".to_owned(), |acc, w| { acc + " " + w }));
 
-    Ok(ProcessOutput::new(true))
+    // TODO: "Builtin" commands
+    // TODO: Interruption
+
+    let output = Command::new(&command_words[0])
+        .args(&command_words[1..])
+        .stdin(Stdio::inherit())
+        .stdout(if config.capture_stdout { Stdio::piped() } else { Stdio::inherit() })
+        .stderr(if config.capture_stdout { Stdio::piped() } else { Stdio::inherit() })
+        .output()
+        .unwrap();
+
+    Ok(output.into())
 }
 
 fn evaluate_tl_word(
@@ -325,7 +337,7 @@ fn evaluate_word(
     env: &HashMap<String, String>,
 ) -> String {
     match word {
-        Word::SingleQuoted(word) => word.clone(),
+        Word::SingleQuoted(literal) => literal.clone(),
         Word::DoubleQuoted(words) => words
             .iter()
             .map(|w| evaluate_simple_word(w, config, env))

@@ -1,0 +1,3 @@
+$# r
+echo Test 'basic command' "with textual" arguments
+$|
