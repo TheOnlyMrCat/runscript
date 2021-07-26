@@ -7,6 +7,7 @@ use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use getopts::Options;
 
@@ -19,6 +20,8 @@ mod script;
 
 use exec::{ProcessExit, ProcessOutput, Verbosity};
 use script::{Runscript, Script, ScriptPhase};
+
+use crate::exec::{ExecConfig, exec_script};
 
 #[cfg(feature = "trace")]
 trace::init_depth_var!();
@@ -94,7 +97,7 @@ pub fn run(
     capture_stdout: bool,
     env_remap: &HashMap<String, String>,
 ) -> Result<ProcessOutput, std::io::Error> {
-    let output_stream = Rc::new(StandardStream::stderr(ColorChoice::Auto));
+    let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
 
     let mut options = Options::new();
 
@@ -105,7 +108,6 @@ pub fn run(
     options.optflag("b", "build-only", "");
     options.optflag("", "build-and-run", "");
     options.optflag("r", "run-only", "");
-    options.optflag("x", "expect-fail", "");
 
     let matches = match options.parse(args) {
         Ok(m) => m,
@@ -125,8 +127,6 @@ pub fn run(
         print!("{}", VERSION_TEXT);
         return Ok(ProcessOutput::new(true));
     }
-
-    let expect_fail = matches.opt_present("expect-fail");
 
     let path_branch_file: String;
     let path_branch_dir: String;
@@ -365,9 +365,36 @@ pub fn run(
                 return Ok(ProcessOutput::new(true));
             }
 
-            let passthrough = rf.options.iter().any(|x| x == "default_positionals");
+            let exec_cfg = ExecConfig {
+                verbosity: Verbosity::Normal, //TODO
+                output_stream: Some(output_stream.clone()),
+                working_directory: &runfile_cwd.to_owned(),
+                positional_args: matches.free.iter().skip(1).cloned().collect(),
+                capture_stdout,
+                env_remap: &env_remap,
+            };
 
-            Ok(ProcessOutput::new(false))
+            match rf.get_target(run_target.as_deref().unwrap_or("")) {
+                Some(target) => {
+                    let scripts = phases.iter().filter_map(|&phase| target[phase].as_ref().map(|target| (target, phase))).collect::<Vec<_>>();
+                    if scripts.is_empty() {
+                        out::bad_script_phase(&output_stream);
+                    }
+
+                    for (script, phase) in scripts {
+                        out::phase_message(&output_stream, phase, run_target.as_deref().unwrap_or("default"));
+                        exec_script(script, &exec_cfg).unwrap();
+                    }
+                },
+                None => {
+                    match run_target {
+                        Some(name) => out::bad_target(&output_stream, &name),
+                        None => out::bad_default(&output_stream),
+                    }
+                },
+            }
+            
+            Ok(ProcessOutput::new(true)) //TODO
         }
         Err(e) => {
             out::file_parse_err(&output_stream, e);

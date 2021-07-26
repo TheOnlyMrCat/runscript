@@ -1,6 +1,6 @@
 use std::io::ErrorKind::*;
 use std::io::Write;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 
@@ -8,12 +8,12 @@ use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
 use crate::script::{Runscript, ScriptPhase};
 
-pub fn file_read_err(output_stream: &Rc<StandardStream>) {
+pub fn file_read_err(output_stream: &Arc<StandardStream>) {
     let mut lock = output_stream.lock();
     writeln!(lock, "Could not find runfile to execute").expect("Failed to write");
 }
 
-pub fn bad_phase_err(output_stream: &Rc<StandardStream>, phase: &str) {
+pub fn bad_phase_err(output_stream: &Arc<StandardStream>, phase: &str) {
     let mut lock = output_stream.lock();
     writeln!(
         lock,
@@ -23,13 +23,13 @@ pub fn bad_phase_err(output_stream: &Rc<StandardStream>, phase: &str) {
     .expect("Failed to write");
 }
 
-pub fn option_parse_err(output_stream: &Rc<StandardStream>, err: getopts::Fail) {
+pub fn option_parse_err(output_stream: &Arc<StandardStream>, err: getopts::Fail) {
     let mut lock = output_stream.lock();
     writeln!(lock, "{}", err).expect("Failed to write");
 }
 
 pub fn file_parse_err(
-    output_stream: &Rc<StandardStream>,
+    output_stream: &Arc<StandardStream>,
     RunscriptParseError { script, data }: RunscriptParseError,
 ) {
     match &data {
@@ -121,7 +121,7 @@ pub fn file_parse_err(
     }
 }
 
-// pub fn bad_command_err(output_stream: &Rc<StandardStream>, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
+// pub fn bad_command_err(output_stream: &Arc<StandardStream>, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
 // 	match &error {
 // 		CommandExecError::BadCommand { err, loc } => match cmd {
 // 		    ScriptEntry::Command(TopLevelCommand::Command(cmd)) => emit_error(&output_stream, loc, script, match err.kind() {
@@ -137,7 +137,7 @@ pub fn file_parse_err(
 // 	//TODO Verbose output option
 // }
 
-pub fn bad_target(output_stream: &Rc<StandardStream>, target: &str) {
+pub fn bad_target(output_stream: &Arc<StandardStream>, target: &str) {
     let mut lock = output_stream.lock();
     writeln!(lock, "No target with name {}", target).expect("Failed to write");
     if atty::is(atty::Stream::Stderr) {
@@ -147,6 +147,16 @@ pub fn bad_target(output_stream: &Rc<StandardStream>, target: &str) {
         writeln!(lock, "(If `{}` was intended as a positional argument, add `$opt default_positionals` to your runscript)", target).expect("Failed to write");
         lock.reset().expect("Failed to reset colour");
     }
+}
+
+pub fn bad_default(output_stream: &Arc<StandardStream>) {
+    let mut lock = output_stream.lock();
+    writeln!(lock, "No default target").expect("Failed to write");
+}
+
+pub fn bad_script_phase(output_stream: &Arc<StandardStream>) {
+    let mut lock = output_stream.lock();
+    writeln!(lock, "No scripts to execute for specified phase").expect("Failed to write");
 }
 
 pub fn phase_color(phase: ScriptPhase) -> Color {
@@ -167,7 +177,7 @@ pub fn phase_color(phase: ScriptPhase) -> Color {
     }
 }
 
-pub fn phase_message(output_stream: &Rc<StandardStream>, phase: ScriptPhase, name: &str) {
+pub fn phase_message(output_stream: &Arc<StandardStream>, phase: ScriptPhase, name: &str) {
     let mut lock = output_stream.lock();
     lock.set_color(
         ColorSpec::new()
@@ -182,7 +192,7 @@ pub fn phase_message(output_stream: &Rc<StandardStream>, phase: ScriptPhase, nam
 }
 
 fn emit_error(
-    output_stream: &Rc<StandardStream>,
+    output_stream: &Arc<StandardStream>,
     location: &RunscriptLocation,
     script: &Runscript,
     error_msg: String,

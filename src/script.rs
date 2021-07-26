@@ -82,33 +82,6 @@ impl Runscript {
             }
         }
     }
-
-    pub fn get_default_script(&self, phase: ScriptPhase) -> Option<&Script> {
-        match self
-            .scripts
-            .targets
-            .get("")
-            .map(|o| o[phase].as_ref())
-            .flatten()
-        {
-            Some(script) => Some(&script),
-            _ => {
-                for include in &self.includes {
-                    if let Some(script) = include
-                        .runscript
-                        .scripts
-                        .targets
-                        .get("")
-                        .map(|o| o[phase].as_ref())
-                        .flatten()
-                    {
-                        return Some(&script);
-                    }
-                }
-                None
-            }
-        }
-    }
 }
 
 impl Display for ScriptPhase {
