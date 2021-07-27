@@ -3,8 +3,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::atomic::AtomicBool;
-use std::sync::{Arc, mpsc};
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{mpsc, Arc};
 
 use conch_parser::ast::{
     Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
@@ -14,6 +14,7 @@ use conch_parser::ast::{
 };
 use either::{Either, Left, Right};
 use filenamegen::Glob;
+use itertools::Itertools;
 use termcolor::ColorSpec;
 
 use crate::parser::RunscriptLocation;
@@ -152,14 +153,20 @@ struct Interrupter(Sender<Interrupt>);
 
 impl Interruptable {
     fn was_interrupted(&self) -> bool {
-        self.1.fetch_or(self.0.try_recv().is_ok(), std::sync::atomic::Ordering::AcqRel)
+        self.1.fetch_or(
+            self.0.try_recv().is_ok(),
+            std::sync::atomic::Ordering::AcqRel,
+        )
     }
 }
 
 impl Interrupter {
     fn new() -> (Interrupter, Interruptable) {
         let (sender, receiver) = mpsc::channel();
-        (Interrupter(sender), Interruptable(receiver, AtomicBool::new(false)))
+        (
+            Interrupter(sender),
+            Interruptable(receiver, AtomicBool::new(false)),
+        )
     }
 
     fn interrupt(&self) {
@@ -205,7 +212,8 @@ fn exec_script_entries(
         for job in jobs {
             job.interrupt();
         }
-    }).unwrap();
+    })
+    .unwrap();
 
     Ok(ProcessOutput::new(true))
 }
@@ -235,7 +243,9 @@ fn exec_listable_command(
 ) -> Result<ProcessOutput, CommandExecError> {
     match command {
         ListableCommand::Pipe(negate, commands) => todo!(),
-        ListableCommand::Single(command) => exec_pipeable_command(&command, config, env, interrupter),
+        ListableCommand::Single(command) => {
+            exec_pipeable_command(&command, config, env, interrupter)
+        }
     }
 }
 
@@ -278,16 +288,24 @@ fn exec_simple_command(
     // TODO: Env variables
     // TODO: Redirects
 
-    let command_words = command.redirects_or_cmd_words.iter().filter_map(|r| {
-        if let RedirectOrCmdWord::CmdWord(w) = r {
-            Some(evaluate_tl_word(w, config, env))
-        } else {
-            None
-        }
-    }).collect::<Vec<_>>();
+    let command_words = command
+        .redirects_or_cmd_words
+        .iter()
+        .filter_map(|r| {
+            if let RedirectOrCmdWord::CmdWord(w) = r {
+                Some(evaluate_tl_word(w, config, env))
+            } else {
+                None
+            }
+        })
+        .flatten_ok()
+        .collect::<Result<Vec<_>, _>>()?;
 
     // TODO: Print pre-evaluated command words
-    eprintln!(">{}", command_words.iter().fold("".to_owned(), |acc, w| { acc + " " + w }));
+    eprintln!(
+        ">{}",
+        command_words.join(" ")
+    );
 
     // TODO: "Builtin" commands
     // TODO: Interruption
@@ -295,8 +313,16 @@ fn exec_simple_command(
     let output = Command::new(&command_words[0])
         .args(&command_words[1..])
         .stdin(Stdio::inherit())
-        .stdout(if config.capture_stdout { Stdio::piped() } else { Stdio::inherit() })
-        .stderr(if config.capture_stdout { Stdio::piped() } else { Stdio::inherit() })
+        .stdout(if config.capture_stdout {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
+        .stderr(if config.capture_stdout {
+            Stdio::piped()
+        } else {
+            Stdio::inherit()
+        })
         .output()
         .unwrap();
 
@@ -307,11 +333,12 @@ fn evaluate_tl_word(
     AtomicTopLevelWord(word): &AtomicTopLevelWord<String>,
     config: &ExecConfig,
     env: &HashMap<String, String>,
-) -> String {
+) -> Result<Vec<String>, CommandExecError> {
     match word {
         ComplexWord::Concat(words) => words
             .iter()
             .map(|w| evaluate_word(w, config, env))
+            .flatten_ok()
             .collect(),
         ComplexWord::Single(word) => evaluate_word(word, config, env),
     }
@@ -335,13 +362,14 @@ fn evaluate_word(
     >,
     config: &ExecConfig,
     env: &HashMap<String, String>,
-) -> String {
+) -> Result<Vec<String>, CommandExecError> {
     match word {
-        Word::SingleQuoted(literal) => literal.clone(),
-        Word::DoubleQuoted(words) => words
+        Word::SingleQuoted(literal) => Ok(vec![literal.clone()]),
+        Word::DoubleQuoted(words) => Ok(vec![words
             .iter()
             .map(|w| evaluate_simple_word(w, config, env))
-            .collect(),
+            .flatten_ok()
+            .collect::<Result<String, _>>()?]),
         Word::Simple(word) => evaluate_simple_word(word, config, env),
     }
 }
@@ -361,18 +389,75 @@ fn evaluate_simple_word(
     >,
     config: &ExecConfig,
     env: &HashMap<String, String>,
-) -> String {
+) -> Result<Vec<String>, CommandExecError> {
     match word {
-        SimpleWord::Literal(s) => s.clone(),
-        SimpleWord::Escaped(s) => s.clone(),
-        SimpleWord::Param(_) => todo!(),
-        SimpleWord::Subst(_) => todo!(),
+        SimpleWord::Literal(s) => Ok(vec![s.clone()]),
+        SimpleWord::Escaped(s) => Ok(vec![s.clone()]),
+        SimpleWord::Param(p) => Ok(evaluate_parameter(p, config, env)),
+        SimpleWord::Subst(p) => evaluate_param_subst(p, config, env),
         SimpleWord::Star => todo!(),
         SimpleWord::Question => todo!(),
         SimpleWord::SquareOpen => todo!(),
         SimpleWord::SquareClose => todo!(),
         SimpleWord::Tilde => todo!(),
         SimpleWord::Colon => todo!(),
+    }
+}
+
+fn evaluate_param_subst(
+    param: &ParameterSubstitution<
+        Parameter<String>,
+        AtomicTopLevelWord<String>,
+        AtomicTopLevelCommand<String>,
+        Arithmetic<String>,
+    >,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+) -> Result<Vec<String>, CommandExecError> {
+    match param {
+        ParameterSubstitution::Command(commands) => exec_script_entries(commands, config, env).map(|output| vec![String::from_utf8(output.stdout).unwrap()]),
+        ParameterSubstitution::Len(p) => Ok(vec![format!("{}", match p {
+            Parameter::At | Parameter::Star => config.positional_args.len(),
+            p => evaluate_parameter(p, config, env).into_iter().map(|s| s.len()).reduce(|acc, s| acc + s + 1).unwrap_or(0),
+        })]),
+        ParameterSubstitution::Arith(_) => todo!(),
+        ParameterSubstitution::Default(_, _, _) => todo!(),
+        ParameterSubstitution::Assign(_, _, _) => todo!(),
+        ParameterSubstitution::Error(_, _, _) => todo!(),
+        ParameterSubstitution::Alternative(_, _, _) => todo!(),
+        ParameterSubstitution::RemoveSmallestSuffix(_, _) => todo!(),
+        ParameterSubstitution::RemoveLargestSuffix(_, _) => todo!(),
+        ParameterSubstitution::RemoveSmallestPrefix(_, _) => todo!(),
+        ParameterSubstitution::RemoveLargestPrefix(_, _) => todo!(),
+    }
+}
+
+fn evaluate_parameter(
+    parameter: &Parameter<String>,
+    config: &ExecConfig,
+    env: &HashMap<String, String>,
+) -> Vec<String> {
+    match parameter {
+        Parameter::Positional(n) => config
+            .positional_args
+            .get(*n as usize)
+            .cloned()
+            .into_iter()
+            .collect(),
+        Parameter::Var(name) => env
+            .get(name)
+            .cloned()
+            .or_else(|| std::env::var(name).ok())
+            .into_iter()
+            .collect(),
+        Parameter::At => config.positional_args.clone(),
+        Parameter::Pound => vec![format!("{}", config.positional_args.len())],
+        Parameter::Dollar => vec![format!("{}", std::process::id())],
+
+        Parameter::Star => todo!(), // Like @ but runs evaluate_simple_word on each word
+        Parameter::Question => todo!(), // Exit code of previous top-level command
+        Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
+        Parameter::Bang => todo!(), // PID of most recent job
     }
 }
 
