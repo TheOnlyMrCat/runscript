@@ -1,3 +1,7 @@
 $# r
 echo Test 'basic command' "with textual" arguments
+
+echo 'environment variables:' $HOME
+
+echo 'globs:' ../src/*.rs
 $|
