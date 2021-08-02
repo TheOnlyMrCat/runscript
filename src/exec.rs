@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::io::Write;
 use std::path::Path;
 use std::process::{ExitStatus, Output, Stdio};
 use std::sync::atomic::AtomicBool;
@@ -8,14 +7,12 @@ use std::sync::{mpsc, Arc};
 
 use conch_parser::ast::{
     Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
-    AtomicTopLevelWord, ComplexWord, DefaultAndOrList, DefaultSimpleCommand, ListableCommand,
+    AtomicTopLevelWord, ComplexWord, ListableCommand,
     Parameter, ParameterSubstitution, PipeableCommand, Redirect, RedirectOrCmdWord, SimpleCommand,
-    SimpleWord, TopLevelCommand, Word,
+    SimpleWord, Word,
 };
-use either::{Either, Left, Right};
-use filenamegen::Glob;
+use glob::{MatchOptions, Pattern, glob_with};
 use itertools::Itertools;
-use termcolor::ColorSpec;
 
 use crate::parser::RunscriptLocation;
 use crate::{run, Script};
@@ -62,7 +59,6 @@ pub struct ProcessOutput {
 pub enum CommandExecError {
     InvalidGlob {
         glob: String,
-        err: anyhow::Error,
         loc: RunscriptLocation,
     },
     NoGlobMatches {
@@ -303,7 +299,7 @@ fn exec_simple_command(
 
     // TODO: Print pre-evaluated command words
     eprintln!(
-        ">{}",
+        "> {}",
         command_words.join(" ")
     );
 
@@ -335,12 +331,31 @@ fn evaluate_tl_word(
     env: &HashMap<String, String>,
 ) -> Result<Vec<String>, CommandExecError> {
     match word {
-        ComplexWord::Concat(words) => words
-            .iter()
-            .map(|w| evaluate_word(w, config, env))
-            .flatten_ok()
-            .collect(),
-        ComplexWord::Single(word) => evaluate_word(word, config, env),
+        ComplexWord::Concat(words) => {
+            let words = words
+                .iter()
+                .map(|w| evaluate_word(w, config, env))
+                .collect::<Result<Vec<_>, _>>()?;
+            let is_glob = !words.iter().all(|w| matches!(w, GlobPart::Words(_)));
+            if is_glob {
+                let working_dir_path = {
+                    let mut path = Pattern::escape(&config.working_directory.to_string_lossy().into_owned());
+                    path.push('/');
+                    path
+                };
+                let stringified_glob = std::iter::once(working_dir_path.clone()).chain(words.iter().map(|w| match w {
+                    GlobPart::Words(words) => words.iter().map(|s| Pattern::escape(s)).join(" "),
+                    GlobPart::Star => "*".to_owned(),
+                    GlobPart::Question => "?".to_owned(),
+                    GlobPart::SquareOpen => "[".to_owned(),
+                    GlobPart::SquareClose => "]".to_owned(),
+                })).join("");
+                Ok(glob_with(&stringified_glob, MatchOptions::new()).unwrap().map(|path| path.unwrap().to_string_lossy().into_owned().strip_prefix(&working_dir_path).unwrap().to_owned()).collect::<Vec<_>>())
+            } else {
+                Ok(words.into_iter().flat_map(GlobPart::into_string).collect())
+            }
+        },
+        ComplexWord::Single(word) => evaluate_word(word, config, env).map(GlobPart::into_string),
     }
 }
 
@@ -362,14 +377,14 @@ fn evaluate_word(
     >,
     config: &ExecConfig,
     env: &HashMap<String, String>,
-) -> Result<Vec<String>, CommandExecError> {
+) -> Result<GlobPart, CommandExecError> {
     match word {
-        Word::SingleQuoted(literal) => Ok(vec![literal.clone()]),
+        Word::SingleQuoted(literal) => Ok(vec![literal.clone()].into()),
         Word::DoubleQuoted(words) => Ok(vec![words
             .iter()
-            .map(|w| evaluate_simple_word(w, config, env))
+            .map(|w| evaluate_simple_word(w, config, env).map(GlobPart::into_string))
             .flatten_ok()
-            .collect::<Result<String, _>>()?]),
+            .collect::<Result<String, _>>()?].into()),
         Word::Simple(word) => evaluate_simple_word(word, config, env),
     }
 }
@@ -389,18 +404,18 @@ fn evaluate_simple_word(
     >,
     config: &ExecConfig,
     env: &HashMap<String, String>,
-) -> Result<Vec<String>, CommandExecError> {
+) -> Result<GlobPart, CommandExecError> {
     match word {
-        SimpleWord::Literal(s) => Ok(vec![s.clone()]),
-        SimpleWord::Escaped(s) => Ok(vec![s.clone()]),
-        SimpleWord::Param(p) => Ok(evaluate_parameter(p, config, env)),
-        SimpleWord::Subst(p) => evaluate_param_subst(p, config, env),
-        SimpleWord::Star => todo!(),
-        SimpleWord::Question => todo!(),
-        SimpleWord::SquareOpen => todo!(),
-        SimpleWord::SquareClose => todo!(),
+        SimpleWord::Literal(s) => Ok(vec![s.clone()].into()),
+        SimpleWord::Escaped(s) => Ok(vec![s.clone()].into()),
+        SimpleWord::Param(p) => Ok(evaluate_parameter(p, config, env).into()),
+        SimpleWord::Subst(p) => Ok(evaluate_param_subst(p, config, env)?.into()),
+        SimpleWord::Star => Ok(GlobPart::Star),
+        SimpleWord::Question => Ok(GlobPart::Question),
+        SimpleWord::SquareOpen => Ok(GlobPart::SquareOpen),
+        SimpleWord::SquareClose => Ok(GlobPart::SquareClose),
         SimpleWord::Tilde => todo!(),
-        SimpleWord::Colon => todo!(),
+        SimpleWord::Colon => Ok(vec![":".to_owned()].into()),
     }
 }
 
@@ -454,10 +469,36 @@ fn evaluate_parameter(
         Parameter::Pound => vec![format!("{}", config.positional_args.len())],
         Parameter::Dollar => vec![format!("{}", std::process::id())],
 
-        Parameter::Star => todo!(), // Like @ but runs evaluate_simple_word on each word
+        Parameter::Star => todo!(), // Like @ but runs evaluate_word on each word
         Parameter::Question => todo!(), // Exit code of previous top-level command
         Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
         Parameter::Bang => todo!(), // PID of most recent job
+    }
+}
+
+enum GlobPart {
+    Words(Vec<String>),
+    Star,
+    Question,
+    SquareOpen,
+    SquareClose,
+}
+
+impl GlobPart {
+    fn into_string(self) -> Vec<String> {
+        match self {
+            GlobPart::Words(words) => words,
+            GlobPart::Star => vec!["*".to_owned()],
+            GlobPart::Question => vec!["?".to_owned()],
+            GlobPart::SquareOpen => vec!["[".to_owned()],
+            GlobPart::SquareClose => vec!["]".to_owned()],
+        }
+    }
+}
+
+impl From<Vec<String>> for GlobPart {
+    fn from(v: Vec<String>) -> Self {
+        Self::Words(v)
     }
 }
 
