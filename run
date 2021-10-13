@@ -15,8 +15,8 @@ echo true
 #/
 
 #pkg b
-run pkg-win
 run pkg-nowin
+run pkg-win
 #/
 
 #pkg-win b

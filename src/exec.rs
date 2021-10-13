@@ -1,6 +1,7 @@
 use std::collections::HashMap;
-use std::path::Path;
-use std::process::{ExitStatus, Output, Stdio};
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::{Child, ExitStatus, Output, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc};
@@ -49,7 +50,7 @@ pub enum ProcessExit {
 }
 
 #[derive(Debug)]
-pub struct ProcessOutput {
+pub struct FinishedProcess {
     pub status: ProcessExit,
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
@@ -103,6 +104,80 @@ impl ProcessExit {
     }
 }
 
+struct OngoingProcess {
+    pub process: Child,
+}
+
+impl OngoingProcess {
+    fn new(process: Child) -> OngoingProcess {
+        OngoingProcess { process }
+    }
+    
+    fn wait(mut self) -> FinishedProcess {
+        let status = self.process.wait().unwrap();
+        let stdout = if let Some(mut stdout) = self.process.stdout {
+            let mut v = Vec::new();
+            stdout.read_to_end(&mut v);
+            v
+        } else {
+            Vec::new()
+        };
+        let stderr = if let Some(mut stderr) = self.process.stderr {
+            let mut v = Vec::new();
+            stderr.read_to_end(&mut v);
+            v
+        } else {
+            Vec::new()
+        };
+        FinishedProcess {
+            status: ProcessExit::Status(status),
+            stdout,
+            stderr,
+        }
+    }
+}
+
+impl From<Child> for OngoingProcess {
+    fn from(process: Child) -> OngoingProcess {
+        OngoingProcess::new(process)
+    }
+}
+
+struct Pipe {
+    stdin: Option<Stdio>,
+    stdout: bool,
+}
+
+impl Pipe {
+    fn no_pipe() -> Pipe {
+        Pipe {
+            stdin: None,
+            stdout: false,
+        }
+    }
+
+    fn pipe_out() -> Pipe {
+        Pipe {
+            stdin: None,
+            stdout: true,
+        }
+    }
+
+    fn pipe_in(stdin: Stdio) -> Pipe {
+        Pipe {
+            stdin: Some(stdin),
+            stdout: false,
+        }
+    }
+
+    fn pipe_in_out(stdin: Stdio) -> Pipe {
+        Pipe {
+            stdin: Some(stdin),
+            stdout: true,
+        }
+    }
+}
+
 #[cfg(unix)]
 fn convert_bool(b: bool) -> ExitStatus {
     use std::os::unix::process::ExitStatusExt;
@@ -122,9 +197,9 @@ fn convert_bool(_: bool) -> ExitStatus {
     panic!("Expected ExitStatus")
 }
 
-impl ProcessOutput {
-    pub fn new(success: bool) -> ProcessOutput {
-        ProcessOutput {
+impl FinishedProcess {
+    pub fn new(success: bool) -> FinishedProcess {
+        FinishedProcess {
             status: ProcessExit::Bool(success),
             stdout: vec![],
             stderr: vec![],
@@ -132,9 +207,9 @@ impl ProcessOutput {
     }
 }
 
-impl From<Output> for ProcessOutput {
+impl From<Output> for FinishedProcess {
     fn from(o: Output) -> Self {
-        ProcessOutput {
+        FinishedProcess {
             status: ProcessExit::Status(o.status),
             stdout: o.stdout,
             stderr: o.stderr,
@@ -173,196 +248,254 @@ impl Interrupter {
 pub fn exec_script(
     script: &Script,
     config: &ExecConfig,
-) -> Result<ProcessOutput, CommandExecError> {
-    exec_script_entries(&script.commands, config, &HashMap::new())
+) -> Result<FinishedProcess, CommandExecError> {
+    ShellContext { working_directory: config.working_directory.to_owned(), env: HashMap::new() }.exec_script_entries(&script.commands, config, &HashMap::new())
 }
 
-fn exec_script_entries(
-    commands: &[AtomicTopLevelCommand<String>],
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-) -> Result<ProcessOutput, CommandExecError> {
-    // let mut stdout = vec![];
-    // let mut stderr = vec![];
-    crossbeam_utils::thread::scope(|s| {
-        let mut jobs = vec![];
+#[derive(Debug, Clone)]
+struct ShellContext {
+    /// The current working directory
+    working_directory: PathBuf,
+    /// The current environment
+    env: HashMap<String, String>,
+}
 
-        for AtomicTopLevelCommand(command) in commands {
-            use conch_parser::ast::Command;
+impl ShellContext {
+    fn exec_script_entries(
+        &mut self,
+        commands: &[AtomicTopLevelCommand<String>],
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+    ) -> Result<FinishedProcess, CommandExecError> {
+        // let mut stdout = vec![];
+        // let mut stderr = vec![];
+        crossbeam_utils::thread::scope(|s| {
+            let mut jobs = vec![];
 
-            let (command, is_job) = match command {
-                Command::Job(job) => (job, true),
-                Command::List(list) => (list, false),
-            };
+            for AtomicTopLevelCommand(command) in commands {
+                use conch_parser::ast::Command;
 
-            let (interrupter, interruptable) = Interrupter::new();
+                let (command, is_job) = match command {
+                    Command::Job(job) => (job, true),
+                    Command::List(list) => (list, false),
+                };
 
-            if is_job {
-                s.spawn(move |_| exec_andor_list(command, config, env, interruptable));
-                jobs.push(interrupter);
-            } else {
-                exec_andor_list(command, config, env, interruptable);
+                let (interrupter, interruptable) = Interrupter::new();
+
+                if is_job {
+                    let mut frozen_context = self.clone();
+                    s.spawn(move |_| frozen_context.exec_andor_list(command, config, env, interruptable));
+                    jobs.push(interrupter);
+                } else {
+                    self.exec_andor_list(command, config, env, interruptable);
+                }
+            }
+
+            for job in jobs {
+                job.interrupt();
+            }
+        })
+        .unwrap();
+
+        Ok(FinishedProcess::new(true))
+    }
+
+    fn exec_andor_list(
+        &mut self,
+        command: &AtomicCommandList<String, AtomicTopLevelWord<String>, AtomicTopLevelCommand<String>>,
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+        interrupter: Interruptable,
+    ) -> Result<FinishedProcess, CommandExecError> {
+        let mut previous_output = self.exec_listable_command(&command.first, config, env, &interrupter);
+        //TODO: Chain
+        Ok(FinishedProcess::new(true))
+    }
+
+    fn exec_listable_command(
+        &mut self,
+        command: &ListableCommand<
+            AtomicShellPipeableCommand<
+                String,
+                AtomicTopLevelWord<String>,
+                AtomicTopLevelCommand<String>,
+            >,
+        >,
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+        interrupter: &Interruptable,
+    ) -> Result<FinishedProcess, CommandExecError> {
+        match command {
+            ListableCommand::Pipe(negate, commands) => {
+                let mut proc = self.exec_pipeable_command(commands.first().unwrap(), Pipe::pipe_out(), config, env, interrupter)?;
+                if commands.len() > 2 {
+                    for command in &commands[1..commands.len() - 2] {
+                        let next_proc = self.exec_pipeable_command(command, Pipe::pipe_in_out(proc.process.stdout.unwrap().into()), config, env, interrupter)?;
+                        proc = next_proc;
+                    }
+                }
+                let last_proc = self.exec_pipeable_command(commands.last().unwrap(), Pipe::pipe_in(proc.process.stdout.unwrap().into()), config, env, interrupter)?;
+                Ok(last_proc.wait()) //TODO: Negate?
+            },
+            ListableCommand::Single(command) => {
+                self.exec_pipeable_command(&command, Pipe::no_pipe(), config, env, interrupter).map(OngoingProcess::wait)
             }
         }
+    }
 
-        for job in jobs {
-            job.interrupt();
-        }
-    })
-    .unwrap();
-
-    Ok(ProcessOutput::new(true))
-}
-
-fn exec_andor_list(
-    command: &AtomicCommandList<String, AtomicTopLevelWord<String>, AtomicTopLevelCommand<String>>,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-    interrupter: Interruptable,
-) -> Result<ProcessOutput, CommandExecError> {
-    let mut previous_output = exec_listable_command(&command.first, config, env, &interrupter);
-    //TODO: Chain
-    Ok(ProcessOutput::new(true))
-}
-
-fn exec_listable_command(
-    command: &ListableCommand<
-        AtomicShellPipeableCommand<
+    fn exec_pipeable_command(
+        &mut self,
+        command: &AtomicShellPipeableCommand<
             String,
             AtomicTopLevelWord<String>,
             AtomicTopLevelCommand<String>,
         >,
-    >,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-    interrupter: &Interruptable,
-) -> Result<ProcessOutput, CommandExecError> {
-    match command {
-        ListableCommand::Pipe(negate, commands) => todo!(),
-        ListableCommand::Single(command) => {
-            exec_pipeable_command(&command, config, env, interrupter)
-        }
-    }
-}
-
-fn exec_pipeable_command(
-    command: &AtomicShellPipeableCommand<
-        String,
-        AtomicTopLevelWord<String>,
-        AtomicTopLevelCommand<String>,
-    >,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-    interrupter: &Interruptable,
-) -> Result<ProcessOutput, CommandExecError> {
-    match command {
-        PipeableCommand::Simple(command) => exec_simple_command(&command, config, env, interrupter),
-        PipeableCommand::Compound(command) => {
-            // Stuff like if, while, until, etc.
-            todo!();
-        }
-        PipeableCommand::FunctionDef(name, body) => {
-            todo!() //TODO: What to do here?? Store it in a hashmap?
-                    // Should I even support functions at all?
-                    // Probably not, since that's kinda what I'm doing anyway.
-        }
-    }
-}
-
-fn exec_simple_command(
-    command: &SimpleCommand<
-        String,
-        AtomicTopLevelWord<String>,
-        Redirect<AtomicTopLevelWord<String>>,
-    >,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-    interrupter: &Interruptable,
-) -> Result<ProcessOutput, CommandExecError> {
-    use std::process::Command;
-
-    // TODO: Env variables
-    // TODO: Redirects
-
-    let command_words = command
-        .redirects_or_cmd_words
-        .iter()
-        .filter_map(|r| {
-            if let RedirectOrCmdWord::CmdWord(w) = r {
-                Some(evaluate_tl_word(w, config, env))
-            } else {
-                None
+        pipe: Pipe,
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+        interrupter: &Interruptable,
+    ) -> Result<OngoingProcess, CommandExecError> {
+        match command {
+            PipeableCommand::Simple(command) => self.exec_simple_command(&command, pipe, config, env, interrupter),
+            PipeableCommand::Compound(command) => {
+                // Stuff like if, while, until, etc.
+                todo!();
             }
-        })
-        .flatten_ok()
-        .collect::<Result<Vec<_>, _>>()?;
+            PipeableCommand::FunctionDef(name, body) => {
+                todo!() //TODO: What to do here?? Store it in a hashmap?
+                        // Should I even support functions at all?
+                        // Probably not, since that's kinda what I'm doing anyway.
+            }
+        }
+    }
 
-    // TODO: Print pre-evaluated command words
-    eprintln!(
-        "> {}",
-        command_words.join(" ")
-    );
+    fn exec_simple_command(
+        &mut self,
+        command: &SimpleCommand<
+            String,
+            AtomicTopLevelWord<String>,
+            Redirect<AtomicTopLevelWord<String>>,
+        >,
+        pipe: Pipe,
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+        interrupter: &Interruptable,
+    ) -> Result<OngoingProcess, CommandExecError> {
+        use std::process::Command;
 
-    // TODO: "Builtin" commands
-    // TODO: Interruption
+        // TODO: Env variables
+        // TODO: Redirects
 
-    let output = Command::new(&command_words[0])
-        .args(&command_words[1..])
-        .stdin(Stdio::inherit())
-        .stdout(if config.capture_stdout {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        })
-        .stderr(if config.capture_stdout {
-            Stdio::piped()
-        } else {
-            Stdio::inherit()
-        })
-        .output()
-        .unwrap();
+        let command_words = command
+            .redirects_or_cmd_words
+            .iter()
+            .filter_map(|r| {
+                if let RedirectOrCmdWord::CmdWord(w) = r {
+                    Some(self.evaluate_tl_word(w, config, env))
+                } else {
+                    None
+                }
+            })
+            .flatten_ok()
+            .collect::<Result<Vec<_>, _>>()?;
 
-    Ok(output.into())
-}
+        // TODO: Print pre-evaluated command words
+        eprintln!(
+            "> {}",
+            command_words.join(" ")
+        );
 
-fn evaluate_tl_word(
-    AtomicTopLevelWord(word): &AtomicTopLevelWord<String>,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-) -> Result<Vec<String>, CommandExecError> {
-    match word {
-        ComplexWord::Concat(words) => {
-            let words = words
+        // TODO: "Builtin" commands
+        // TODO: Interruption
+
+        let output = Command::new(&command_words[0])
+            .args(&command_words[1..])
+            .stdin(match pipe.stdin { Some(pipe) => pipe, None => Stdio::inherit() })
+            .stdout(if config.capture_stdout || pipe.stdout {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
+            .stderr(if config.capture_stdout {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            })
+            .spawn()
+            .unwrap();
+
+        Ok(output.into())
+    }
+
+    fn evaluate_tl_word(
+        &mut self,
+        AtomicTopLevelWord(word): &AtomicTopLevelWord<String>,
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+    ) -> Result<Vec<String>, CommandExecError> {
+        match word {
+            ComplexWord::Concat(words) => {
+                let words = words
+                    .iter()
+                    .map(|w| self.evaluate_word(w, config, env))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let is_glob = !words.iter().all(|w| matches!(w, GlobPart::Words(_)));
+                if is_glob {
+                    let working_dir_path = {
+                        let mut path = Pattern::escape(&config.working_directory.to_string_lossy().into_owned());
+                        path.push('/');
+                        path
+                    };
+                    let stringified_glob = std::iter::once(working_dir_path.clone()).chain(words.iter().map(|w| match w {
+                        GlobPart::Words(words) => words.iter().map(|s| Pattern::escape(s)).join(" "),
+                        GlobPart::Star => "*".to_owned(),
+                        GlobPart::Question => "?".to_owned(),
+                        GlobPart::SquareOpen => "[".to_owned(),
+                        GlobPart::SquareClose => "]".to_owned(),
+                    })).join("");
+                    Ok(glob_with(&stringified_glob, MatchOptions::new()).unwrap().map(|path| path.unwrap().to_string_lossy().into_owned().strip_prefix(&working_dir_path).unwrap().to_owned()).collect::<Vec<_>>())
+                } else {
+                    Ok(words.into_iter().flat_map(GlobPart::into_string).collect())
+                }
+            },
+            ComplexWord::Single(word) => self.evaluate_word(word, config, env).map(GlobPart::into_string),
+        }
+    }
+
+    fn evaluate_word(
+        &mut self,
+        word: &Word<
+            String,
+            SimpleWord<
+                String,
+                Parameter<String>,
+                Box<
+                    ParameterSubstitution<
+                        Parameter<String>,
+                        AtomicTopLevelWord<String>,
+                        AtomicTopLevelCommand<String>,
+                        Arithmetic<String>,
+                    >,
+                >,
+            >,
+        >,
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+    ) -> Result<GlobPart, CommandExecError> {
+        match word {
+            Word::SingleQuoted(literal) => Ok(vec![literal.clone()].into()),
+            Word::DoubleQuoted(words) => Ok(vec![words
                 .iter()
-                .map(|w| evaluate_word(w, config, env))
-                .collect::<Result<Vec<_>, _>>()?;
-            let is_glob = !words.iter().all(|w| matches!(w, GlobPart::Words(_)));
-            if is_glob {
-                let working_dir_path = {
-                    let mut path = Pattern::escape(&config.working_directory.to_string_lossy().into_owned());
-                    path.push('/');
-                    path
-                };
-                let stringified_glob = std::iter::once(working_dir_path.clone()).chain(words.iter().map(|w| match w {
-                    GlobPart::Words(words) => words.iter().map(|s| Pattern::escape(s)).join(" "),
-                    GlobPart::Star => "*".to_owned(),
-                    GlobPart::Question => "?".to_owned(),
-                    GlobPart::SquareOpen => "[".to_owned(),
-                    GlobPart::SquareClose => "]".to_owned(),
-                })).join("");
-                Ok(glob_with(&stringified_glob, MatchOptions::new()).unwrap().map(|path| path.unwrap().to_string_lossy().into_owned().strip_prefix(&working_dir_path).unwrap().to_owned()).collect::<Vec<_>>())
-            } else {
-                Ok(words.into_iter().flat_map(GlobPart::into_string).collect())
-            }
-        },
-        ComplexWord::Single(word) => evaluate_word(word, config, env).map(GlobPart::into_string),
+                .map(|w| self.evaluate_simple_word(w, config, env).map(GlobPart::into_string))
+                .flatten_ok()
+                .collect::<Result<String, _>>()?].into()),
+            Word::Simple(word) => self.evaluate_simple_word(word, config, env),
+        }
     }
-}
 
-fn evaluate_word(
-    word: &Word<
-        String,
-        SimpleWord<
+    fn evaluate_simple_word(
+        &mut self,
+        word: &SimpleWord<
             String,
             Parameter<String>,
             Box<
@@ -374,105 +507,80 @@ fn evaluate_word(
                 >,
             >,
         >,
-    >,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-) -> Result<GlobPart, CommandExecError> {
-    match word {
-        Word::SingleQuoted(literal) => Ok(vec![literal.clone()].into()),
-        Word::DoubleQuoted(words) => Ok(vec![words
-            .iter()
-            .map(|w| evaluate_simple_word(w, config, env).map(GlobPart::into_string))
-            .flatten_ok()
-            .collect::<Result<String, _>>()?].into()),
-        Word::Simple(word) => evaluate_simple_word(word, config, env),
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+    ) -> Result<GlobPart, CommandExecError> {
+        match word {
+            SimpleWord::Literal(s) => Ok(vec![s.clone()].into()),
+            SimpleWord::Escaped(s) => Ok(vec![s.clone()].into()),
+            SimpleWord::Param(p) => Ok(self.evaluate_parameter(p, config, env).into()),
+            SimpleWord::Subst(p) => Ok(self.evaluate_param_subst(p, config, env)?.into()),
+            SimpleWord::Star => Ok(GlobPart::Star),
+            SimpleWord::Question => Ok(GlobPart::Question),
+            SimpleWord::SquareOpen => Ok(GlobPart::SquareOpen),
+            SimpleWord::SquareClose => Ok(GlobPart::SquareClose),
+            SimpleWord::Tilde => todo!(),
+            SimpleWord::Colon => Ok(vec![":".to_owned()].into()),
+        }
     }
-}
 
-fn evaluate_simple_word(
-    word: &SimpleWord<
-        String,
-        Parameter<String>,
-        Box<
-            ParameterSubstitution<
-                Parameter<String>,
-                AtomicTopLevelWord<String>,
-                AtomicTopLevelCommand<String>,
-                Arithmetic<String>,
-            >,
+    fn evaluate_param_subst(
+        &mut self,
+        param: &ParameterSubstitution<
+            Parameter<String>,
+            AtomicTopLevelWord<String>,
+            AtomicTopLevelCommand<String>,
+            Arithmetic<String>,
         >,
-    >,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-) -> Result<GlobPart, CommandExecError> {
-    match word {
-        SimpleWord::Literal(s) => Ok(vec![s.clone()].into()),
-        SimpleWord::Escaped(s) => Ok(vec![s.clone()].into()),
-        SimpleWord::Param(p) => Ok(evaluate_parameter(p, config, env).into()),
-        SimpleWord::Subst(p) => Ok(evaluate_param_subst(p, config, env)?.into()),
-        SimpleWord::Star => Ok(GlobPart::Star),
-        SimpleWord::Question => Ok(GlobPart::Question),
-        SimpleWord::SquareOpen => Ok(GlobPart::SquareOpen),
-        SimpleWord::SquareClose => Ok(GlobPart::SquareClose),
-        SimpleWord::Tilde => todo!(),
-        SimpleWord::Colon => Ok(vec![":".to_owned()].into()),
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+    ) -> Result<Vec<String>, CommandExecError> {
+        match param {
+            ParameterSubstitution::Command(commands) => self.exec_script_entries(commands, config, env).map(|output| vec![String::from_utf8(output.stdout).unwrap()]),
+            ParameterSubstitution::Len(p) => Ok(vec![format!("{}", match p {
+                Parameter::At | Parameter::Star => config.positional_args.len(),
+                p => self.evaluate_parameter(p, config, env).into_iter().map(|s| s.len()).reduce(|acc, s| acc + s + 1).unwrap_or(0),
+            })]),
+            ParameterSubstitution::Arith(_) => todo!(),
+            ParameterSubstitution::Default(_, _, _) => todo!(),
+            ParameterSubstitution::Assign(_, _, _) => todo!(),
+            ParameterSubstitution::Error(_, _, _) => todo!(),
+            ParameterSubstitution::Alternative(_, _, _) => todo!(),
+            ParameterSubstitution::RemoveSmallestSuffix(_, _) => todo!(),
+            ParameterSubstitution::RemoveLargestSuffix(_, _) => todo!(),
+            ParameterSubstitution::RemoveSmallestPrefix(_, _) => todo!(),
+            ParameterSubstitution::RemoveLargestPrefix(_, _) => todo!(),
+        }
     }
-}
 
-fn evaluate_param_subst(
-    param: &ParameterSubstitution<
-        Parameter<String>,
-        AtomicTopLevelWord<String>,
-        AtomicTopLevelCommand<String>,
-        Arithmetic<String>,
-    >,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-) -> Result<Vec<String>, CommandExecError> {
-    match param {
-        ParameterSubstitution::Command(commands) => exec_script_entries(commands, config, env).map(|output| vec![String::from_utf8(output.stdout).unwrap()]),
-        ParameterSubstitution::Len(p) => Ok(vec![format!("{}", match p {
-            Parameter::At | Parameter::Star => config.positional_args.len(),
-            p => evaluate_parameter(p, config, env).into_iter().map(|s| s.len()).reduce(|acc, s| acc + s + 1).unwrap_or(0),
-        })]),
-        ParameterSubstitution::Arith(_) => todo!(),
-        ParameterSubstitution::Default(_, _, _) => todo!(),
-        ParameterSubstitution::Assign(_, _, _) => todo!(),
-        ParameterSubstitution::Error(_, _, _) => todo!(),
-        ParameterSubstitution::Alternative(_, _, _) => todo!(),
-        ParameterSubstitution::RemoveSmallestSuffix(_, _) => todo!(),
-        ParameterSubstitution::RemoveLargestSuffix(_, _) => todo!(),
-        ParameterSubstitution::RemoveSmallestPrefix(_, _) => todo!(),
-        ParameterSubstitution::RemoveLargestPrefix(_, _) => todo!(),
-    }
-}
+    fn evaluate_parameter(
+        &mut self,
+        parameter: &Parameter<String>,
+        config: &ExecConfig,
+        env: &HashMap<String, String>,
+    ) -> Vec<String> {
+        match parameter {
+            Parameter::Positional(n) => config
+                .positional_args
+                .get(*n as usize)
+                .cloned()
+                .into_iter()
+                .collect(),
+            Parameter::Var(name) => env
+                .get(name)
+                .cloned()
+                .or_else(|| std::env::var(name).ok())
+                .into_iter()
+                .collect(),
+            Parameter::At => config.positional_args.clone(),
+            Parameter::Pound => vec![format!("{}", config.positional_args.len())],
+            Parameter::Dollar => vec![format!("{}", std::process::id())],
 
-fn evaluate_parameter(
-    parameter: &Parameter<String>,
-    config: &ExecConfig,
-    env: &HashMap<String, String>,
-) -> Vec<String> {
-    match parameter {
-        Parameter::Positional(n) => config
-            .positional_args
-            .get(*n as usize)
-            .cloned()
-            .into_iter()
-            .collect(),
-        Parameter::Var(name) => env
-            .get(name)
-            .cloned()
-            .or_else(|| std::env::var(name).ok())
-            .into_iter()
-            .collect(),
-        Parameter::At => config.positional_args.clone(),
-        Parameter::Pound => vec![format!("{}", config.positional_args.len())],
-        Parameter::Dollar => vec![format!("{}", std::process::id())],
-
-        Parameter::Star => todo!(), // Like @ but runs evaluate_word on each word
-        Parameter::Question => todo!(), // Exit code of previous top-level command
-        Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
-        Parameter::Bang => todo!(), // PID of most recent job
+            Parameter::Star => todo!(), // Like @ but runs evaluate_word on each word
+            Parameter::Question => todo!(), // Exit code of previous top-level command
+            Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
+            Parameter::Bang => todo!(), // PID of most recent job
+        }
     }
 }
 

@@ -6,7 +6,7 @@ pub use script::*;
 
 pub mod exec;
 
-use exec::{ProcessOutput, Verbosity};
+use exec::{FinishedProcess, Verbosity};
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{Command, Stdio};
@@ -18,7 +18,7 @@ pub(crate) fn run(
     inherit_verbosity: Verbosity,
     capture_stdout: bool,
     env_remap: &HashMap<String, String>,
-) -> Result<ProcessOutput, std::io::Error> {
+) -> Result<FinishedProcess, std::io::Error> {
     let mut command = Command::new("run");
     command
         .args(args)
@@ -41,5 +41,5 @@ pub(crate) fn run(
         Verbosity::Silent => command.arg("-qq"),
     };
     let output = command.output()?;
-    Ok(ProcessOutput::from(output))
+    Ok(FinishedProcess::from(output))
 }
