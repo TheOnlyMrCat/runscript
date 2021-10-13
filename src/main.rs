@@ -18,7 +18,7 @@ mod out;
 mod parser;
 mod script;
 
-use exec::{ProcessExit, ProcessOutput, Verbosity};
+use exec::{FinishedProcess, Verbosity};
 use script::{Runscript, Script, ScriptPhase};
 
 use crate::exec::{ExecConfig, exec_script};
@@ -96,7 +96,7 @@ pub fn run(
     inherit_verbosity: Verbosity,
     capture_stdout: bool,
     env_remap: &HashMap<String, String>,
-) -> Result<ProcessOutput, std::io::Error> {
+) -> Result<FinishedProcess, std::io::Error> {
     let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
 
     let mut options = Options::new();
@@ -113,19 +113,19 @@ pub fn run(
         Ok(m) => m,
         Err(x) => {
             out::option_parse_err(&output_stream, x);
-            return Ok(ProcessOutput::new(false));
+            return Ok(FinishedProcess::new(false));
         }
     };
 
     if matches.opt_present("help") {
         print!("{}", HELP_TEXT); // There's a trailing newline in the string anyway
-        return Ok(ProcessOutput::new(true));
+        return Ok(FinishedProcess::new(true));
     }
 
     if matches.opt_present("version") {
         println!("Runscript {}", VERSION);
         print!("{}", VERSION_TEXT);
-        return Ok(ProcessOutput::new(true));
+        return Ok(FinishedProcess::new(true));
     }
 
     let path_branch_file: String;
@@ -202,7 +202,7 @@ pub fn run(
             "r!" => &[ScriptPhase::RunOnly],
             _ => {
                 out::bad_phase_err(&output_stream, &run_phase);
-                return Ok(ProcessOutput::new(false));
+                return Ok(FinishedProcess::new(false));
             }
         }
     } else if b_pos + t_pos + r_pos == -3 || t_pos > b_pos && t_pos > r_pos {
@@ -237,7 +237,7 @@ pub fn run(
         Some(r) => r,
         None => {
             out::file_read_err(&output_stream);
-            return Ok(ProcessOutput::new(false));
+            return Ok(FinishedProcess::new(false));
         }
     };
 
@@ -362,7 +362,7 @@ pub fn run(
 
                 recursive_list_includes(&mut lock, longest_target, &rf);
 
-                return Ok(ProcessOutput::new(true));
+                return Ok(FinishedProcess::new(true));
             }
 
             let exec_cfg = ExecConfig {
@@ -394,11 +394,11 @@ pub fn run(
                 },
             }
             
-            Ok(ProcessOutput::new(true)) //TODO
+            Ok(FinishedProcess::new(true)) //TODO
         }
         Err(e) => {
             out::file_parse_err(&output_stream, e);
-            Ok(ProcessOutput::new(false))
+            Ok(FinishedProcess::new(false))
         }
     }
 }
