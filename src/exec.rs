@@ -4,12 +4,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::sync::Arc;
 
-use conch_parser::ast::{
-    Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
-    AtomicTopLevelWord, ComplexWord, CompoundCommandKind, GuardBodyPair,
-    ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
-    RedirectOrCmdWord, SimpleCommand, SimpleWord, Word,
-};
+use conch_parser::ast::{AndOr, Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, CompoundCommandKind, GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect, RedirectOrCmdWord, SimpleCommand, SimpleWord, Word};
 use glob::{glob_with, MatchOptions, Pattern};
 use itertools::Itertools;
 
@@ -103,18 +98,18 @@ impl ProcessExit {
 }
 
 enum OngoingProcess {
-    Process(Child),
-    Builtin(FinishedProcess),
+    Concurrent(Child),
+    Finished(FinishedProcess),
 }
 
 impl OngoingProcess {
     fn pipe_out(&mut self) -> PipeInput {
         match self {
-            OngoingProcess::Process(p) => match p.stdout.take() {
+            OngoingProcess::Concurrent(p) => match p.stdout.take() {
                 Some(stdout) => PipeInput::Pipe(stdout.into()),
                 None => PipeInput::None,
             },
-            OngoingProcess::Builtin(p) => PipeInput::Buffer(p.stdout.clone()),
+            OngoingProcess::Finished(p) => PipeInput::Buffer(p.stdout.clone()),
         }
     }
 }
@@ -127,14 +122,18 @@ struct WaitableProcess {
 impl WaitableProcess {
     fn new(process: Child) -> WaitableProcess {
         WaitableProcess {
-            process: OngoingProcess::Process(process),
+            process: OngoingProcess::Concurrent(process),
             associated_jobs: vec![],
         }
     }
 
+    fn finished(process: FinishedProcess) -> WaitableProcess {
+        WaitableProcess { process: OngoingProcess::Finished(process), associated_jobs: vec![] }
+    }
+
     fn empty_success() -> WaitableProcess {
         WaitableProcess {
-            process: OngoingProcess::Builtin(FinishedProcess {
+            process: OngoingProcess::Finished(FinishedProcess {
                 status: ProcessExit::Bool(true),
                 stdout: vec![],
                 stderr: vec![],
@@ -155,7 +154,7 @@ impl WaitableProcess {
         }
 
         match self.process {
-            OngoingProcess::Process(process) => {
+            OngoingProcess::Concurrent(process) => {
                 kill(Pid::from_raw(process.id() as i32), Signal::SIGHUP).unwrap();
                 FinishedProcess {
                     status: ProcessExit::Status(ExitStatus::from_raw(129)),
@@ -163,7 +162,7 @@ impl WaitableProcess {
                     stderr: vec![],
                 }
             }
-            OngoingProcess::Builtin(proc) => proc,
+            OngoingProcess::Finished(proc) => proc,
         }
     }
 
@@ -174,7 +173,7 @@ impl WaitableProcess {
 
     fn wait(self) -> FinishedProcess {
         match self.process {
-            OngoingProcess::Process(mut process) => {
+            OngoingProcess::Concurrent(mut process) => {
                 let status = process.wait().unwrap();
                 let stdout = if let Some(mut stdout) = process.stdout {
                     let mut v = Vec::new();
@@ -201,7 +200,7 @@ impl WaitableProcess {
                     stderr,
                 }
             }
-            OngoingProcess::Builtin(proc) => {
+            OngoingProcess::Finished(proc) => {
                 for job in self.associated_jobs.into_iter() {
                     job.hup();
                 }
@@ -375,8 +374,29 @@ impl ShellContext {
         >,
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
-        let previous_output = self.exec_listable_command(&command.first, config)?;
-        //TODO: Chain
+        let mut previous_output = self.exec_listable_command(&command.first, config)?;
+        for chain in &command.rest {
+            match chain {
+                AndOr::And(command) => {
+                    let finished = previous_output.wait();
+                    if finished.status.success() {
+                        previous_output = self.exec_listable_command(command, config)?;
+                    } else {
+                        previous_output = WaitableProcess::finished(finished);
+                        break;
+                    }
+                }
+                AndOr::Or(command) => {
+                    let finished = previous_output.wait();
+                    if !finished.status.success() {
+                        previous_output = self.exec_listable_command(command, config)?;
+                    } else {
+                        previous_output = WaitableProcess::finished(finished);
+                        break;
+                    }
+                }
+            }
+        }
         Ok(previous_output)
     }
 
