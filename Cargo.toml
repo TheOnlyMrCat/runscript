@@ -9,6 +9,10 @@ repository = "https://github.com/TheOnlyMrCat/runscript"
 authors = ["TheOnlyMrCat <skylifegame@gmail.com>"]
 edition = "2018"
 
+[[bin]]
+name = "run"
+path = "main.rs"
+
 [profile.release]
 panic = "abort"
 

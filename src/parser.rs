@@ -29,7 +29,7 @@ pub struct RunscriptSource {
 /// A location in a runscript
 ///
 /// Runscript locations include the line and column number, as well as an index used to track include-nesting
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct RunscriptLocation {
     /// The include-nesting index of this runscript
     pub index: Vec<usize>,

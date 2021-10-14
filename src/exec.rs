@@ -340,7 +340,7 @@ impl ShellContext {
         let mut jobs = vec![];
 
         if commands.len() > 1 {
-            for AtomicTopLevelCommand(command) in commands {
+            for AtomicTopLevelCommand(command) in &commands[..commands.len() - 1] {
                 let (command, is_job) = match command {
                     Command::Job(list) => (list, true),
                     Command::List(list) => (list, false),
@@ -418,15 +418,13 @@ impl ShellContext {
                     Pipe::pipe_out(),
                     config,
                 )?;
-                if commands.len() > 2 {
-                    for command in &commands[1..commands.len() - 2] {
-                        let next_proc = self.exec_pipeable_command(
-                            command,
-                            Pipe::pipe_in_out(proc.process.pipe_out()),
-                            config,
-                        )?;
-                        proc = next_proc;
-                    }
+                for command in &commands[1..commands.len() - 1] {
+                    let next_proc = self.exec_pipeable_command(
+                        command,
+                        Pipe::pipe_in_out(proc.process.pipe_out()),
+                        config,
+                    )?;
+                    proc = next_proc;
                 }
                 let last_proc = self.exec_pipeable_command(
                     commands.last().unwrap(),
