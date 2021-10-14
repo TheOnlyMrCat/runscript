@@ -1,17 +1,12 @@
 use std::collections::HashMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc};
 
-use conch_parser::ast::{
-    Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
-    AtomicTopLevelWord, ComplexWord, ListableCommand,
-    Parameter, ParameterSubstitution, PipeableCommand, Redirect, RedirectOrCmdWord, SimpleCommand,
-    SimpleWord, Word,
-};
+use conch_parser::ast::{Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, CompoundCommand, CompoundCommandKind, GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect, RedirectOrCmdWord, SimpleCommand, SimpleWord, Word};
 use glob::{MatchOptions, Pattern, glob_with};
 use itertools::Itertools;
 
@@ -104,77 +99,165 @@ impl ProcessExit {
     }
 }
 
-struct OngoingProcess {
-    pub process: Child,
+enum OngoingProcess {
+    Process(Child),
+    Builtin(FinishedProcess),
 }
 
 impl OngoingProcess {
-    fn new(process: Child) -> OngoingProcess {
-        OngoingProcess { process }
-    }
-    
-    fn wait(mut self) -> FinishedProcess {
-        let status = self.process.wait().unwrap();
-        let stdout = if let Some(mut stdout) = self.process.stdout {
-            let mut v = Vec::new();
-            stdout.read_to_end(&mut v);
-            v
-        } else {
-            Vec::new()
-        };
-        let stderr = if let Some(mut stderr) = self.process.stderr {
-            let mut v = Vec::new();
-            stderr.read_to_end(&mut v);
-            v
-        } else {
-            Vec::new()
-        };
-        FinishedProcess {
-            status: ProcessExit::Status(status),
-            stdout,
-            stderr,
+    fn pipe_out(&mut self) -> PipeInput {
+        match self {
+            OngoingProcess::Process(p) => match p.stdout.take() {
+                Some(stdout) => PipeInput::Pipe(stdout.into()),
+                None => PipeInput::None,
+            },
+            OngoingProcess::Builtin(p) => PipeInput::Buffer(p.stdout.clone()),
         }
     }
 }
 
-impl From<Child> for OngoingProcess {
-    fn from(process: Child) -> OngoingProcess {
-        OngoingProcess::new(process)
+struct WaitableProcess {
+    process: OngoingProcess,
+    associated_jobs: Vec<WaitableProcess>,
+}
+
+impl WaitableProcess {
+    fn new(process: Child) -> WaitableProcess {
+        WaitableProcess { process: OngoingProcess::Process(process), associated_jobs: vec![] }
+    }
+
+    fn empty_success() -> WaitableProcess {
+        WaitableProcess { process: OngoingProcess::Builtin(FinishedProcess { status: ProcessExit::Bool(true), stdout: vec![], stderr: vec![] }), associated_jobs: vec![] }
+    }
+
+    #[cfg(unix)]
+    fn hup(mut self) -> FinishedProcess {
+        use std::os::unix::prelude::ExitStatusExt;
+
+        use nix::sys::signal::{kill, Signal};
+        use nix::unistd::Pid;
+
+        for job in self.associated_jobs {
+            job.hup();
+        }
+
+        match self.process {
+            OngoingProcess::Process(process) => {
+                kill(Pid::from_raw(process.id() as i32), Signal::SIGHUP).unwrap();
+                FinishedProcess {
+                    status: ProcessExit::Status(ExitStatus::from_raw(129)),
+                    stdout: vec![],
+                    stderr: vec![],
+                }
+            },
+            OngoingProcess::Builtin(proc) => proc,
+        }
+        
+    }
+
+    #[cfg(windows)]
+    fn hup(mut self) -> FinishedProcess {
+        todo!()
+    }
+    
+    fn wait(self) -> FinishedProcess {
+        match self.process {
+            OngoingProcess::Process(mut process) => {
+                let status = process.wait().unwrap();
+                let stdout = if let Some(mut stdout) = process.stdout {
+                    let mut v = Vec::new();
+                    stdout.read_to_end(&mut v);
+                    v
+                } else {
+                    Vec::new()
+                };
+                let stderr = if let Some(mut stderr) = process.stderr {
+                    let mut v = Vec::new();
+                    stderr.read_to_end(&mut v);
+                    v
+                } else {
+                    Vec::new()
+                };
+
+                for job in self.associated_jobs.into_iter() {
+                    job.hup();
+                }
+                
+                FinishedProcess {
+                    status: ProcessExit::Status(status),
+                    stdout,
+                    stderr,
+                }
+            },
+            OngoingProcess::Builtin(proc) => {
+                for job in self.associated_jobs.into_iter() {
+                    job.hup();
+                }
+                proc
+            }
+        }
+        
+    }
+}
+
+impl From<Child> for WaitableProcess {
+    fn from(process: Child) -> WaitableProcess {
+        WaitableProcess::new(process)
     }
 }
 
 struct Pipe {
-    stdin: Option<Stdio>,
+    stdin: PipeInput,
     stdout: bool,
 }
 
 impl Pipe {
     fn no_pipe() -> Pipe {
         Pipe {
-            stdin: None,
+            stdin: PipeInput::Inherit,
             stdout: false,
         }
     }
 
     fn pipe_out() -> Pipe {
         Pipe {
-            stdin: None,
+            stdin: PipeInput::Inherit,
             stdout: true,
         }
     }
 
-    fn pipe_in(stdin: Stdio) -> Pipe {
+    fn pipe_in(stdin: impl Into<PipeInput>) -> Pipe {
         Pipe {
-            stdin: Some(stdin),
+            stdin: stdin.into(),
             stdout: false,
         }
     }
 
-    fn pipe_in_out(stdin: Stdio) -> Pipe {
+    fn pipe_in_out(stdin: impl Into<PipeInput>) -> Pipe {
         Pipe {
-            stdin: Some(stdin),
+            stdin: stdin.into(),
             stdout: true,
         }
+    }
+}
+
+enum PipeInput {
+    None,
+    Inherit,
+    Pipe(Stdio),
+    Buffer(Vec<u8>),
+}
+
+impl From<Stdio> for PipeInput
+{
+    fn from(stdin: Stdio) -> PipeInput {
+        PipeInput::Pipe(stdin.into())
+    }
+}
+
+impl From<Vec<u8>> for PipeInput {
+    fn from(stdin: Vec<u8>) -> PipeInput {
+        PipeInput::Buffer(stdin)
     }
 }
 
@@ -217,39 +300,11 @@ impl From<Output> for FinishedProcess {
     }
 }
 
-struct Interrupt;
-
-struct Interruptable(Receiver<Interrupt>, AtomicBool);
-struct Interrupter(Sender<Interrupt>);
-
-impl Interruptable {
-    fn was_interrupted(&self) -> bool {
-        self.1.fetch_or(
-            self.0.try_recv().is_ok(),
-            std::sync::atomic::Ordering::AcqRel,
-        )
-    }
-}
-
-impl Interrupter {
-    fn new() -> (Interrupter, Interruptable) {
-        let (sender, receiver) = mpsc::channel();
-        (
-            Interrupter(sender),
-            Interruptable(receiver, AtomicBool::new(false)),
-        )
-    }
-
-    fn interrupt(&self) {
-        self.0.send(Interrupt);
-    }
-}
-
 pub fn exec_script(
     script: &Script,
     config: &ExecConfig,
 ) -> Result<FinishedProcess, CommandExecError> {
-    ShellContext { working_directory: config.working_directory.to_owned(), env: HashMap::new() }.exec_script_entries(&script.commands, config, &HashMap::new())
+    Ok(ShellContext { working_directory: config.working_directory.to_owned(), env: HashMap::new() }.exec_script_entries(&script.commands, config, &HashMap::new())?.wait())
 }
 
 #[derive(Debug, Clone)]
@@ -266,38 +321,35 @@ impl ShellContext {
         commands: &[AtomicTopLevelCommand<String>],
         config: &ExecConfig,
         env: &HashMap<String, String>,
-    ) -> Result<FinishedProcess, CommandExecError> {
-        // let mut stdout = vec![];
-        // let mut stderr = vec![];
-        crossbeam_utils::thread::scope(|s| {
-            let mut jobs = vec![];
+    ) -> Result<WaitableProcess, CommandExecError> {
+        use conch_parser::ast::Command;
 
+        let mut jobs = vec![];
+
+        if commands.len() > 1 {
             for AtomicTopLevelCommand(command) in commands {
-                use conch_parser::ast::Command;
-
                 let (command, is_job) = match command {
-                    Command::Job(job) => (job, true),
+                    Command::Job(list) => (list, true),
                     Command::List(list) => (list, false),
                 };
 
-                let (interrupter, interruptable) = Interrupter::new();
-
+                let proc = self.exec_andor_list(command, config, env)?;
                 if is_job {
-                    let mut frozen_context = self.clone();
-                    s.spawn(move |_| frozen_context.exec_andor_list(command, config, env, interruptable));
-                    jobs.push(interrupter);
+                    jobs.push(proc);
                 } else {
-                    self.exec_andor_list(command, config, env, interruptable);
+                    proc.wait();
                 }
             }
+        }
 
-            for job in jobs {
-                job.interrupt();
-            }
-        })
-        .unwrap();
+        let mut last_proc = match &commands.last().unwrap().0 {
+            Command::Job(list) => self.exec_andor_list(list, config, env)?,
+            Command::List(list) => self.exec_andor_list(list, config, env)?,
+        };
 
-        Ok(FinishedProcess::new(true))
+        last_proc.associated_jobs = jobs;
+
+        Ok(last_proc)
     }
 
     fn exec_andor_list(
@@ -305,11 +357,10 @@ impl ShellContext {
         command: &AtomicCommandList<String, AtomicTopLevelWord<String>, AtomicTopLevelCommand<String>>,
         config: &ExecConfig,
         env: &HashMap<String, String>,
-        interrupter: Interruptable,
-    ) -> Result<FinishedProcess, CommandExecError> {
-        let mut previous_output = self.exec_listable_command(&command.first, config, env, &interrupter);
+    ) -> Result<WaitableProcess, CommandExecError> {
+        let mut previous_output = self.exec_listable_command(&command.first, config, env)?;
         //TODO: Chain
-        Ok(FinishedProcess::new(true))
+        Ok(previous_output)
     }
 
     fn exec_listable_command(
@@ -323,22 +374,21 @@ impl ShellContext {
         >,
         config: &ExecConfig,
         env: &HashMap<String, String>,
-        interrupter: &Interruptable,
-    ) -> Result<FinishedProcess, CommandExecError> {
+    ) -> Result<WaitableProcess, CommandExecError> {
         match command {
             ListableCommand::Pipe(negate, commands) => {
-                let mut proc = self.exec_pipeable_command(commands.first().unwrap(), Pipe::pipe_out(), config, env, interrupter)?;
+                let mut proc = self.exec_pipeable_command(commands.first().unwrap(), Pipe::pipe_out(), config, env)?;
                 if commands.len() > 2 {
                     for command in &commands[1..commands.len() - 2] {
-                        let next_proc = self.exec_pipeable_command(command, Pipe::pipe_in_out(proc.process.stdout.unwrap().into()), config, env, interrupter)?;
+                        let next_proc = self.exec_pipeable_command(command, Pipe::pipe_in_out(proc.process.pipe_out()), config, env)?;
                         proc = next_proc;
                     }
                 }
-                let last_proc = self.exec_pipeable_command(commands.last().unwrap(), Pipe::pipe_in(proc.process.stdout.unwrap().into()), config, env, interrupter)?;
-                Ok(last_proc.wait()) //TODO: Negate?
+                let last_proc = self.exec_pipeable_command(commands.last().unwrap(), Pipe::pipe_in(proc.process.pipe_out()), config, env)?;
+                Ok(last_proc) //TODO: Negate?
             },
             ListableCommand::Single(command) => {
-                self.exec_pipeable_command(&command, Pipe::no_pipe(), config, env, interrupter).map(OngoingProcess::wait)
+                self.exec_pipeable_command(&command, Pipe::no_pipe(), config, env)
             }
         }
     }
@@ -353,13 +403,76 @@ impl ShellContext {
         pipe: Pipe,
         config: &ExecConfig,
         env: &HashMap<String, String>,
-        interrupter: &Interruptable,
-    ) -> Result<OngoingProcess, CommandExecError> {
+    ) -> Result<WaitableProcess, CommandExecError> {
         match command {
-            PipeableCommand::Simple(command) => self.exec_simple_command(&command, pipe, config, env, interrupter),
+            PipeableCommand::Simple(command) => self.exec_simple_command(&command, pipe, config, env),
             PipeableCommand::Compound(command) => {
-                // Stuff like if, while, until, etc.
-                todo!();
+                match &command.kind {
+                    CompoundCommandKind::Brace(commands) => {
+                        self.exec_script_entries(&commands, config, env)
+                    }
+                    CompoundCommandKind::Subshell(commands) => {
+                        let mut context = self.clone();
+                        context.exec_script_entries(&commands, config, env)
+                    },
+                    CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
+                        while self.exec_script_entries(guard, config, env)?.wait().status.success() {
+                            self.exec_script_entries(body, config, env)?.wait();
+                        }
+
+                        Ok(WaitableProcess::empty_success())
+                    },
+                    CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
+                        while !self.exec_script_entries(guard, config, env)?.wait().status.success() {
+                            self.exec_script_entries(body, config, env)?.wait();
+                        }
+
+                        Ok(WaitableProcess::empty_success())
+                    },
+                    CompoundCommandKind::If { conditionals, else_branch } => {
+                        let mut last_proc = WaitableProcess::empty_success();
+                        for GuardBodyPair { guard, body } in conditionals {
+                            if self.exec_script_entries(guard, config, env)?.wait().status.success() {
+                                last_proc = self.exec_script_entries(body, config, env)?;
+                            }
+                        }
+
+                        if let Some(else_branch) = else_branch {
+                            last_proc = self.exec_script_entries(else_branch, config, env)?;
+                        }
+
+                        Ok(last_proc)
+                    },
+                    CompoundCommandKind::For { var, words, body } => {
+                        let mut last_proc = WaitableProcess::empty_success();
+                        for word in words.as_ref().map(|words| -> Result<_, _> { words.iter().map(|word| self.evaluate_tl_word(word, config, env)).flatten_ok().collect::<Result<Vec<_>, _>>() }).transpose()?.unwrap_or(config.positional_args.clone()) {
+                            self.env.insert(var.clone(), word.clone());
+                            last_proc = self.exec_script_entries(body, config, env)?;
+                        }
+
+                        Ok(last_proc)
+                    },
+                    CompoundCommandKind::Case { word, arms } => {
+                        let mut last_proc = WaitableProcess::empty_success();
+                        let word = self.evaluate_tl_word(word, config, env)?;
+                        for PatternBodyPair { patterns, body } in arms {
+                            let mut pattern_matches = false;
+                            for pattern in patterns {
+                                let pattern = self.evaluate_tl_word(pattern, config, env)?;
+                                if pattern == word {
+                                    pattern_matches = true;
+                                }
+                            }
+
+                            if pattern_matches {
+                                last_proc = self.exec_script_entries(body, config, env)?;
+                                break;
+                            }
+                        }
+
+                        Ok(last_proc)
+                    },
+                }
             }
             PipeableCommand::FunctionDef(name, body) => {
                 todo!() //TODO: What to do here?? Store it in a hashmap?
@@ -379,8 +492,7 @@ impl ShellContext {
         pipe: Pipe,
         config: &ExecConfig,
         env: &HashMap<String, String>,
-        interrupter: &Interruptable,
-    ) -> Result<OngoingProcess, CommandExecError> {
+    ) -> Result<WaitableProcess, CommandExecError> {
         use std::process::Command;
 
         // TODO: Env variables
@@ -408,9 +520,18 @@ impl ShellContext {
         // TODO: "Builtin" commands
         // TODO: Interruption
 
-        let output = Command::new(&command_words[0])
+        let mut stdin_buffer = None;
+        let mut child = Command::new(&command_words[0])
             .args(&command_words[1..])
-            .stdin(match pipe.stdin { Some(pipe) => pipe, None => Stdio::inherit() })
+            .stdin(match pipe.stdin {
+                PipeInput::None => Stdio::null(),
+                PipeInput::Inherit => Stdio::inherit(),
+                PipeInput::Pipe(stdio) => stdio,
+                PipeInput::Buffer(v) => {
+                    stdin_buffer = Some(v);
+                    Stdio::piped()
+                },
+            })
             .stdout(if config.capture_stdout || pipe.stdout {
                 Stdio::piped()
             } else {
@@ -423,8 +544,14 @@ impl ShellContext {
             })
             .spawn()
             .unwrap();
+        
+        if let Some(stdin) = stdin_buffer {
+            //TODO: Can cause deadlock if the child writes too much to stdout before reading stdin.
+            //? Could run this on separate thread to mitigate this, if necessary.
+            child.stdin.take().unwrap().write_all(&stdin);
+        }
 
-        Ok(output.into())
+        Ok(child.into())
     }
 
     fn evaluate_tl_word(
@@ -536,7 +663,7 @@ impl ShellContext {
         env: &HashMap<String, String>,
     ) -> Result<Vec<String>, CommandExecError> {
         match param {
-            ParameterSubstitution::Command(commands) => self.exec_script_entries(commands, config, env).map(|output| vec![String::from_utf8(output.stdout).unwrap()]),
+            ParameterSubstitution::Command(commands) => self.exec_script_entries(commands, config, env).map(|output| vec![String::from_utf8(output.wait().stdout).unwrap()]),
             ParameterSubstitution::Len(p) => Ok(vec![format!("{}", match p {
                 Parameter::At | Parameter::Star => config.positional_args.len(),
                 p => self.evaluate_parameter(p, config, env).into_iter().map(|s| s.len()).reduce(|acc, s| acc + s + 1).unwrap_or(0),
