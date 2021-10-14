@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use getopts::Options;
 
+use parser::RunscriptSource;
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod exec;
@@ -22,6 +23,7 @@ use exec::{FinishedProcess, Verbosity};
 use script::{Runscript, Script, ScriptPhase};
 
 use crate::exec::{exec_script, ExecConfig};
+use crate::parser::{ParsingContext, RunscriptLocation};
 
 #[cfg(feature = "trace")]
 trace::init_depth_var!();
@@ -103,6 +105,7 @@ pub fn run(
     options.optflag("", "version", "");
     options.optflagmulti("q", "quiet", "");
     options.optflag("l", "list", "");
+    options.optopt("s", "script", "", "");
     options.optflag("b", "build-only", "");
     options.optflag("", "build-and-run", "");
     options.optflag("r", "run-only", "");
@@ -126,6 +129,46 @@ pub fn run(
         return Ok(FinishedProcess::new(true));
     }
 
+    if let Some(path) = matches.opt_str("script") {
+        let path = Path::new(&path).canonicalize()?;
+        let source = RunscriptSource {
+            source: std::fs::read_to_string(&path)?,
+            base: path.parent().expect("Runfile has no parent!").to_owned(),
+            file: path,
+            index: Vec::new(),
+        };
+        let mut context = ParsingContext::new(&source);
+        let commands = parser::parse_commands(&mut context).unwrap(); //TODO: Handle error properly
+
+        let exec_cfg = ExecConfig {
+            verbosity: Verbosity::Normal, //TODO
+            output_stream: Some(output_stream.clone()),
+            working_directory: &source.base,
+            positional_args: matches.free.iter().skip(1).cloned().collect(),
+            capture_stdout,
+            env_remap: &env_remap,
+        };
+
+        Ok(exec::exec_script(
+            &Script {
+                commands,
+                location: RunscriptLocation::default(),
+            },
+            &exec_cfg,
+        )
+        .unwrap())
+    } else {
+        exec_runscript(matches, output_stream, cwd, capture_stdout, env_remap)
+    }
+}
+
+fn exec_runscript(
+    matches: getopts::Matches,
+    output_stream: Arc<StandardStream>,
+    cwd: &Path,
+    capture_stdout: bool,
+    env_remap: &HashMap<String, String>,
+) -> Result<FinishedProcess, std::io::Error> {
     let path_branch_file: String;
     let path_branch_dir: String;
     let run_target: Option<String>;
@@ -176,7 +219,6 @@ pub fn run(
         run_target = None;
         run_phase = None;
     }
-
     let b_pos = matches
         .opt_positions("build-only")
         .iter()
@@ -189,7 +231,6 @@ pub fn run(
         .opt_positions("run-only")
         .iter()
         .fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
-
     let phases: &[ScriptPhase];
     if let Some(run_phase) = run_phase {
         phases = match &*run_phase {
@@ -215,7 +256,6 @@ pub fn run(
             b_pos, t_pos, r_pos
         )
     }
-
     let mut runfile_data: Option<(String, PathBuf)> = None;
     for path in cwd.ancestors() {
         let file_path = path.join(&path_branch_file);
@@ -230,7 +270,6 @@ pub fn run(
             break;
         }
     }
-
     let (runfile_source, runfile_path) = match runfile_data {
         Some(r) => r,
         None => {
@@ -238,11 +277,9 @@ pub fn run(
             return Ok(FinishedProcess::new(false));
         }
     };
-
     let runfile_cwd = runfile_path
         .parent()
         .expect("Expected runfile to have parent");
-
     match parser::parse_runscript(parser::RunscriptSource {
         file: runfile_path.clone(),
         base: runfile_cwd.to_owned(),
