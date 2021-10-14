@@ -1,6 +1,6 @@
 use std::fmt::{self, Display, Formatter};
 
-use conch_parser::ast::{AtomicTopLevelCommand, TopLevelCommand};
+use conch_parser::ast::AtomicTopLevelCommand;
 use enum_map::EnumMap;
 use linked_hash_map::LinkedHashMap;
 

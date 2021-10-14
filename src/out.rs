@@ -1,4 +1,3 @@
-use std::io::ErrorKind::*;
 use std::io::Write;
 use std::sync::Arc;
 

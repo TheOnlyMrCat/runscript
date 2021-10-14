@@ -21,7 +21,7 @@ mod script;
 use exec::{FinishedProcess, Verbosity};
 use script::{Runscript, Script, ScriptPhase};
 
-use crate::exec::{ExecConfig, exec_script};
+use crate::exec::{exec_script, ExecConfig};
 
 #[cfg(feature = "trace")]
 trace::init_depth_var!();
@@ -78,7 +78,6 @@ fn main() {
     if !run(
         &args.iter().map(|s| &**s).collect::<Vec<_>>(),
         &env::current_dir().expect("Working environment is not sane"),
-        Verbosity::Normal,
         false,
         &HashMap::new(),
     )
@@ -93,7 +92,6 @@ fn main() {
 pub fn run(
     args: &[&str],
     cwd: &Path,
-    inherit_verbosity: Verbosity,
     capture_stdout: bool,
     env_remap: &HashMap<String, String>,
 ) -> Result<FinishedProcess, std::io::Error> {
@@ -304,7 +302,12 @@ pub fn run(
                         print_phase_list(lock, "default", name_length, default_script);
                     }
 
-                    for (target, map) in runscript.scripts.targets.iter().filter(|(target, _)| !target.is_empty()) {
+                    for (target, map) in runscript
+                        .scripts
+                        .targets
+                        .iter()
+                        .filter(|(target, _)| !target.is_empty())
+                    {
                         print_phase_list(lock, &target, name_length, map);
                     }
                 }
@@ -376,24 +379,29 @@ pub fn run(
 
             match rf.get_target(run_target.as_deref().unwrap_or("")) {
                 Some(target) => {
-                    let scripts = phases.iter().filter_map(|&phase| target[phase].as_ref().map(|target| (target, phase))).collect::<Vec<_>>();
+                    let scripts = phases
+                        .iter()
+                        .filter_map(|&phase| target[phase].as_ref().map(|target| (target, phase)))
+                        .collect::<Vec<_>>();
                     if scripts.is_empty() {
                         out::bad_script_phase(&output_stream);
                     }
 
                     for (script, phase) in scripts {
-                        out::phase_message(&output_stream, phase, run_target.as_deref().unwrap_or("default"));
+                        out::phase_message(
+                            &output_stream,
+                            phase,
+                            run_target.as_deref().unwrap_or("default"),
+                        );
                         exec_script(script, &exec_cfg).unwrap();
                     }
-                },
-                None => {
-                    match run_target {
-                        Some(name) => out::bad_target(&output_stream, &name),
-                        None => out::bad_default(&output_stream),
-                    }
+                }
+                None => match run_target {
+                    Some(name) => out::bad_target(&output_stream, &name),
+                    None => out::bad_default(&output_stream),
                 },
             }
-            
+
             Ok(FinishedProcess::new(true)) //TODO
         }
         Err(e) => {

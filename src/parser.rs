@@ -414,7 +414,10 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 #[cfg_attr(feature = "trace", trace)]
 pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<Vec<AtomicTopLevelCommand<String>>, ParseError<<DefaultBuilder<String> as Builder>::Error>> {
+) -> Result<
+    Vec<AtomicTopLevelCommand<String>>,
+    ParseError<<DefaultBuilder<String> as Builder>::Error>,
+> {
     let lexer = Lexer::new((&mut context.iterator).map(|(_, c)| c));
     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
     let mut commands = vec![];
