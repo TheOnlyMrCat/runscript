@@ -4,4 +4,11 @@ echo 'environment variables:' $HOME
 echo 'globs:' ../src/*.rs
 
 yes | head -n 2
+
+# Environment variables
+FOO='bar' echo $FOO
+FOO='bar' printenv FOO
+FOO='bar'
+echo $FOO
+printenv FOO
 $|
