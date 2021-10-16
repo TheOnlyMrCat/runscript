@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
@@ -572,7 +573,7 @@ impl ShellContext {
     ) -> Result<WaitableProcess, CommandExecError> {
         use std::process::Command;
 
-        // TODO: Redirects
+        let mut redirects = vec![];
 
         let env_remaps = command
             .redirects_or_env_vars
@@ -589,17 +590,20 @@ impl ShellContext {
                             )
                         }),
                 ),
-                _ => None,
+                RedirectOrEnvVar::Redirect(redirect) => {
+                    redirects.push(redirect);
+                    None
+                }
             })
             .collect::<Result<Vec<_>, _>>()?;
 
         let command_words = command
             .redirects_or_cmd_words
             .iter()
-            .filter_map(|r| {
-                if let RedirectOrCmdWord::CmdWord(w) = r {
-                    Some(self.evaluate_tl_word(w, config))
-                } else {
+            .filter_map(|r| match r {
+                RedirectOrCmdWord::CmdWord(w) => Some(self.evaluate_tl_word(w, config)),
+                RedirectOrCmdWord::Redirect(redirect) => {
+                    redirects.push(redirect);
                     None
                 }
             })
@@ -610,36 +614,130 @@ impl ShellContext {
             // TODO: Print pre-evaluated command words
             eprintln!("> {}", command_words.join(" "));
 
+            let mut stdin_buffer = None;
+            let mut stdin = match pipe.stdin {
+                PipeInput::None => Stdio::null(), //TODO: This by default if command is job
+                PipeInput::Inherit => Stdio::inherit(),
+                PipeInput::Pipe(stdio) => stdio,
+                PipeInput::Buffer(v) => {
+                    stdin_buffer = Some(v);
+                    Stdio::piped()
+                }
+            };
+            let mut stdout = if pipe.stdout {
+                Stdio::piped()
+            } else {
+                Stdio::inherit()
+            };
+            let mut stderr = Stdio::inherit();
+
+            for redirect in redirects {
+                match redirect {
+                    Redirect::Read(fd, word) => {
+                        let file = OpenOptions::new()
+                            .read(true)
+                            .open(
+                                config
+                                    .working_directory
+                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                            )
+                            .unwrap(); //TODO: Handle errors
+                        match fd {
+                            None | Some(0) => stdin = Stdio::from(file),
+                            Some(1) => stdout = Stdio::from(file),
+                            Some(2) => stderr = Stdio::from(file),
+                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                        }
+                    }
+                    Redirect::Write(fd, word) => {
+                        let file = OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .open(
+                                config
+                                    .working_directory
+                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                            )
+                            .unwrap(); //TODO: Handle errors
+                        match fd {
+                            Some(0) => stdin = Stdio::from(file),
+                            None | Some(1) => stdout = Stdio::from(file),
+                            Some(2) => stderr = Stdio::from(file),
+                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                        }
+                    }
+                    Redirect::ReadWrite(fd, word) => {
+                        let file = OpenOptions::new()
+                            .read(true)
+                            .write(true)
+                            .create(true)
+                            .open(
+                                config
+                                    .working_directory
+                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                            )
+                            .unwrap(); //TODO: Handle errors
+                        match fd {
+                            None | Some(0) => stdin = Stdio::from(file),
+                            Some(1) => stdout = Stdio::from(file),
+                            Some(2) => stderr = Stdio::from(file),
+                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                        }
+                    }
+                    Redirect::Append(fd, word) => {
+                        let file = OpenOptions::new()
+                            .write(true)
+                            .append(true)
+                            .create(true)
+                            .open(
+                                config
+                                    .working_directory
+                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                            )
+                            .unwrap(); //TODO: Handle errors
+                        match fd {
+                            None | Some(0) => stdin = Stdio::from(file),
+                            Some(1) => stdout = Stdio::from(file),
+                            Some(2) => stderr = Stdio::from(file),
+                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                        }
+                    }
+                    Redirect::Clobber(fd, word) => {
+                        let file = OpenOptions::new()
+                            .write(true)
+                            .create(true)
+                            .open(
+                                config
+                                    .working_directory
+                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                            )
+                            .unwrap(); //TODO: Handle errors
+                        match fd {
+                            None | Some(0) => stdin = Stdio::from(file),
+                            Some(1) => stdout = Stdio::from(file),
+                            Some(2) => stderr = Stdio::from(file),
+                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                        }
+                    }
+                    Redirect::Heredoc(fd, _) => todo!(),
+                    Redirect::DupRead(fd, _) => todo!(),
+                    Redirect::DupWrite(fd, _) => todo!(),
+                }
+            }
+
             // TODO: "Builtin" commands
 
-            let mut stdin_buffer = None;
             let mut child = Command::new(&command_words[0])
                 .args(&command_words[1..])
                 .envs(env_remaps)
-                .stdin(match pipe.stdin {
-                    PipeInput::None => Stdio::null(),
-                    PipeInput::Inherit => Stdio::inherit(),
-                    PipeInput::Pipe(stdio) => stdio,
-                    PipeInput::Buffer(v) => {
-                        stdin_buffer = Some(v);
-                        Stdio::piped()
-                    }
-                })
-                .stdout(if config.capture_stdout || pipe.stdout {
-                    Stdio::piped()
-                } else {
-                    Stdio::inherit()
-                })
-                .stderr(if config.capture_stdout {
-                    Stdio::piped()
-                } else {
-                    Stdio::inherit()
-                })
+                .stdin(stdin)
+                .stdout(stdout)
+                .stderr(stderr)
                 .spawn()
                 .unwrap();
 
             if let Some(stdin) = stdin_buffer {
-                //TODO: This approach can cause a deadlock if the following conditions are true:
+                // This approach can cause a deadlock if the following conditions are true:
                 // - The child is using a piped stdout
                 // - The stdin buffer is larger than the pipe buffer
                 // - The child writes more than one pipe buffer of data without reading enough of stdin
