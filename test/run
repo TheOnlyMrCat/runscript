@@ -11,4 +11,8 @@ FOO='bar' printenv FOO
 FOO='bar'
 echo $FOO
 printenv FOO
+
+# Redirects
+echo 'hello' >> /dev/null
+cat < ../.gitignore
 $|
