@@ -29,7 +29,7 @@ use crate::parser::{ParsingContext, RunscriptLocation};
 trace::init_depth_var!();
 
 const HELP_TEXT: &str = "\
-Usage: run [options] target
+Usage: run [options] [[file]:[target][:phase] arguments]
 
 Runscript looks for a file named `run` in the current directory
 (or otherwise specified) and interprets that as a runscript.

@@ -4,7 +4,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::sync::Arc;
 
-use conch_parser::ast::{AndOr, Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, CompoundCommandKind, GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect, RedirectOrCmdWord, SimpleCommand, SimpleWord, Word};
+use conch_parser::ast::{
+    AndOr, Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
+    AtomicTopLevelWord, ComplexWord, CompoundCommandKind, GuardBodyPair, ListableCommand,
+    Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
+    RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word,
+};
 use glob::{glob_with, MatchOptions, Pattern};
 use itertools::Itertools;
 
@@ -128,7 +133,10 @@ impl WaitableProcess {
     }
 
     fn finished(process: FinishedProcess) -> WaitableProcess {
-        WaitableProcess { process: OngoingProcess::Finished(process), associated_jobs: vec![] }
+        WaitableProcess {
+            process: OngoingProcess::Finished(process),
+            associated_jobs: vec![],
+        }
     }
 
     fn empty_success() -> WaitableProcess {
@@ -564,8 +572,26 @@ impl ShellContext {
     ) -> Result<WaitableProcess, CommandExecError> {
         use std::process::Command;
 
-        // TODO: Env variables
         // TODO: Redirects
+
+        let env_remaps = command
+            .redirects_or_env_vars
+            .iter()
+            .filter_map(|r| match r {
+                RedirectOrEnvVar::EnvVar(key, word) => Some(
+                    word.as_ref()
+                        .map(|word| self.evaluate_tl_word(word, config))
+                        .transpose()
+                        .map(|word| {
+                            (
+                                key.clone(),
+                                word.map(|words| words.join(" ")).unwrap_or_default(),
+                            )
+                        }),
+                ),
+                _ => None,
+            })
+            .collect::<Result<Vec<_>, _>>()?;
 
         let command_words = command
             .redirects_or_cmd_words
@@ -580,44 +606,55 @@ impl ShellContext {
             .flatten_ok()
             .collect::<Result<Vec<_>, _>>()?;
 
-        // TODO: Print pre-evaluated command words
-        eprintln!("> {}", command_words.join(" "));
+        if !command_words.is_empty() {
+            // TODO: Print pre-evaluated command words
+            eprintln!("> {}", command_words.join(" "));
 
-        // TODO: "Builtin" commands
-        // TODO: Interruption
+            // TODO: "Builtin" commands
 
-        let mut stdin_buffer = None;
-        let mut child = Command::new(&command_words[0])
-            .args(&command_words[1..])
-            .stdin(match pipe.stdin {
-                PipeInput::None => Stdio::null(),
-                PipeInput::Inherit => Stdio::inherit(),
-                PipeInput::Pipe(stdio) => stdio,
-                PipeInput::Buffer(v) => {
-                    stdin_buffer = Some(v);
+            let mut stdin_buffer = None;
+            let mut child = Command::new(&command_words[0])
+                .args(&command_words[1..])
+                .envs(env_remaps)
+                .stdin(match pipe.stdin {
+                    PipeInput::None => Stdio::null(),
+                    PipeInput::Inherit => Stdio::inherit(),
+                    PipeInput::Pipe(stdio) => stdio,
+                    PipeInput::Buffer(v) => {
+                        stdin_buffer = Some(v);
+                        Stdio::piped()
+                    }
+                })
+                .stdout(if config.capture_stdout || pipe.stdout {
                     Stdio::piped()
-                }
-            })
-            .stdout(if config.capture_stdout || pipe.stdout {
-                Stdio::piped()
-            } else {
-                Stdio::inherit()
-            })
-            .stderr(if config.capture_stdout {
-                Stdio::piped()
-            } else {
-                Stdio::inherit()
-            })
-            .spawn()
-            .unwrap();
+                } else {
+                    Stdio::inherit()
+                })
+                .stderr(if config.capture_stdout {
+                    Stdio::piped()
+                } else {
+                    Stdio::inherit()
+                })
+                .spawn()
+                .unwrap();
 
-        if let Some(stdin) = stdin_buffer {
-            //TODO: Can cause deadlock if the child writes too much to stdout before reading stdin.
-            //? Could run this on separate thread to mitigate this, if necessary.
-            let _ = child.stdin.take().unwrap().write_all(&stdin); //TODO: Do I need to worry about an error here?
+            if let Some(stdin) = stdin_buffer {
+                //TODO: This approach can cause a deadlock if the following conditions are true:
+                // - The child is using a piped stdout
+                // - The stdin buffer is larger than the pipe buffer
+                // - The child writes more than one pipe buffer of data without reading enough of stdin
+                //? Could run this on separate thread to mitigate this, if necessary.
+                let _ = child.stdin.take().unwrap().write_all(&stdin); //TODO: Do I need to worry about an error here?
+            }
+
+            Ok(child.into())
+        } else {
+            self.env.reserve(env_remaps.len());
+            for (key, value) in env_remaps {
+                self.env.insert(key, value);
+            }
+            Ok(WaitableProcess::empty_success())
         }
-
-        Ok(child.into())
     }
 
     fn evaluate_tl_word(
