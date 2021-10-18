@@ -324,6 +324,7 @@ pub fn exec_script(
 ) -> Result<FinishedProcess, CommandExecError> {
     Ok(ShellContext {
         working_directory: config.working_directory.to_owned(),
+        vars: HashMap::new(),
         env: HashMap::new(),
     }
     .exec_script_entries(&script.commands, config)?
@@ -334,7 +335,9 @@ pub fn exec_script(
 struct ShellContext {
     /// The current working directory
     working_directory: PathBuf,
-    /// The current environment
+    /// The current shell variables
+    vars: HashMap<String, String>,
+    /// Exported varables
     env: HashMap<String, String>,
 }
 
@@ -526,7 +529,7 @@ impl ShellContext {
                         .transpose()?
                         .unwrap_or(config.positional_args.clone())
                     {
-                        self.env.insert(var.clone(), word.clone());
+                        self.vars.insert(var.clone(), word.clone());
                         last_proc = self.exec_script_entries(body, config)?;
                     }
 
@@ -637,8 +640,8 @@ impl ShellContext {
                         let file = OpenOptions::new()
                             .read(true)
                             .open(
-                                config
-                                    .working_directory
+                                self.working_directory
+                                    .clone()
                                     .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
                             )
                             .unwrap(); //TODO: Handle errors
@@ -654,8 +657,8 @@ impl ShellContext {
                             .write(true)
                             .create(true)
                             .open(
-                                config
-                                    .working_directory
+                                self.working_directory
+                                    .clone()
                                     .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
                             )
                             .unwrap(); //TODO: Handle errors
@@ -672,8 +675,8 @@ impl ShellContext {
                             .write(true)
                             .create(true)
                             .open(
-                                config
-                                    .working_directory
+                                self.working_directory
+                                    .clone()
                                     .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
                             )
                             .unwrap(); //TODO: Handle errors
@@ -690,8 +693,8 @@ impl ShellContext {
                             .append(true)
                             .create(true)
                             .open(
-                                config
-                                    .working_directory
+                                self.working_directory
+                                    .clone()
                                     .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
                             )
                             .unwrap(); //TODO: Handle errors
@@ -707,8 +710,8 @@ impl ShellContext {
                             .write(true)
                             .create(true)
                             .open(
-                                config
-                                    .working_directory
+                                self.working_directory
+                                    .clone()
                                     .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
                             )
                             .unwrap(); //TODO: Handle errors
@@ -725,31 +728,51 @@ impl ShellContext {
                 }
             }
 
-            // TODO: "Builtin" commands
+            match command_words[0].as_str() {
+                ":" => Ok(WaitableProcess::empty_success()),
+                "cd" => {
+                    //TODO: Extended cd options
+                    let dir = &command_words[1];
+                    self.working_directory = self.working_directory.join(dir);
+                    Ok(WaitableProcess::empty_success())
+                }
+                "export" => {
+                    let name = &command_words[1];
+                    if let Some((name, value)) = name.split_once('=') {
+                        self.env.insert(name.to_string(), value.to_string());
+                        Ok(WaitableProcess::empty_success())
+                    } else {
+                        self.env.insert(name.to_string(), self.vars[name].clone());
+                        Ok(WaitableProcess::empty_success())
+                    }
+                }
+                _ => {
+                    let mut child = Command::new(&command_words[0])
+                        .args(&command_words[1..])
+                        .envs(env_remaps)
+                        .stdin(stdin)
+                        .stdout(stdout)
+                        .stderr(stderr)
+                        .current_dir(self.working_directory.clone())
+                        .spawn()
+                        .unwrap();
 
-            let mut child = Command::new(&command_words[0])
-                .args(&command_words[1..])
-                .envs(env_remaps)
-                .stdin(stdin)
-                .stdout(stdout)
-                .stderr(stderr)
-                .spawn()
-                .unwrap();
+                    if let Some(stdin) = stdin_buffer {
+                        // This approach can cause a deadlock if the following conditions are true:
+                        // - The child is using a piped stdout
+                        // - The stdin buffer is larger than the pipe buffer
+                        // - The child writes more than one pipe buffer of data without reading enough of stdin
+                        //? Could run this on separate thread to mitigate this, if necessary.
+                        let _ = child.stdin.take().unwrap().write_all(&stdin); //TODO: Do I need to worry about an error here?
+                    }
 
-            if let Some(stdin) = stdin_buffer {
-                // This approach can cause a deadlock if the following conditions are true:
-                // - The child is using a piped stdout
-                // - The stdin buffer is larger than the pipe buffer
-                // - The child writes more than one pipe buffer of data without reading enough of stdin
-                //? Could run this on separate thread to mitigate this, if necessary.
-                let _ = child.stdin.take().unwrap().write_all(&stdin); //TODO: Do I need to worry about an error here?
+                    Ok(child.into())
+                }
             }
-
-            Ok(child.into())
         } else {
-            self.env.reserve(env_remaps.len());
+            self.vars.reserve(env_remaps.len());
             for (key, value) in env_remaps {
-                self.env.insert(key, value);
+                self.vars.insert(key, value);
             }
             Ok(WaitableProcess::empty_success())
         }
@@ -922,7 +945,7 @@ impl ShellContext {
                 .into_iter()
                 .collect(),
             Parameter::Var(name) => self
-                .env
+                .vars
                 .get(name)
                 .cloned()
                 .or_else(|| std::env::var(name).ok())
