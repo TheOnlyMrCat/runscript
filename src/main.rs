@@ -4,11 +4,12 @@ extern crate trace;
 
 use std::collections::HashMap;
 use std::env;
+use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
 use std::sync::Arc;
 
+use exitcode::ExitCode;
 use getopts::Options;
 
 use parser::RunscriptSource;
@@ -19,7 +20,6 @@ mod out;
 mod parser;
 mod script;
 
-use exec::{FinishedProcess, Verbosity};
 use script::{Runscript, Script, ScriptPhase};
 
 use crate::exec::{exec_script, ExecConfig};
@@ -52,13 +52,6 @@ Written by TheOnlyMrCat
 Source code available at https://github.com/TheOnlyMrCat/runscript
 ";
 
-const ERROR_TEXT: &str = "\
-An unexpected error occurred in runscript.
-THIS IS A BUG! Please report this to the developer
-(https://github.com/TheOnlyMrCat/runscript/issues)
-along with the following payload:
-";
-
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const PHASES_B: [ScriptPhase; 2] = [ScriptPhase::BuildOnly, ScriptPhase::Build];
@@ -70,24 +63,80 @@ const PHASES_T: [ScriptPhase; 3] = [
 const PHASES_R: [ScriptPhase; 2] = [ScriptPhase::Run, ScriptPhase::RunOnly];
 
 fn panic_hook(info: &std::panic::PanicInfo) {
-    eprint!("{}", ERROR_TEXT); // Trailing newline already in literal
-    eprintln!("{}", info);
+    let mut tries = 0;
+    let report_file = loop {
+        let uuid = uuid::Uuid::new_v4().to_hyphenated().to_string();
+        let file = {
+            let mut file = std::env::temp_dir();
+            file.push(format!("runscript-report-{}.txt", uuid));
+            file
+        };
+        match File::create(&file) {
+            Ok(mut writer) => {
+                let _ = write!(
+                    writer,
+                    "\
+Runscript panicked.
+Crate version: {}
+Operating System: {}
+
+Panic message:
+{}
+",
+                    VERSION,
+                    os_info::get(),
+                    info,
+                );
+                break Some(file);
+            }
+            Err(_) => {
+                tries += 1;
+                if tries > 5 {
+                    break None;
+                }
+                continue;
+            }
+        }
+    };
+
+    let mut stderr = StandardStream::stderr(ColorChoice::Auto);
+    let _ = stderr.set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Red)));
+    let _ = writeln!(
+        stderr,
+        "\
+Runscript had a problem and panicked (crashed).
+This is a bug, please report it at https://github.com/TheOnlyMrCat/runscript/issues/new{}.
+
+Please include the arguments with which you invoked runscript, and, if possible, the script
+you ran it on.
+",
+        if let Some(file_path) = report_file {
+            format!(
+                "\nand include the generated report file at `{}`",
+                file_path.display()
+            )
+        } else {
+            String::new()
+        }
+    );
+    let _ = stderr.reset();
 }
 
 fn main() {
     std::panic::set_hook(Box::new(panic_hook));
+
     let args = env::args().skip(1).collect::<Vec<String>>();
-    if !run(
-        &args.iter().map(|s| &**s).collect::<Vec<_>>(),
-        &env::current_dir().expect("Working environment is not sane"),
-        false,
-        &HashMap::new(),
-    )
-    .expect("Definition of run in this file doesn't error")
-    .status
-    .success()
-    {
-        std::process::exit(1);
+    if let Ok(current_dir) = env::current_dir() {
+        let output = run(
+            &args.iter().map(|s| &**s).collect::<Vec<_>>(),
+            &current_dir,
+            false,
+            &HashMap::new(),
+        );
+        std::process::exit(output);
+    } else {
+        eprintln!("Current directory doesn't exist!");
+        std::process::exit(exitcode::NOINPUT);
     }
 }
 
@@ -96,14 +145,13 @@ pub fn run(
     cwd: &Path,
     capture_stdout: bool,
     env_remap: &HashMap<String, String>,
-) -> Result<FinishedProcess, std::io::Error> {
+) -> ExitCode {
     let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
 
     let mut options = Options::new();
 
     options.optflag("h", "help", "");
     options.optflag("", "version", "");
-    options.optflagmulti("q", "quiet", "");
     options.optflag("l", "list", "");
     options.optopt("s", "script", "", "");
     options.optflag("b", "build-only", "");
@@ -114,34 +162,52 @@ pub fn run(
         Ok(m) => m,
         Err(x) => {
             out::option_parse_err(&output_stream, x);
-            return Ok(FinishedProcess::new(false));
+            return exitcode::USAGE;
         }
     };
 
     if matches.opt_present("help") {
         print!("{}", HELP_TEXT); // There's a trailing newline in the string anyway
-        return Ok(FinishedProcess::new(true));
+        return exitcode::OK;
     }
 
     if matches.opt_present("version") {
         println!("Runscript {}", VERSION);
         print!("{}", VERSION_TEXT);
-        return Ok(FinishedProcess::new(true));
+        return exitcode::OK;
     }
 
     if let Some(path) = matches.opt_str("script") {
-        let path = Path::new(&path).canonicalize()?;
+        let path = match Path::new(&path).canonicalize() {
+            Ok(path) => path,
+            Err(e) => {
+                out::file_read_err(&output_stream, e);
+                return exitcode::NOINPUT;
+            }
+        };
         let source = RunscriptSource {
-            source: std::fs::read_to_string(&path)?,
+            source: match std::fs::read_to_string(&path) {
+                Ok(s) => s,
+                Err(e) => {
+                    out::file_read_err(&output_stream, e);
+                    return exitcode::IOERR;
+                }
+            },
             base: path.parent().expect("Runfile has no parent!").to_owned(),
             file: path,
             index: Vec::new(),
         };
         let mut context = ParsingContext::new(&source);
-        let commands = parser::parse_commands(&mut context).unwrap(); //TODO: Handle error properly
+        let commands = match parser::parse_commands(&mut context) {
+            Ok(commands) => commands,
+            Err(e) => {
+                //TODO: print error from out:: module
+                eprintln!("run: Error parsing command: {}", e);
+                return exitcode::DATAERR;
+            }
+        };
 
         let exec_cfg = ExecConfig {
-            verbosity: Verbosity::Normal, //TODO
             output_stream: Some(output_stream.clone()),
             working_directory: &source.base,
             positional_args: matches.free.iter().skip(1).cloned().collect(),
@@ -149,14 +215,17 @@ pub fn run(
             env_remap: &env_remap,
         };
 
-        Ok(exec::exec_script(
+        exec::exec_script(
             &Script {
                 commands,
                 location: RunscriptLocation::default(),
             },
             &exec_cfg,
         )
-        .unwrap())
+        .unwrap()
+        .status
+        .code()
+        .unwrap()
     } else {
         exec_runscript(matches, output_stream, cwd, capture_stdout, env_remap)
     }
@@ -168,7 +237,7 @@ fn exec_runscript(
     cwd: &Path,
     capture_stdout: bool,
     env_remap: &HashMap<String, String>,
-) -> Result<FinishedProcess, std::io::Error> {
+) -> ExitCode {
     let path_branch_file: String;
     let path_branch_dir: String;
     let run_target: Option<String>;
@@ -241,7 +310,7 @@ fn exec_runscript(
             "r!" => &[ScriptPhase::RunOnly],
             _ => {
                 out::bad_phase_err(&output_stream, &run_phase);
-                return Ok(FinishedProcess::new(false));
+                return exitcode::USAGE;
             }
         }
     } else if b_pos + t_pos + r_pos == -3 || t_pos > b_pos && t_pos > r_pos {
@@ -273,8 +342,8 @@ fn exec_runscript(
     let (runfile_source, runfile_path) = match runfile_data {
         Some(r) => r,
         None => {
-            out::file_read_err(&output_stream);
-            return Ok(FinishedProcess::new(false));
+            out::no_runfile_err(&output_stream);
+            return exitcode::NOINPUT;
         }
     };
     let runfile_cwd = runfile_path
@@ -402,11 +471,10 @@ fn exec_runscript(
 
                 recursive_list_includes(&mut lock, longest_target, &rf);
 
-                return Ok(FinishedProcess::new(true));
+                return exitcode::OK;
             }
 
             let exec_cfg = ExecConfig {
-                verbosity: Verbosity::Normal, //TODO
                 output_stream: Some(output_stream.clone()),
                 working_directory: &runfile_cwd.to_owned(),
                 positional_args: matches.free.iter().skip(1).cloned().collect(),
@@ -432,18 +500,21 @@ fn exec_runscript(
                         );
                         exec_script(script, &exec_cfg).unwrap();
                     }
-                }
-                None => match run_target {
-                    Some(name) => out::bad_target(&output_stream, &name),
-                    None => out::bad_default(&output_stream),
-                },
-            }
 
-            Ok(FinishedProcess::new(true)) //TODO
+                    exitcode::OK
+                }
+                None => {
+                    match run_target {
+                        Some(name) => out::bad_target(&output_stream, &name),
+                        None => out::bad_default(&output_stream),
+                    }
+                    exitcode::NOINPUT
+                }
+            }
         }
         Err(e) => {
             out::file_parse_err(&output_stream, e);
-            Ok(FinishedProcess::new(false))
+            exitcode::DATAERR
         }
     }
 }

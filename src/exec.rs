@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::fs::{File, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
+use std::str::Utf8Error;
 use std::sync::Arc;
 
 use conch_parser::ast::{
@@ -11,16 +12,13 @@ use conch_parser::ast::{
     Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
     RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word,
 };
-use glob::{glob_with, MatchOptions, Pattern};
+use glob::{glob_with, MatchOptions, Pattern, PatternError};
 use itertools::Itertools;
 
-use crate::parser::RunscriptLocation;
 use crate::Script;
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
-    /// The verbosity of output to the supplied output stream
-    pub verbosity: Verbosity,
     /// The output stream to output to, or `None` to produce no output
     pub output_stream: Option<Arc<termcolor::StandardStream>>,
     /// The working directory to execute the script's commands in
@@ -33,13 +31,6 @@ pub struct ExecConfig<'a> {
     pub capture_stdout: bool,
     /// A map of environment variables to remap
     pub env_remap: &'a HashMap<String, String>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Verbosity {
-    Normal,
-    Quiet,
-    Silent,
 }
 
 #[derive(Debug)]
@@ -59,15 +50,24 @@ pub struct FinishedProcess {
 pub enum CommandExecError {
     InvalidGlob {
         glob: String,
-        loc: RunscriptLocation,
+        err: PatternError,
+        // loc: RunscriptLocation,
     },
     NoGlobMatches {
         glob: String,
-        loc: RunscriptLocation,
+        // loc: RunscriptLocation,
     },
-    BadCommand {
+    CommandFailed {
         err: std::io::Error,
-        loc: RunscriptLocation,
+        // loc: RunscriptLocation,
+    },
+    UnhandledOsString {
+        err: Utf8Error,
+        // loc: RunscriptLocation,
+    },
+    BadRedirect {
+        err: std::io::Error,
+        // loc: RunscriptLocation,
     },
 }
 
@@ -89,16 +89,6 @@ impl ProcessExit {
         match self {
             ProcessExit::Bool(b) => Some(!b as i32),
             ProcessExit::Status(s) => s.code(),
-        }
-    }
-
-    /// The `ExitStatus` the process exited with.
-    ///
-    /// Panics on the `Bool` variant if on neither unix nor windows
-    pub fn status(self) -> ExitStatus {
-        match self {
-            ProcessExit::Status(s) => s,
-            ProcessExit::Bool(b) => convert_bool(b),
         }
     }
 }
@@ -276,35 +266,6 @@ impl From<Stdio> for PipeInput {
 impl From<Vec<u8>> for PipeInput {
     fn from(stdin: Vec<u8>) -> PipeInput {
         PipeInput::Buffer(stdin)
-    }
-}
-
-#[cfg(unix)]
-fn convert_bool(b: bool) -> ExitStatus {
-    use std::os::unix::process::ExitStatusExt;
-
-    ExitStatus::from_raw(!b as i32)
-}
-
-#[cfg(windows)]
-fn convert_bool(b: bool) -> ExitStatus {
-    use std::os::windows::process::ExitStatusExt;
-
-    ExitStatus::from_raw(!b as u32)
-}
-
-#[cfg(not(any(unix, windows)))]
-fn convert_bool(_: bool) -> ExitStatus {
-    panic!("Expected ExitStatus")
-}
-
-impl FinishedProcess {
-    pub fn new(success: bool) -> FinishedProcess {
-        FinishedProcess {
-            status: ProcessExit::Bool(success),
-            stdout: vec![],
-            stderr: vec![],
-        }
     }
 }
 
@@ -640,16 +601,19 @@ impl ShellContext {
                         let file = OpenOptions::new()
                             .read(true)
                             .open(
-                                self.working_directory
-                                    .clone()
-                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                                self.working_directory.clone().join(
+                                    self.evaluate_tl_word(word, config)?
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_else(|| "".to_owned()),
+                                ),
                             )
-                            .unwrap(); //TODO: Handle errors
+                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
                             Some(1) => stdout = Stdio::from(file),
                             Some(2) => stderr = Stdio::from(file),
-                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                            Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
                     Redirect::Write(fd, word) => {
@@ -657,16 +621,19 @@ impl ShellContext {
                             .write(true)
                             .create(true)
                             .open(
-                                self.working_directory
-                                    .clone()
-                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                                self.working_directory.clone().join(
+                                    self.evaluate_tl_word(word, config)?
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_else(|| "".to_owned()),
+                                ),
                             )
-                            .unwrap(); //TODO: Handle errors
+                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             Some(0) => stdin = Stdio::from(file),
                             None | Some(1) => stdout = Stdio::from(file),
                             Some(2) => stderr = Stdio::from(file),
-                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                            Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
                     Redirect::ReadWrite(fd, word) => {
@@ -675,16 +642,19 @@ impl ShellContext {
                             .write(true)
                             .create(true)
                             .open(
-                                self.working_directory
-                                    .clone()
-                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                                self.working_directory.clone().join(
+                                    self.evaluate_tl_word(word, config)?
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_else(|| "".to_owned()),
+                                ),
                             )
-                            .unwrap(); //TODO: Handle errors
+                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
                             Some(1) => stdout = Stdio::from(file),
                             Some(2) => stderr = Stdio::from(file),
-                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                            Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
                     Redirect::Append(fd, word) => {
@@ -693,16 +663,19 @@ impl ShellContext {
                             .append(true)
                             .create(true)
                             .open(
-                                self.working_directory
-                                    .clone()
-                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                                self.working_directory.clone().join(
+                                    self.evaluate_tl_word(word, config)?
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_else(|| "".to_owned()),
+                                ),
                             )
-                            .unwrap(); //TODO: Handle errors
+                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
                             Some(1) => stdout = Stdio::from(file),
                             Some(2) => stderr = Stdio::from(file),
-                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                            Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
                     Redirect::Clobber(fd, word) => {
@@ -710,21 +683,24 @@ impl ShellContext {
                             .write(true)
                             .create(true)
                             .open(
-                                self.working_directory
-                                    .clone()
-                                    .join(self.evaluate_tl_word(word, config)?.last().unwrap()),
+                                self.working_directory.clone().join(
+                                    self.evaluate_tl_word(word, config)?
+                                        .last()
+                                        .cloned()
+                                        .unwrap_or_else(|| "".to_owned()),
+                                ),
                             )
-                            .unwrap(); //TODO: Handle errors
+                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
                             Some(1) => stdout = Stdio::from(file),
                             Some(2) => stderr = Stdio::from(file),
-                            Some(fd) => todo!(), // Might have to use nix::dup2?
+                            Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::Heredoc(fd, _) => todo!(),
-                    Redirect::DupRead(fd, _) => todo!(),
-                    Redirect::DupWrite(fd, _) => todo!(),
+                    Redirect::Heredoc(_fd, _) => todo!(),
+                    Redirect::DupRead(_fd, _) => todo!(),
+                    Redirect::DupWrite(_fd, _) => todo!(),
                 }
             }
 
@@ -749,13 +725,14 @@ impl ShellContext {
                 _ => {
                     let mut child = Command::new(&command_words[0])
                         .args(&command_words[1..])
+                        .envs(&self.env)
                         .envs(env_remaps)
                         .stdin(stdin)
                         .stdout(stdout)
                         .stderr(stderr)
                         .current_dir(self.working_directory.clone())
                         .spawn()
-                        .unwrap();
+                        .map_err(|e| CommandExecError::CommandFailed { err: e })?;
 
                     if let Some(stdin) = stdin_buffer {
                         // This approach can cause a deadlock if the following conditions are true:
@@ -809,17 +786,32 @@ impl ShellContext {
                             GlobPart::SquareClose => "]".to_owned(),
                         }))
                         .join("");
-                    Ok(glob_with(&stringified_glob, MatchOptions::new())
-                        .unwrap()
-                        .map(|path| {
-                            path.unwrap()
-                                .to_string_lossy()
-                                .into_owned()
-                                .strip_prefix(&working_dir_path)
-                                .unwrap()
-                                .to_owned()
+                    let matches = glob_with(&stringified_glob, MatchOptions::new())
+                        .map_err(|e| CommandExecError::InvalidGlob {
+                            glob: stringified_glob.clone(),
+                            err: e,
+                        })?
+                        .filter_map(|path| {
+                            if let Ok(path) = path {
+                                //TODO: This is literally the worst way to handle paths.
+                                let owned = path.to_string_lossy().into_owned();
+                                if let Some(stripped) = owned.strip_prefix(&working_dir_path) {
+                                    Some(stripped.to_owned())
+                                } else {
+                                    Some(owned)
+                                }
+                            } else {
+                                None
+                            }
                         })
-                        .collect::<Vec<_>>())
+                        .collect::<Vec<_>>();
+                    if matches.is_empty() {
+                        Err(CommandExecError::NoGlobMatches {
+                            glob: stringified_glob,
+                        })
+                    } else {
+                        Ok(matches)
+                    }
                 } else {
                     Ok(words.into_iter().flat_map(GlobPart::into_string).collect())
                 }
@@ -904,11 +896,18 @@ impl ShellContext {
         >,
         config: &ExecConfig,
     ) -> Result<Vec<String>, CommandExecError> {
-        match param {
+        Ok(match param {
             ParameterSubstitution::Command(commands) => self
                 .exec_script_entries(commands, config)
-                .map(|output| vec![String::from_utf8(output.wait().stdout).unwrap()]),
-            ParameterSubstitution::Len(p) => Ok(vec![format!(
+                .map(|output| {
+                    Ok(vec![String::from_utf8(output.wait().stdout)
+                        .map_err(|e| CommandExecError::UnhandledOsString {
+                            err: e.utf8_error(),
+                        })?
+                        .to_owned()])
+                })
+                .and_then(std::convert::identity)?,
+            ParameterSubstitution::Len(p) => vec![format!(
                 "{}",
                 match p {
                     Parameter::At | Parameter::Star => config.positional_args.len(),
@@ -919,7 +918,7 @@ impl ShellContext {
                         .reduce(|acc, s| acc + s + 1)
                         .unwrap_or(0),
                 }
-            )]),
+            )],
             ParameterSubstitution::Arith(_) => todo!(),
             ParameterSubstitution::Default(_, _, _) => todo!(),
             ParameterSubstitution::Assign(_, _, _) => todo!(),
@@ -929,7 +928,7 @@ impl ShellContext {
             ParameterSubstitution::RemoveLargestSuffix(_, _) => todo!(),
             ParameterSubstitution::RemoveSmallestPrefix(_, _) => todo!(),
             ParameterSubstitution::RemoveLargestPrefix(_, _) => todo!(),
-        }
+        })
     }
 
     fn evaluate_parameter(

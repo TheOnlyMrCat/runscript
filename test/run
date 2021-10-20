@@ -11,6 +11,8 @@ FOO='bar' printenv FOO
 FOO='bar'
 echo $FOO
 printenv FOO
+export FOO
+printenv FOO
 
 # Redirects
 echo 'hello' >> /dev/null
