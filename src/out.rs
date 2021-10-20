@@ -7,9 +7,14 @@ use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
 use crate::script::{Runscript, ScriptPhase};
 
-pub fn file_read_err(output_stream: &Arc<StandardStream>) {
+pub fn no_runfile_err(output_stream: &Arc<StandardStream>) {
     let mut lock = output_stream.lock();
     writeln!(lock, "Could not find runfile to execute").expect("Failed to write");
+}
+
+pub fn file_read_err(output_stream: &Arc<StandardStream>, err: std::io::Error) {
+    let mut lock = output_stream.lock();
+    writeln!(lock, "Failed to read script: {}", err).expect("Failed to write");
 }
 
 pub fn bad_phase_err(output_stream: &Arc<StandardStream>, phase: &str) {

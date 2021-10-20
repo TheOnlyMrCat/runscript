@@ -444,7 +444,6 @@ pub enum BreakCondition {
     Newline(usize),
     EOF,
     Parse,
-    Punctuation(char),
 }
 
 #[cfg_attr(feature = "trace", trace)]
@@ -457,25 +456,6 @@ pub fn consume_word(
             Some((i, '\n')) => break BreakCondition::Newline(i),
             Some((_, ' ')) | Some((_, '\t')) => break BreakCondition::Parse,
             Some((_, '\r')) => continue,
-            Some((_, c)) => buf.push(c),
-            None => break BreakCondition::EOF,
-        }
-    };
-    (buf, nl)
-}
-
-#[cfg_attr(feature = "trace", trace)]
-pub fn consume_word_break_punctuation(
-    iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug),
-    brk: &[char],
-) -> (String, BreakCondition) {
-    let mut buf = String::new();
-    let nl = loop {
-        match iterator.next() {
-            Some((i, '\n')) => break BreakCondition::Newline(i),
-            Some((_, ' ')) | Some((_, '\t')) => break BreakCondition::Parse,
-            Some((_, '\r')) => continue,
-            Some((_, c)) if brk.contains(&c) => break BreakCondition::Punctuation(c),
             Some((_, c)) => buf.push(c),
             None => break BreakCondition::EOF,
         }
