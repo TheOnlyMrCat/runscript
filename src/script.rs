@@ -56,7 +56,7 @@ pub struct Script {
 impl Runscript {
     pub fn unwind_fileid(&self, id: &[usize]) -> Option<&Runscript> {
         if id.is_empty() {
-            Some(&self)
+            Some(self)
         } else {
             let mut file_ref = self;
             for index in id {

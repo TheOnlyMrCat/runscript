@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::str::CharIndices;
 
-use conch_parser::ast::builder::{ArcBuilder, AtomicDefaultBuilder, Builder, DefaultBuilder};
-use conch_parser::ast::{AtomicTopLevelCommand, TopLevelCommand};
+use conch_parser::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
+use conch_parser::ast::AtomicTopLevelCommand;
 use conch_parser::lexer::Lexer;
-use conch_parser::parse::{CommandGroupDelimiters, DefaultParser, ParseError, Parser};
+use conch_parser::parse::{CommandGroupDelimiters, ParseError, Parser};
 use conch_parser::token::Token;
 use enum_map::EnumMap;
 use linked_hash_map::LinkedHashMap;
@@ -237,7 +237,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
             (i, '%') => {
                 let (special, bk) = consume_word(&mut context.iterator);
 
-                if matches!(bk, BreakCondition::EOF) {
+                if matches!(bk, BreakCondition::Eof) {
                     return Err(RunscriptParseErrorData::UnexpectedEOF {
                         location: context.get_loc(i + 1),
                         expected: "include".to_owned(),
@@ -442,7 +442,7 @@ pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 #[derive(Debug)]
 pub enum BreakCondition {
     Newline(usize),
-    EOF,
+    Eof,
     Parse,
 }
 
@@ -457,7 +457,7 @@ pub fn consume_word(
             Some((_, ' ')) | Some((_, '\t')) => break BreakCondition::Parse,
             Some((_, '\r')) => continue,
             Some((_, c)) => buf.push(c),
-            None => break BreakCondition::EOF,
+            None => break BreakCondition::Eof,
         }
     };
     (buf, nl)
@@ -473,7 +473,7 @@ pub fn consume_line(
             Some((i, '\n')) => break BreakCondition::Newline(i),
             Some((_, '\r')) => continue,
             Some((_, c)) => buf.push(c),
-            None => break BreakCondition::EOF, //TODO: Get an index for this
+            None => break BreakCondition::Eof, //TODO: Get an index for this
         }
     };
     (buf, bk)
