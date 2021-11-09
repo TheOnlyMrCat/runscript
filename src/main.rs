@@ -208,11 +208,11 @@ pub fn run(
         };
 
         let exec_cfg = ExecConfig {
-            output_stream: Some(output_stream.clone()),
+            output_stream: Some(output_stream),
             working_directory: &source.base,
             positional_args: matches.free.iter().skip(1).cloned().collect(),
             capture_stdout,
-            env_remap: &env_remap,
+            env_remap,
         };
 
         exec::exec_script(
@@ -414,7 +414,7 @@ fn exec_runscript(
                         .iter()
                         .filter(|(target, _)| !target.is_empty())
                     {
-                        print_phase_list(lock, &target, name_length, map);
+                        print_phase_list(lock, target, name_length, map);
                     }
                 }
 
@@ -479,7 +479,7 @@ fn exec_runscript(
                 working_directory: &runfile_cwd.to_owned(),
                 positional_args: matches.free.iter().skip(1).cloned().collect(),
                 capture_stdout,
-                env_remap: &env_remap,
+                env_remap,
             };
 
             match rf.get_target(run_target.as_deref().unwrap_or("")) {

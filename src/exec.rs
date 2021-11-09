@@ -259,7 +259,7 @@ enum PipeInput {
 
 impl From<Stdio> for PipeInput {
     fn from(stdin: Stdio) -> PipeInput {
-        PipeInput::Pipe(stdin.into())
+        PipeInput::Pipe(stdin)
     }
 }
 
@@ -407,7 +407,7 @@ impl ShellContext {
                 Ok(last_proc) //TODO: Negate?
             }
             ListableCommand::Single(command) => {
-                self.exec_pipeable_command(&command, Pipe::no_pipe(), config)
+                self.exec_pipeable_command(command, Pipe::no_pipe(), config)
             }
         }
     }
@@ -423,12 +423,12 @@ impl ShellContext {
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
         match command {
-            PipeableCommand::Simple(command) => self.exec_simple_command(&command, pipe, config),
+            PipeableCommand::Simple(command) => self.exec_simple_command(command, pipe, config),
             PipeableCommand::Compound(command) => match &command.kind {
-                CompoundCommandKind::Brace(commands) => self.exec_script_entries(&commands, config),
+                CompoundCommandKind::Brace(commands) => self.exec_script_entries(commands, config),
                 CompoundCommandKind::Subshell(commands) => {
                     let mut context = self.clone();
-                    context.exec_script_entries(&commands, config)
+                    context.exec_script_entries(commands, config)
                 }
                 CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
                     while self
@@ -488,7 +488,7 @@ impl ShellContext {
                                 .collect::<Result<Vec<_>, _>>()
                         })
                         .transpose()?
-                        .unwrap_or(config.positional_args.clone())
+                        .unwrap_or_else(|| config.positional_args.clone())
                     {
                         self.vars.insert(var.clone(), word.clone());
                         last_proc = self.exec_script_entries(body, config)?;
@@ -900,11 +900,11 @@ impl ShellContext {
             ParameterSubstitution::Command(commands) => self
                 .exec_script_entries(commands, config)
                 .map(|output| {
-                    Ok(vec![String::from_utf8(output.wait().stdout)
-                        .map_err(|e| CommandExecError::UnhandledOsString {
+                    Ok(vec![String::from_utf8(output.wait().stdout).map_err(
+                        |e| CommandExecError::UnhandledOsString {
                             err: e.utf8_error(),
-                        })?
-                        .to_owned()])
+                        },
+                    )?])
                 })
                 .and_then(std::convert::identity)?,
             ParameterSubstitution::Len(p) => vec![format!(
@@ -1006,7 +1006,7 @@ fn signal(status: &ExitStatus) -> String {
     // SAFETY: No input is invalid.
     let sigstr_ptr = unsafe { strsignal(signal as c_int) };
 
-    if std::ptr::null() == sigstr_ptr {
+    if sigstr_ptr.is_null() {
         format!("signal {}", signal)
     } else {
         // SAFETY: The returned string is valid until the next call to strsignal, and has been verified to be non-null.
