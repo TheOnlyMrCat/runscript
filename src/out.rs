@@ -1,7 +1,8 @@
 use std::io::Write;
 use std::sync::Arc;
 
-use termcolor::{Color, ColorSpec, StandardStream, WriteColor};
+use conch_parser::ast::{Arithmetic, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word};
+use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 // use crate::exec::CommandExecError;
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
@@ -193,6 +194,171 @@ pub fn phase_message(output_stream: &Arc<StandardStream>, phase: ScriptPhase, na
     write!(lock, "{}", phase).expect("Failed to write");
     lock.reset().expect("Failed to reset colour");
     writeln!(lock, " {}", name).expect("Failed to write");
+}
+
+pub fn command_prompt(
+    output_stream: &Arc<StandardStream>,
+    command: &SimpleCommand<
+        String,
+        AtomicTopLevelWord<String>,
+        Redirect<AtomicTopLevelWord<String>>,
+    >,
+    redirects: &[&Redirect<AtomicTopLevelWord<String>>],
+    evaluated: &[Vec<String>],
+) {
+    let mut lock = output_stream.lock();
+    let words = command.redirects_or_cmd_words.iter().filter_map(|w| match w {
+        RedirectOrCmdWord::Redirect(_) => None,
+        RedirectOrCmdWord::CmdWord(w) => Some(w),
+    });
+    for (word, evaluated) in words.zip(evaluated.iter()) {
+        let word_contents = print_tl_word(&mut lock, word);
+        let evaluated_contents = evaluated.join(" ");
+        //? Should perhaps compare in the other direction: split the word contents
+        if word_contents != evaluated_contents {
+            lock.set_color(
+                ColorSpec::new()
+                    .set_bold(true)
+                    .set_intense(true)
+                    .set_fg(Some(Color::Cyan)),
+            ).expect("Failed to set colour");
+            write!(lock, "={}", evaluated_contents).expect("Failed to write");
+            lock.reset().expect("Failed to reset colour");
+        }
+        write!(lock, " ").expect("Failed to write");
+    }
+    //TODO: Redirects
+}
+
+fn print_tl_word(
+    lock: &mut StandardStreamLock,
+    AtomicTopLevelWord(word): &AtomicTopLevelWord<String>,
+) -> String {
+    match word {
+        ComplexWord::Concat(words) => {
+            let mut concat = String::new();
+            for word in words.iter() {
+                concat.push_str(&print_word(lock, word));
+            }
+            concat
+        }
+        ComplexWord::Single(word) => {
+            print_word(lock, word)
+        }
+    }
+}
+
+fn print_word(
+    lock: &mut StandardStreamLock,
+    word: &Word<
+        String,
+        SimpleWord<
+            String,
+            Parameter<String>,
+            Box<
+                ParameterSubstitution<
+                    Parameter<String>,
+                    AtomicTopLevelWord<String>,
+                    AtomicTopLevelCommand<String>,
+                    Arithmetic<String>,
+                >,
+            >,
+        >,
+    >,
+) -> String {
+    match word {
+        Word::Simple(w) => {
+            print_simple_word(lock, w)
+        },
+        Word::DoubleQuoted(w) => {
+            write!(lock, "\"").expect("Failed to write");
+            let mut concat = String::new();
+            for word in w.iter() {
+                concat.push_str(&print_simple_word(lock, word));
+            }
+            write!(lock, "\"").expect("Failed to write");
+            concat
+        },
+        Word::SingleQuoted(lit) => {
+            write!(lock, "'{}'", lit).expect("Failed to write");
+            lit.clone()
+        },
+    }
+}
+
+fn print_simple_word(
+    lock: &mut StandardStreamLock,
+    word: &SimpleWord<
+        String,
+        Parameter<String>,
+        Box<
+            ParameterSubstitution<
+                Parameter<String>,
+                AtomicTopLevelWord<String>,
+                AtomicTopLevelCommand<String>,
+                Arithmetic<String>,
+            >,
+        >,
+    >,
+) -> String {
+    match word {
+        SimpleWord::Literal(lit) => {
+            write!(lock, "{}", lit).expect("Failed to write");
+            lit.clone()
+        },
+        SimpleWord::Escaped(tk) => {
+            write!(lock, "\\{}", tk).expect("Failed to write");
+            tk.clone()
+        },
+        SimpleWord::Param(p) => {
+            write!(lock, "$").expect("Failed to write");
+            match p {
+                Parameter::At => write!(lock, "@").expect("Failed to write"),
+                Parameter::Star => write!(lock, "*").expect("Failed to write"),
+                Parameter::Pound => write!(lock, "#").expect("Failed to write"),
+                Parameter::Question => write!(lock, "?").expect("Failed to write"),
+                Parameter::Dash => write!(lock, "-").expect("Failed to write"),
+                Parameter::Dollar => write!(lock, "$").expect("Failed to write"),
+                Parameter::Bang => write!(lock, "!").expect("Failed to write"),
+                Parameter::Positional(n) if *n < 10 => write!(lock, "{}", n).expect("Failed to write"),
+                Parameter::Positional(n) => write!(lock, "{{{}}}", n).expect("Failed to write"),
+                Parameter::Var(v) => write!(lock, "{}", v).expect("Failed to write"),
+            }
+            "$\u{0}".to_owned()
+        },
+        SimpleWord::Subst(s) => {
+            match **s {
+                ParameterSubstitution::Command(_) => write!(lock, "$(...)").expect("Failed to write"),
+                _ => todo!(),
+            }
+            "$\u{0}".to_owned()
+        },
+        SimpleWord::Star => {
+            write!(lock, "*").expect("Failed to write");
+            "*".to_owned()
+        },
+        SimpleWord::Question => {
+            write!(lock, "?").expect("Failed to write");
+            "?".to_owned()
+        },
+        SimpleWord::SquareOpen => {
+            write!(lock, "[").expect("Failed to write");
+            "[".to_owned()
+        },
+        SimpleWord::SquareClose => {
+            write!(lock, "]").expect("Failed to write");
+            "]".to_owned()
+        },
+        SimpleWord::Tilde => {
+            write!(lock, "~").expect("Failed to write");
+            "~".to_owned()
+        },
+        SimpleWord::Colon => {
+            write!(lock, ":").expect("Failed to write");
+            ":".to_owned()
+        },
+        
+    }
 }
 
 fn emit_error(
