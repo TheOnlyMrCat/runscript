@@ -15,7 +15,7 @@ use conch_parser::ast::{
 use glob::{glob_with, MatchOptions, Pattern, PatternError};
 use itertools::Itertools;
 
-use crate::Script;
+use crate::{Script, out};
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
@@ -384,13 +384,19 @@ impl ShellContext {
         >,
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
-        match command {
+        if let Some(ref out) = config.output_stream {
+            write!(out.lock(), "> ").expect("Failed to write");
+        }
+        let rt = match command {
             ListableCommand::Pipe(_negate, commands) => {
                 let mut proc = self.exec_pipeable_command(
                     commands.first().unwrap(),
                     Pipe::pipe_out(),
                     config,
                 )?;
+                if let Some(ref out) = config.output_stream {
+                    write!(out.lock(), "| ").expect("Failed to write");
+                }
                 for command in &commands[1..commands.len() - 1] {
                     let next_proc = self.exec_pipeable_command(
                         command,
@@ -398,6 +404,9 @@ impl ShellContext {
                         config,
                     )?;
                     proc = next_proc;
+                    if let Some(ref out) = config.output_stream {
+                        write!(out.lock(), "| ").expect("Failed to write");
+                    }
                 }
                 let last_proc = self.exec_pipeable_command(
                     commands.last().unwrap(),
@@ -409,7 +418,11 @@ impl ShellContext {
             ListableCommand::Single(command) => {
                 self.exec_pipeable_command(command, Pipe::no_pipe(), config)
             }
+        };
+        if let Some(ref out) = config.output_stream {
+            writeln!(out.lock()).expect("Failed to write");
         }
+        rt
     }
 
     fn exec_pipeable_command(
@@ -571,12 +584,14 @@ impl ShellContext {
                     None
                 }
             })
-            .flatten_ok()
             .collect::<Result<Vec<_>, _>>()?;
 
         if !command_words.is_empty() {
-            // TODO: Print pre-evaluated command words
-            eprintln!("> {}", command_words.join(" "));
+            if let Some(ref output_stream) = config.output_stream {
+                out::command_prompt(output_stream, command, &redirects, &command_words);
+            }
+
+            let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
 
             let mut stdin_buffer = None;
             let mut stdin = match pipe.stdin {
