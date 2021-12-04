@@ -15,7 +15,15 @@ use conch_parser::ast::{
 use glob::{glob_with, MatchOptions, Pattern, PatternError};
 use itertools::Itertools;
 
-use crate::{Script, out};
+use crate::{out, Script};
+
+type AtomicParameterSubstitution = ParameterSubstitution<
+    Parameter<String>,
+    AtomicTopLevelWord<String>,
+    AtomicTopLevelCommand<String>,
+    Arithmetic<String>,
+>;
+type AtomicSimpleWord = SimpleWord<String, Parameter<String>, Box<AtomicParameterSubstitution>>;
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
@@ -395,6 +403,7 @@ impl ShellContext {
                     config,
                 )?;
                 if let Some(ref out) = config.output_stream {
+                    //TODO: Do stuff with cursor position?
                     write!(out.lock(), "| ").expect("Failed to write");
                 }
                 for command in &commands[1..commands.len() - 1] {
@@ -587,6 +596,20 @@ impl ShellContext {
             .collect::<Result<Vec<_>, _>>()?;
 
         if !command_words.is_empty() {
+            let redirects = redirects
+                .into_iter()
+                .map(|redirect| {
+                    macro_rules! map_redirect {
+                        ($($t:ident),*) => {
+                            match redirect {
+                                $(Redirect::$t(fd, word) => Redirect::$t(*fd, self.evaluate_tl_word(word, config)?),)*
+                            }
+                        }
+                    }
+                    Ok(map_redirect!(Read, Write, ReadWrite, Append, Clobber, Heredoc, DupRead, DupWrite))
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
             if let Some(ref output_stream) = config.output_stream {
                 out::command_prompt(output_stream, command, &redirects, &command_words);
             }
@@ -615,14 +638,7 @@ impl ShellContext {
                     Redirect::Read(fd, word) => {
                         let file = OpenOptions::new()
                             .read(true)
-                            .open(
-                                self.working_directory.clone().join(
-                                    self.evaluate_tl_word(word, config)?
-                                        .last()
-                                        .cloned()
-                                        .unwrap_or_else(|| "".to_owned()),
-                                ),
-                            )
+                            .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
@@ -635,14 +651,7 @@ impl ShellContext {
                         let file = OpenOptions::new()
                             .write(true)
                             .create(true)
-                            .open(
-                                self.working_directory.clone().join(
-                                    self.evaluate_tl_word(word, config)?
-                                        .last()
-                                        .cloned()
-                                        .unwrap_or_else(|| "".to_owned()),
-                                ),
-                            )
+                            .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             Some(0) => stdin = Stdio::from(file),
@@ -656,14 +665,7 @@ impl ShellContext {
                             .read(true)
                             .write(true)
                             .create(true)
-                            .open(
-                                self.working_directory.clone().join(
-                                    self.evaluate_tl_word(word, config)?
-                                        .last()
-                                        .cloned()
-                                        .unwrap_or_else(|| "".to_owned()),
-                                ),
-                            )
+                            .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
@@ -677,14 +679,7 @@ impl ShellContext {
                             .write(true)
                             .append(true)
                             .create(true)
-                            .open(
-                                self.working_directory.clone().join(
-                                    self.evaluate_tl_word(word, config)?
-                                        .last()
-                                        .cloned()
-                                        .unwrap_or_else(|| "".to_owned()),
-                                ),
-                            )
+                            .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
@@ -697,14 +692,7 @@ impl ShellContext {
                         let file = OpenOptions::new()
                             .write(true)
                             .create(true)
-                            .open(
-                                self.working_directory.clone().join(
-                                    self.evaluate_tl_word(word, config)?
-                                        .last()
-                                        .cloned()
-                                        .unwrap_or_else(|| "".to_owned()),
-                                ),
-                            )
+                            .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
                             None | Some(0) => stdin = Stdio::from(file),
@@ -839,21 +827,7 @@ impl ShellContext {
 
     fn evaluate_word(
         &mut self,
-        word: &Word<
-            String,
-            SimpleWord<
-                String,
-                Parameter<String>,
-                Box<
-                    ParameterSubstitution<
-                        Parameter<String>,
-                        AtomicTopLevelWord<String>,
-                        AtomicTopLevelCommand<String>,
-                        Arithmetic<String>,
-                    >,
-                >,
-            >,
-        >,
+        word: &Word<String, AtomicSimpleWord>,
         config: &ExecConfig,
     ) -> Result<GlobPart, CommandExecError> {
         match word {
@@ -873,18 +847,7 @@ impl ShellContext {
 
     fn evaluate_simple_word(
         &mut self,
-        word: &SimpleWord<
-            String,
-            Parameter<String>,
-            Box<
-                ParameterSubstitution<
-                    Parameter<String>,
-                    AtomicTopLevelWord<String>,
-                    AtomicTopLevelCommand<String>,
-                    Arithmetic<String>,
-                >,
-            >,
-        >,
+        word: &AtomicSimpleWord,
         config: &ExecConfig,
     ) -> Result<GlobPart, CommandExecError> {
         match word {
@@ -903,12 +866,7 @@ impl ShellContext {
 
     fn evaluate_param_subst(
         &mut self,
-        param: &ParameterSubstitution<
-            Parameter<String>,
-            AtomicTopLevelWord<String>,
-            AtomicTopLevelCommand<String>,
-            Arithmetic<String>,
-        >,
+        param: &AtomicParameterSubstitution,
         config: &ExecConfig,
     ) -> Result<Vec<String>, CommandExecError> {
         Ok(match param {

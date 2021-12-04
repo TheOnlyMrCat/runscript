@@ -203,7 +203,7 @@ pub fn command_prompt(
         AtomicTopLevelWord<String>,
         Redirect<AtomicTopLevelWord<String>>,
     >,
-    redirects: &[&Redirect<AtomicTopLevelWord<String>>],
+    redirects: &[Redirect<Vec<String>>],
     evaluated: &[Vec<String>],
 ) {
     let mut lock = output_stream.lock();
@@ -227,7 +227,31 @@ pub fn command_prompt(
         }
         write!(lock, " ").expect("Failed to write");
     }
-    //TODO: Redirects
+    if !redirects.is_empty() {
+        writeln!(lock).expect("Failed to write");
+        write!(lock, "-- ").expect("Failed to write");
+        for redirect in redirects {
+            match redirect {
+                Redirect::Read(fd, file) => write!(lock, "{}<{}", fd.unwrap_or(0), file.join(" ")),
+                Redirect::Write(fd, file) => write!(lock, "{}>{}", fd.unwrap_or(1), file.join(" ")),
+                Redirect::ReadWrite(fd, file) => write!(lock, "{}<>{}", fd.unwrap_or(1), file.join(" ")),
+                Redirect::Append(fd, file) => write!(lock, "{}>>{}", fd.unwrap_or(1), file.join(" ")),
+                Redirect::Clobber(fd, file) => write!(lock, "{}>|{}", fd.unwrap_or(1), file.join(" ")),
+                Redirect::Heredoc(fd, _) => {
+                    write!(lock, "{}<", fd.unwrap_or(0));
+                    lock.set_color(
+                        ColorSpec::new()
+                            .set_intense(true)
+                            .set_fg(Some(Color::Black)),
+                    ).expect("Failed to set colour");
+                    write!(lock, "heredoc").expect("Failed to write");
+                    lock.reset()
+                },
+                Redirect::DupRead(fd, _) => todo!(),
+                Redirect::DupWrite(fd, _) => todo!(),
+            }.expect("Failed to write");
+        }
+    }
 }
 
 fn print_tl_word(
