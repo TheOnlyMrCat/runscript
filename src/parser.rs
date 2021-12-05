@@ -410,7 +410,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     Ok(())
 }
 
-/// Parses a block of commands for the given `ParsingContext`, terminating when it reaches a `#/`
+/// Parses a block of commands for the given `ParsingContext`, terminating when it reaches a `$|`
 #[cfg_attr(feature = "trace", trace)]
 pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
@@ -422,6 +422,7 @@ pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
     let mut commands = vec![];
     loop {
+        //TODO: Parser keeps track of position... if commands are parsed manually, line numbers can be derived from that
         commands.extend(
             parser
                 .command_group(CommandGroupDelimiters {
@@ -430,7 +431,7 @@ pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                 })?
                 .commands,
         );
-        parser.reserved_token(&[Token::Dollar]).unwrap();
+        parser.reserved_token(&[Token::Dollar])?;
         if let Some(&Token::Pipe) = parser.peek_reserved_token(&[Token::Pipe]) {
             break;
         }

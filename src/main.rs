@@ -185,20 +185,17 @@ pub fn run(
                 return exitcode::NOINPUT;
             }
         };
-        let source = RunscriptSource {
-            source: match std::fs::read_to_string(&path) {
-                Ok(s) => s,
-                Err(e) => {
-                    out::file_read_err(&output_stream, e);
-                    return exitcode::IOERR;
-                }
-            },
-            base: path.parent().expect("Runfile has no parent!").to_owned(),
-            file: path,
-            index: Vec::new(),
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) => {
+                out::file_read_err(&output_stream, e);
+                return exitcode::IOERR;
+            }
         };
-        let mut context = ParsingContext::new(&source);
-        let commands = match parser::parse_commands(&mut context) {
+        let lexer = conch_parser::lexer::Lexer::new(source.chars());
+        let mut parser = conch_parser::parse::Parser::<_, conch_parser::ast::builder::AtomicDefaultBuilder<String>>::new(lexer);
+        let commands = match parser
+            .command_group(Default::default()).map(|x| x.commands) {
             Ok(commands) => commands,
             Err(e) => {
                 //TODO: print error from out:: module
@@ -209,7 +206,7 @@ pub fn run(
 
         let exec_cfg = ExecConfig {
             output_stream: Some(output_stream),
-            working_directory: &source.base,
+            working_directory: path.parent().expect("Working environment is not sane!"),
             positional_args: matches.free.iter().skip(1).cloned().collect(),
             capture_stdout,
             env_remap,
