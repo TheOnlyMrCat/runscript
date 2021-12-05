@@ -4,10 +4,25 @@ Runscript is a tool like `make` which manages run commands. Runscript can also h
 
 For an example of a useful runscript, see [the runfile for this repository](run).
 
+**Note: This readme is for runscript 2.0. See [the tree at v1.3.0](https://github.com/TheOnlyMrCat/runscript/tree/v1.3.0) for information on the latest stable release**
+
+## Features
+
+- Does **not** use Makefile syntax
+- Supports most of the shell features you know and love (parsing by [conch_parser](https://github.com/ipetkov/conch-parser) currently)
+- Multiple 'phases' per target, so you can chose to only build, build & run, or only run a target.
+- Fancy output while running scripts
+
+### To be implemented
+
+- `source`ing external script files (such as `.env` files)
+- A number of more advanced shell features
+
 ## How to install
 
 Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Alternatively, you can use cargo to
-build and install it. Supporting package managers is difficult, so I'm not going to try doing it until this gets real use.
+build and install it. Supporting package managers is difficult, so I'm not going to try doing it until this gets real use. (Feel
+free to open an issue about it)
 
 ### Cargo
 
@@ -23,9 +38,9 @@ When `run` is executed, it looks for a file `run` in the current working directo
 searches this runfile for scripts, which look like the following:
 
 ```run
-#target phase
+$target phase
 commands
-#/
+$|
 ```
 
 `target` can be `-` for the default target, `#` for the global target, or anything else for a named target (matching the regex
@@ -54,19 +69,9 @@ The phases that are executed depend on flags passed to `run`.
 
 If multiple phase flags are passed, the one provided last is used.
 
-`commands` is a newline-separated list of terminal commands to be executed. In other words, a shell script. Not all script
-features are currently supported, however. A list of supported features follows:
-
-* Commands and arguments
-* Argument interpolation:
-  * `*.run` glob matching (only `*`, `?`, `**`, `{}`)
-  * `$VAR` environment variables
-  * `$(echo)` internal subcommands
-  * `$1` positional arguments
-  * `$@` all positional arguments
-* Single and double-quoted arguments
-* Command chaining by `&&`, `||`, and `|` (no `;`, just use newlines)
-* `VAR=val` Environment variable setting (with interpolation)
+`commands` is a newline-separated list of terminal commands to be executed. In other words, a shell script. I don't currently
+have documentation on everything supported by the runscript shell, but a general overview of what to expect is in the
+"Features" section above.
 
 ## License
 

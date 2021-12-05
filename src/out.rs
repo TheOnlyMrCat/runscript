@@ -234,11 +234,11 @@ pub fn command_prompt(
             match redirect {
                 Redirect::Read(fd, file) => write!(lock, "{}<{}", fd.unwrap_or(0), file.join(" ")),
                 Redirect::Write(fd, file) => write!(lock, "{}>{}", fd.unwrap_or(1), file.join(" ")),
-                Redirect::ReadWrite(fd, file) => write!(lock, "{}<>{}", fd.unwrap_or(1), file.join(" ")),
+                Redirect::ReadWrite(fd, file) => write!(lock, "{}<>{}", fd.unwrap_or(0), file.join(" ")),
                 Redirect::Append(fd, file) => write!(lock, "{}>>{}", fd.unwrap_or(1), file.join(" ")),
                 Redirect::Clobber(fd, file) => write!(lock, "{}>|{}", fd.unwrap_or(1), file.join(" ")),
                 Redirect::Heredoc(fd, _) => {
-                    write!(lock, "{}<", fd.unwrap_or(0));
+                    write!(lock, "{}<", fd.unwrap_or(0)).expect("Failed to write");
                     lock.set_color(
                         ColorSpec::new()
                             .set_intense(true)

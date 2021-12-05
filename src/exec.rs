@@ -682,8 +682,8 @@ impl ShellContext {
                             .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
-                            None | Some(0) => stdin = Stdio::from(file),
-                            Some(1) => stdout = Stdio::from(file),
+                            Some(0) => stdin = Stdio::from(file),
+                            None | Some(1) => stdout = Stdio::from(file),
                             Some(2) => stderr = Stdio::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
