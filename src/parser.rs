@@ -82,10 +82,12 @@ pub enum RunscriptParseErrorData {
         expected: String,
     },
     /// Found a name of a script which contains characters outside of `[A-Za-z_-]`
-    InvalidID {
+    InvalidValue {
         location: RunscriptLocation,
         /// The text of the identifier that triggered the error
         found: String,
+        /// A description of what was expected instead of the `found` identifier
+        expected: String,
     },
     /// Tried to include a runfile but couldn't access the file
     BadInclude {
@@ -101,7 +103,7 @@ pub enum RunscriptParseErrorData {
         error: Box<RunscriptParseError>,
     },
     /// Attempted to define the same script twice
-    MultipleDefinition {
+    DuplicateScript {
         previous_location: RunscriptLocation,
         new_location: RunscriptLocation,
         target_name: String,
@@ -227,163 +229,60 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
     source: &RunscriptSource,
 ) -> Result<(), RunscriptParseErrorData> {
-    while let Some(tk) = context.iterator.next() {
+    let mut current_script = Script {
+        commands: Vec::new(),
+        location: context.get_loc(0),
+    };
+    let mut current_script_type = ScriptType::Default;
+    let mut current_script_phase = ScriptPhase::BuildAndRun;
+    while let Some(tk) = context.iterator.peek().copied() {
         match tk {
             // Comment
             (_, '#') => {
                 consume_line(&mut context.iterator);
             }
-            // Annotation
-            (i, '%') => {
-                let (special, bk) = consume_word(&mut context.iterator);
-
-                if matches!(bk, BreakCondition::Eof) {
-                    return Err(RunscriptParseErrorData::UnexpectedEOF {
-                        location: context.get_loc(i + 1),
-                        expected: "include".to_owned(),
-                    });
-                }
-
-                match &*special {
-                    "include" => {
-                        let (included, bk) = consume_word(&mut context.iterator);
-                        let index = {
-                            let mut v = source.index.clone();
-                            v.push(context.runfile.includes.len());
-                            v
-                        };
-
-                        if !matches!(bk, BreakCondition::Newline(_)) {
-                            consume_line(&mut context.iterator);
-                        }
-
-                        let file_branch = {
-                            let mut st = included.clone();
-                            st.push_str(".run");
-                            st
-                        };
-                        let file_path = source.base.join(file_branch);
-                        match parse_runfile_nested(file_path, source.base.clone(), index.clone()) {
-                            Ok(runscript) => {
-                                context.runfile.includes.push(RunscriptInclude {
-                                    runscript,
-                                    location: context.get_loc(i),
-                                });
-                            }
-                            Err(ParseOrIOError::IOError(fe)) => {
-                                let dir_path = {
-                                    let mut p = source.base.join(&included);
-                                    p.push("run");
-                                    p
-                                };
-                                match parse_runfile_nested(dir_path, source.base.clone(), index) {
-                                    Ok(runscript) => {
-                                        context.runfile.includes.push(RunscriptInclude {
-                                            runscript,
-                                            location: context.get_loc(i),
-                                        });
-                                    }
-                                    Err(ParseOrIOError::IOError(de)) => {
-                                        return Err(RunscriptParseErrorData::BadInclude {
-                                            location: context.get_loc(i),
-                                            file_err: fe,
-                                            dir_err: de,
-                                        })
-                                    }
-                                    Err(ParseOrIOError::ParseError(e)) => {
-                                        return Err(RunscriptParseErrorData::NestedError {
-                                            include_location: context.get_loc(i),
-                                            error: Box::new(e),
-                                        })
-                                    }
-                                }
-                            }
-                            Err(ParseOrIOError::ParseError(e)) => {
-                                return Err(RunscriptParseErrorData::NestedError {
-                                    include_location: context.get_loc(i),
-                                    error: Box::new(e),
-                                })
-                            }
-                        }
-                    }
-                    "opt" => {
-                        context
-                            .runfile
-                            .options
-                            .push(consume_line(&mut context.iterator).0);
-                    }
-                    _ => {
-                        return Err(RunscriptParseErrorData::UnexpectedToken {
-                            location: context.get_loc(i + 1),
-                            found: special,
-                            expected: "include".to_owned(),
-                        })
-                    }
-                }
-            }
             // Script
-            (i, '$') => {
-                let (mut name, bk) = consume_word(&mut context.iterator);
+            (i, '[') => {
+                let location = context.get_loc(i + 1);
 
-                // Don't ask...
-                let (phase, bk) = match bk {
-                    BreakCondition::Newline(i) => {
-                        (ScriptPhase::BuildAndRun, BreakCondition::Newline(i))
-                    }
-                    _ => match context.iterator.next() {
-                        Some((i, '\n')) => (ScriptPhase::BuildAndRun, BreakCondition::Newline(i)),
-                        Some((_, 'b')) => match context.iterator.next() {
-                            Some((_, '!')) => (ScriptPhase::BuildOnly, BreakCondition::Parse),
-                            Some((_, 'r')) => (ScriptPhase::BuildAndRun, BreakCondition::Parse),
-                            Some((i, '\n')) => (ScriptPhase::Build, BreakCondition::Newline(i)),
-                            _ => (ScriptPhase::Build, BreakCondition::Parse),
-                        },
-                        Some((_, 'r')) => match context.iterator.next() {
-                            Some((_, '!')) => (ScriptPhase::RunOnly, BreakCondition::Parse),
-                            Some((i, '\n')) => (ScriptPhase::Run, BreakCondition::Newline(i)),
-                            _ => (ScriptPhase::Run, BreakCondition::Parse),
-                        },
-                        Some(_) => todo!(),
-                        None => todo!(),
-                    },
+                let (name, phase) = {
+                    context.iterator.next();
+                    let mut name = (&mut context.iterator)
+                        .map_while(|(_, ch)| if ch == ']' { None } else { Some(ch) })
+                        .collect::<String>();
+                    let phase = name
+                        .rfind(':')
+                        .map(|idx| {
+                            let phase = name.split_off(idx + 1);
+                            Ok(match phase.as_str() {
+                                "b!" => ScriptPhase::BuildOnly,
+                                "b" => ScriptPhase::Build,
+                                "br" => ScriptPhase::BuildAndRun,
+                                "r" => ScriptPhase::Run,
+                                "r!" => ScriptPhase::RunOnly,
+                                phase => {
+                                    return Err(RunscriptParseErrorData::InvalidValue {
+                                        location: location.clone(),
+                                        found: phase.to_owned(),
+                                        expected: "b!|b|br|r|r!".to_owned(),
+                                    })
+                                }
+                            })
+                        })
+                        .transpose()?
+                        .unwrap_or(ScriptPhase::BuildAndRun);
+                    name.pop();
+                    (name, phase)
                 };
-
-                if !matches!(bk, BreakCondition::Newline(_)) {
-                    consume_line(&mut context.iterator);
-                }
-
-                let commands = match parse_commands(context) {
-                    Ok(commands) => commands,
-                    Err(e) => {
-                        let index = context
-                            .iterator
-                            .peek()
-                            .copied()
-                            .unwrap_or((source.source.len(), '\0'))
-                            .0;
-                        return Err(RunscriptParseErrorData::CommandParseError {
-                            location: context.get_loc(index),
-                            error: e,
-                        });
-                    }
-                };
-
-                let script = Script {
-                    location: context.get_loc(i),
-                    commands,
-                };
-
-                if name == "#" {
-                    name = "".to_owned();
-                }
 
                 if name
                     .chars()
                     .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
                 {
-                    return Err(RunscriptParseErrorData::InvalidID {
-                        location: context.get_loc(i + 1),
+                    return Err(RunscriptParseErrorData::InvalidValue {
+                        location,
                         found: name,
+                        expected: "alphanumeric".to_owned(),
                     });
                 }
 
@@ -391,21 +290,56 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .runfile
                     .scripts
                     .targets
-                    .entry(name.clone())
+                    .entry(current_script_type)
                     .or_insert_with(EnumMap::new);
-                if let Some(prev_script) = &target[phase] {
-                    return Err(RunscriptParseErrorData::MultipleDefinition {
-                        previous_location: prev_script.location.clone(),
-                        new_location: script.location,
+                target[current_script_phase] = Some(current_script);
+
+                let new_target = context.
+                    runfile
+                    .scripts
+                    .targets
+                    .entry(ScriptType::Named(name.clone()))
+                    .or_insert_with(EnumMap::new);
+                if let Some(script) = &new_target[phase] {
+                    return Err(RunscriptParseErrorData::DuplicateScript {
+                        previous_location: script.location.clone(),
+                        new_location: script.location.clone(),
                         target_name: name,
                     });
                 }
-                target[phase] = Some(script);
+
+                current_script = Script {
+                    location: context.get_loc(i),
+                    commands: Vec::new(),
+                };
+                current_script_type = ScriptType::Named(name);
+                current_script_phase = phase;
             }
-            (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => continue,
-            _ => todo!(),
+            (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => { context.iterator.next(); },
+            (i, _) => {
+                let command_pos = context.get_loc(i);
+
+                let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
+                let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+                let command = parser.complete_command().map_err(|e| {
+                    RunscriptParseErrorData::CommandParseError {
+                        location: command_pos,
+                        error: e,
+                    }
+                })?.unwrap(); // The only error that can occur is EOF, but we already skip whitespace
+
+                current_script.commands.push(command);
+            },
         }
     }
+
+    let target = context
+        .runfile
+        .scripts
+        .targets
+        .entry(current_script_type)
+        .or_insert_with(EnumMap::new);
+    target[current_script_phase] = Some(current_script);
 
     Ok(())
 }

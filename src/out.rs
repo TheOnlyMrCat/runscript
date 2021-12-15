@@ -64,13 +64,14 @@ pub fn file_parse_err(
                 format!("Unexpected end of file; expected {}", expected),
             );
         }
-        RunscriptParseErrorData::InvalidID {
+        RunscriptParseErrorData::InvalidValue {
             location: loc,
             found,
+            expected,
         } => {
-            emit_error(output_stream, loc, &script, format!("Invalid content of identifier; found `{}` but identifiers can only have alphanumeric characters and `_`", found));
+            emit_error(output_stream, loc, &script, format!("Invalid identifier; found `{}` but expected `{}`", found, expected));
         }
-        RunscriptParseErrorData::MultipleDefinition {
+        RunscriptParseErrorData::DuplicateScript {
             new_location: loc,
             previous_location: prev,
             target_name: t,
