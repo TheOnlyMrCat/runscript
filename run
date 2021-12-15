@@ -3,15 +3,11 @@ cargo build
 #/
 
 #-
-cargo run -- "test:$1" -r
+cargo run -- "test:$1"
 #/
 
 #trace
 cargo run --features trace -- test: -r
-#/
-
-#parent-check r
-echo true
 #/
 
 #pkg b

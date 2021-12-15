@@ -24,6 +24,7 @@ use script::{Runscript, Script, ScriptPhase};
 
 use crate::exec::{exec_script, ExecConfig};
 use crate::parser::{ParsingContext, RunscriptLocation};
+use crate::script::ScriptType;
 
 #[cfg(feature = "trace")]
 trace::init_depth_var!();
@@ -401,7 +402,7 @@ fn exec_runscript(
                         writeln!(lock).expect("Failed to write");
                     }
 
-                    if let Some(default_script) = runscript.scripts.targets.get("") {
+                    if let Some(default_script) = runscript.scripts.targets.get(&ScriptType::Default) {
                         print_phase_list(lock, "default", name_length, default_script);
                     }
 
@@ -409,7 +410,7 @@ fn exec_runscript(
                         .scripts
                         .targets
                         .iter()
-                        .filter(|(target, _)| !target.is_empty())
+                        .filter_map(|(target, map)| match target { ScriptType::Default => None, ScriptType::Named(s) => Some((s, map)) })
                     {
                         print_phase_list(lock, target, name_length, map);
                     }
@@ -420,10 +421,9 @@ fn exec_runscript(
                     .targets
                     .keys()
                     .map(|s| {
-                        if s.is_empty() {
-                            "default".len()
-                        } else {
-                            s.len()
+                        match s {
+                            ScriptType::Default => "default".len(),
+                            ScriptType::Named(s) => s.len()
                         }
                     })
                     .max()
@@ -437,10 +437,9 @@ fn exec_runscript(
                             .targets
                             .keys()
                             .map(|s| {
-                                if s.is_empty() {
-                                    "default".len()
-                                } else {
-                                    s.len()
+                                match s {
+                                    ScriptType::Default => "default".len(),
+                                    ScriptType::Named(s) => s.len()
                                 }
                             })
                             .max()
@@ -479,7 +478,10 @@ fn exec_runscript(
                 env_remap,
             };
 
-            match rf.get_target(run_target.as_deref().unwrap_or("")) {
+            match match run_target.as_deref() {
+                Some(target) => rf.get_target(target),
+                None => rf.get_default_target(),
+            } {
                 Some(target) => {
                     let scripts = phases
                         .iter()

@@ -1,4 +1,7 @@
-use std::fmt::{self, Display, Formatter};
+use std::{
+    borrow::Cow,
+    fmt::{self, Display, Formatter},
+};
 
 use conch_parser::ast::AtomicTopLevelCommand;
 use enum_map::EnumMap;
@@ -35,7 +38,7 @@ pub struct Scripts {
     /// The scripts defined under `$#name`
     ///
     /// These scripts are executed in their respective `ScriptPhase` if they were chosen as the target
-    pub targets: LinkedHashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
+    pub targets: LinkedHashMap<ScriptType, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone, Copy, enum_map::Enum)]
@@ -45,6 +48,21 @@ pub enum ScriptPhase {
     BuildAndRun, // br (default)
     Run,         // r
     RunOnly,     // r!
+}
+
+#[derive(Debug, PartialEq, Hash, Eq, Clone)]
+pub enum ScriptType {
+    Default,
+    Named(String),
+}
+
+impl std::borrow::Borrow<str> for ScriptType {
+    fn borrow(&self) -> &str {
+        match self {
+            ScriptType::Default => "",
+            ScriptType::Named(name) => name,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +82,10 @@ impl Runscript {
             }
             Some(file_ref)
         }
+    }
+
+    pub fn get_default_target(&self) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
+        self.scripts.targets.get(&ScriptType::Default)
     }
 
     pub fn get_target(&self, target: &str) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {

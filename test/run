@@ -1,21 +1,17 @@
-$# r
 run args
 run chain
 run env
 run redir
-$|
 
-$args r
+[args:r]
 echo Test 'basic command' "with textual" arguments
 echo 'environment variables:' $HOME
 echo 'globs:' ../src/*.rs
-$|
 
-$chain r
+[chain:r]
 yes | head -n 2
-$|
 
-$env r
+[env:r]
 FOO='bar' echo $FOO
 FOO='bar' printenv FOO
 FOO='bar'
@@ -23,9 +19,7 @@ echo $FOO
 printenv FOO
 export FOO
 printenv FOO
-$|
 
-$redir r
+[redir:r]
 echo 'hello' >> /dev/null
 cat < ../.gitignore
-$|
