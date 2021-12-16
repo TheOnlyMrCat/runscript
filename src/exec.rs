@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::OpenOptions;
+use std::fs::{OpenOptions, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
@@ -35,10 +35,6 @@ pub struct ExecConfig<'a> {
     ///
     ///The first argument replaces `$1`, the second replaces `$2`, etc.
     pub positional_args: Vec<String>,
-    /// Whether to store the text printed to stdout by the executed programs
-    pub capture_stdout: bool,
-    /// A map of environment variables to remap
-    pub env_remap: &'a HashMap<String, String>,
 }
 
 #[derive(Debug)]
@@ -223,6 +219,56 @@ impl From<Child> for WaitableProcess {
     }
 }
 
+pub enum StdioRepr {
+    Inherit,
+    Null,
+    MakePipe,
+    #[cfg(unix)]
+    Fd(std::os::unix::io::RawFd),
+    #[cfg(windows)]
+    Fd(std::os::windows::prelude::RawHandle),
+}
+
+impl From<StdioRepr> for Stdio {
+    fn from(repr: StdioRepr) -> Stdio {
+        match repr {
+            StdioRepr::Inherit => Stdio::inherit(),
+            StdioRepr::Null => Stdio::null(),
+            StdioRepr::MakePipe => Stdio::piped(),
+            #[cfg(unix)]
+            StdioRepr::Fd(fd) => {
+                use std::os::unix::io::FromRawFd;
+                unsafe {
+                    // SAFETY: Umm, not sure how to enforce this, to be honest.
+                    //         I'll deal with it later
+                    Stdio::from_raw_fd(fd)
+                }
+            }
+            #[cfg(windows)]
+            StdioRepr::Fd(handle) => {
+                use std::os::windows::io::FromRawHandle;
+                unsafe {
+                    Stdio::from_raw_handle(handle)
+                }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<T> From<T> for StdioRepr where T: std::os::unix::io::IntoRawFd {
+    fn from(file: T) -> StdioRepr {
+        StdioRepr::Fd(file.into_raw_fd())
+    }
+}
+
+#[cfg(windows)]
+impl<T> From<T> for StdioRepr where T: std::os::windows::io::IntoRawHandle {
+    fn from(file: T) -> StdioRepr {
+        StdioRepr::Fd(file.into_raw_handle())
+    }
+}
+
 struct Pipe {
     stdin: PipeInput,
     stdout: bool,
@@ -261,12 +307,12 @@ impl Pipe {
 enum PipeInput {
     None,
     Inherit,
-    Pipe(Stdio),
+    Pipe(StdioRepr),
     Buffer(Vec<u8>),
 }
 
-impl From<Stdio> for PipeInput {
-    fn from(stdin: Stdio) -> PipeInput {
+impl From<StdioRepr> for PipeInput {
+    fn from(stdin: StdioRepr) -> PipeInput {
         PipeInput::Pipe(stdin)
     }
 }
@@ -618,20 +664,20 @@ impl ShellContext {
 
             let mut stdin_buffer = None;
             let mut stdin = match pipe.stdin {
-                PipeInput::None => Stdio::null(), //TODO: This by default if command is job
-                PipeInput::Inherit => Stdio::inherit(),
+                PipeInput::None => StdioRepr::Null, //TODO: This by default if command is job
+                PipeInput::Inherit => StdioRepr::Inherit,
                 PipeInput::Pipe(stdio) => stdio,
                 PipeInput::Buffer(v) => {
                     stdin_buffer = Some(v);
-                    Stdio::piped()
+                    StdioRepr::MakePipe
                 }
             };
             let mut stdout = if pipe.stdout {
-                Stdio::piped()
+                StdioRepr::MakePipe
             } else {
-                Stdio::inherit()
+                StdioRepr::Inherit
             };
-            let mut stderr = Stdio::inherit();
+            let mut stderr = StdioRepr::Inherit;
 
             for redirect in redirects {
                 match redirect {
@@ -641,9 +687,9 @@ impl ShellContext {
                             .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
-                            None | Some(0) => stdin = Stdio::from(file),
-                            Some(1) => stdout = Stdio::from(file),
-                            Some(2) => stderr = Stdio::from(file),
+                            None | Some(0) => stdin = StdioRepr::from(file),
+                            Some(1) => stdout = StdioRepr::from(file),
+                            Some(2) => stderr = StdioRepr::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -654,9 +700,9 @@ impl ShellContext {
                             .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
-                            Some(0) => stdin = Stdio::from(file),
-                            None | Some(1) => stdout = Stdio::from(file),
-                            Some(2) => stderr = Stdio::from(file),
+                            Some(0) => stdin = StdioRepr::from(file),
+                            None | Some(1) => stdout = StdioRepr::from(file),
+                            Some(2) => stderr = StdioRepr::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -668,9 +714,9 @@ impl ShellContext {
                             .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
-                            None | Some(0) => stdin = Stdio::from(file),
-                            Some(1) => stdout = Stdio::from(file),
-                            Some(2) => stderr = Stdio::from(file),
+                            None | Some(0) => stdin = StdioRepr::from(file),
+                            Some(1) => stdout = StdioRepr::from(file),
+                            Some(2) => stderr = StdioRepr::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -682,9 +728,9 @@ impl ShellContext {
                             .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
-                            Some(0) => stdin = Stdio::from(file),
-                            None | Some(1) => stdout = Stdio::from(file),
-                            Some(2) => stderr = Stdio::from(file),
+                            Some(0) => stdin = StdioRepr::from(file),
+                            None | Some(1) => stdout = StdioRepr::from(file),
+                            Some(2) => stderr = StdioRepr::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -695,9 +741,9 @@ impl ShellContext {
                             .open(self.working_directory.clone().join(word.join(" ")))
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         match fd {
-                            None | Some(0) => stdin = Stdio::from(file),
-                            Some(1) => stdout = Stdio::from(file),
-                            Some(2) => stderr = Stdio::from(file),
+                            None | Some(0) => stdin = StdioRepr::from(file),
+                            Some(1) => stdout = StdioRepr::from(file),
+                            Some(2) => stderr = StdioRepr::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -723,6 +769,63 @@ impl ShellContext {
                     } else {
                         self.env.insert(name.to_string(), self.vars[name].clone());
                         Ok(WaitableProcess::empty_success())
+                    }
+                }
+                #[cfg(unix)]
+                "run" => {
+                    let mut child_stdin = None;
+                    let stdin_fd = match stdin {
+                        StdioRepr::Inherit => Some(0),
+                        StdioRepr::Null => None,
+                        StdioRepr::MakePipe => {
+                            let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
+                            child_stdin = Some(write);
+                            Some(read)
+                        },
+                        StdioRepr::Fd(n) => Some(n),
+                    };
+                    let mut child_stdout = None;
+                    let stdout_fd = match stdout {
+                        StdioRepr::Inherit => Some(1),
+                        StdioRepr::Null => None,
+                        StdioRepr::MakePipe => {
+                            let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
+                            child_stdout = Some(read);
+                            Some(write)
+                        },
+                        StdioRepr::Fd(n) => Some(n),
+                    };
+                    let mut child_stderr = None;
+                    let stderr_fd = match stderr {
+                        StdioRepr::Inherit => Some(2),
+                        StdioRepr::Null => None,
+                        StdioRepr::MakePipe => {
+                            let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
+                            child_stderr = Some(read);
+                            Some(write)
+                        },
+                        StdioRepr::Fd(n) => Some(n),
+                    };
+
+                    use nix::unistd::ForkResult;
+                    match unsafe { nix::unistd::fork() } {
+                        Ok(ForkResult::Parent { child: _ }) => {
+                            Ok(WaitableProcess::empty_success()) //TODO
+                        }
+                        Ok(ForkResult::Child) => {
+                            // Set up standard I/O streams
+                            nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap(); //TODO: Handle errors
+                            nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap();
+                            nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap();
+
+                            // Set up remainder of environment
+                            std::env::set_current_dir(&self.working_directory).unwrap();
+
+                            let mut command_words = command_words;
+                            command_words.remove(0);
+                            std::panic::resume_unwind(Box::new(command_words));
+                        }
+                        Err(e) => Err(CommandExecError::CommandFailed { err: std::io::Error::from_raw_os_error(e as i32) }),
                     }
                 }
                 _ => {

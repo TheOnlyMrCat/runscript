@@ -13,9 +13,6 @@ edition = "2018"
 name = "run"
 path = "src/main.rs"
 
-[profile.release]
-panic = "abort"
-
 [dependencies]
 getopts = "0.2"
 termcolor = "1.1"

@@ -13,6 +13,11 @@ pub fn no_runfile_err(output_stream: &Arc<StandardStream>) {
     writeln!(lock, "Could not find runfile to execute").expect("Failed to write");
 }
 
+pub fn dir_read_err(output_stream: &Arc<StandardStream>, err: std::io::Error) {
+    let mut lock = output_stream.lock();
+    writeln!(lock, "Failed to access working directory: {}", err).expect("Failed to write");
+}
+
 pub fn file_read_err(output_stream: &Arc<StandardStream>, err: std::io::Error) {
     let mut lock = output_stream.lock();
     writeln!(lock, "Failed to read script: {}", err).expect("Failed to write");
