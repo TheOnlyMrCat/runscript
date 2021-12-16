@@ -1,4 +1,5 @@
 use std::io::Write;
+use std::process::ExitStatus;
 use std::sync::Arc;
 
 use conch_parser::ast::{Arithmetic, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word};
@@ -151,13 +152,6 @@ pub fn file_parse_err(
 pub fn bad_target(output_stream: &Arc<StandardStream>, target: &str) {
     let mut lock = output_stream.lock();
     writeln!(lock, "No target with name {}", target).expect("Failed to write");
-    if atty::is(atty::Stream::Stderr) {
-        write!(lock, "-> ").expect("Failed to write");
-        lock.set_color(ColorSpec::new().set_italic(true))
-            .expect("Failed to set italic");
-        writeln!(lock, "(If `{}` was intended as a positional argument, add `$opt default_positionals` to your runscript)", target).expect("Failed to write");
-        lock.reset().expect("Failed to reset colour");
-    }
 }
 
 pub fn bad_default(output_stream: &Arc<StandardStream>) {
@@ -443,5 +437,94 @@ fn emit_error(
             )
             .expect("Failed to write");
         }
+    }
+}
+
+pub fn process_finish(status: &crate::exec::ProcessExit) {
+    extern "C" {
+        fn strsignal(sig: std::os::raw::c_int) -> *const std::os::raw::c_char;
+    }
+
+    fn code(code: i32) -> String {
+        match code {
+            64 => "exit 64 (EX_USAGE)".to_owned(),
+            65 => "exit 65 (EX_DATAERR)".to_owned(),
+            66 => "exit 66 (EX_NOINPUT)".to_owned(),
+            67 => "exit 67 (EX_NOUSER)".to_owned(),
+            68 => "exit 68 (EX_NOHOST)".to_owned(),
+            69 => "exit 69 (EX_UNAVAILABLE)".to_owned(),
+            70 => "exit 70 (EX_SOFTWARE)".to_owned(),
+            71 => "exit 71 (EX_OSERR)".to_owned(),
+            72 => "exit 72 (EX_OSFILE)".to_owned(),
+            73 => "exit 73 (EX_CANTCREAT)".to_owned(),
+            74 => "exit 74 (EX_IOERR)".to_owned(),
+            75 => "exit 75 (EX_TEMPFAIL)".to_owned(),
+            76 => "exit 76 (EX_PROTOCOL)".to_owned(),
+            77 => "exit 77 (EX_NOPERM)".to_owned(),
+            78 => "exit 78 (EX_CONFIG)".to_owned(),
+            _ => format!("exit {}", code),
+        }
+    }
+
+    fn signal(signal: i32, core: Option<bool>) -> String {
+        use std::ffi::CStr;
+
+        // SAFETY: No input is invalid.
+        let sigstr_ptr = unsafe { strsignal(signal as std::os::raw::c_int) };
+
+        if sigstr_ptr.is_null() {
+            format!("signal {}", signal)
+        } else {
+            // SAFETY: The returned string is valid until the next call to strsignal, and has been verified to be non-null.
+            let sigstr = unsafe { CStr::from_ptr(sigstr_ptr) };
+            format!("signal {} ({}{})", signal, sigstr.to_string_lossy(), match core {
+                Some(true) => " - core dumped",
+                Some(false) => "",
+                None => {
+                    if signal & 0x80 != 0 {
+                        " - core dumped?"
+                    } else {
+                        ""
+                    }
+                }
+            })
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn signal(_: &ExitStatus) -> String {
+        panic!("Non-unix program terminated with signal");
+    }
+
+    match status {
+        crate::exec::ProcessExit::Bool(b) => {
+            if !*b {
+                println!("=> exit 1");
+            }
+        },
+        crate::exec::ProcessExit::StdStatus(status) => {
+            if !status.success() {
+                if let Some(c) = status.code() {
+                    println!("=> {}", code(c));
+                } else {
+                    use std::os::unix::process::ExitStatusExt;
+
+                    println!("=> {}", signal(status.signal().unwrap(), None));
+                }
+            }
+        },
+        crate::exec::ProcessExit::NixStatus(status) => {
+            match status {
+                nix::sys::wait::WaitStatus::Exited(_, c) => {
+                    if *c != 0 {
+                        println!("=> {}", code(*c));
+                    }
+                },
+                nix::sys::wait::WaitStatus::Signaled(_, sig, core) => {
+                    signal((*sig) as i32, Some(*core));
+                },
+                _ => println!("=> exit ?"),
+            }
+        },
     }
 }

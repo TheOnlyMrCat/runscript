@@ -80,6 +80,7 @@ impl Runscript {
     }
 
     pub fn get_target(&self, target: String) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
+        //TODO: Might be able to do this with a borrowed string, if I manually implement Hash for ScriptType
         match self.scripts.targets.get(&ScriptType::Named(target)).as_ref() {
             Some(map) if map.values().any(Option::is_some) => Some(map),
             _ => None
