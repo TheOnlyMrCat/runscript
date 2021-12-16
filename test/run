@@ -1,6 +1,7 @@
 run args
 run chain
 run env
+run exit
 run redir
 
 [args:r]
@@ -19,6 +20,9 @@ echo $FOO
 printenv FOO
 export FOO
 printenv FOO
+
+[exit:r]
+run nonexistent-target >/dev/null ||:
 
 [redir:r]
 echo 'hello' >> /dev/null

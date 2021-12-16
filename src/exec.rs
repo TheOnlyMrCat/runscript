@@ -361,7 +361,14 @@ impl Pipe {
         }
     }
 
-    fn pipe_out() -> Pipe {
+    fn null_pipe_out() -> Pipe {
+        Pipe {
+            stdin: PipeInput::None,
+            stdout: true,
+        }
+    }
+
+    fn inherit_pipe_out() -> Pipe {
         Pipe {
             stdin: PipeInput::Inherit,
             stdout: true,
@@ -452,7 +459,7 @@ impl ShellContext {
                     Command::List(list) => (list, false),
                 };
 
-                let proc = self.exec_andor_list(command, config)?;
+                let proc = self.exec_andor_list(command, config, is_job)?;
                 if is_job {
                     jobs.push(proc);
                 } else {
@@ -461,9 +468,10 @@ impl ShellContext {
             }
         }
 
+        // ? Should it instead keep track of the last non-job process and return that?
         let mut last_proc = match &commands.last().unwrap().0 {
-            Command::Job(list) => self.exec_andor_list(list, config)?,
-            Command::List(list) => self.exec_andor_list(list, config)?,
+            Command::Job(list) => self.exec_andor_list(list, config, true)?,
+            Command::List(list) => self.exec_andor_list(list, config, false)?,
         };
 
         last_proc.associated_jobs = jobs;
@@ -479,14 +487,18 @@ impl ShellContext {
             AtomicTopLevelCommand<String>,
         >,
         config: &ExecConfig,
+        is_job: bool,
     ) -> Result<WaitableProcess, CommandExecError> {
-        let mut previous_output = self.exec_listable_command(&command.first, config)?;
+        let mut previous_output = self.exec_listable_command(&command.first, config, is_job)?;
         for chain in &command.rest {
             match chain {
                 AndOr::And(command) => {
                     let finished = previous_output.wait();
+                    if !is_job {
+                        out::process_finish(&finished.status);
+                    }
                     if finished.status.success() {
-                        previous_output = self.exec_listable_command(command, config)?;
+                        previous_output = self.exec_listable_command(command, config, is_job)?;
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -494,8 +506,11 @@ impl ShellContext {
                 }
                 AndOr::Or(command) => {
                     let finished = previous_output.wait();
+                    if !is_job {
+                        out::process_finish(&finished.status);
+                    }
                     if !finished.status.success() {
-                        previous_output = self.exec_listable_command(command, config)?;
+                        previous_output = self.exec_listable_command(command, config, is_job)?;
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -516,15 +531,20 @@ impl ShellContext {
             >,
         >,
         config: &ExecConfig,
+        is_job: bool,
     ) -> Result<WaitableProcess, CommandExecError> {
         if let Some(ref out) = config.output_stream {
-            write!(out.lock(), "> ").expect("Failed to write");
+            write!(out.lock(), "{}> ", if is_job { "&" } else { "" }).expect("Failed to write");
         }
         let rt = match command {
             ListableCommand::Pipe(_negate, commands) => {
                 let mut proc = self.exec_pipeable_command(
                     commands.first().unwrap(),
-                    Pipe::pipe_out(),
+                    if is_job {
+                        Pipe::null_pipe_out()
+                    } else {
+                        Pipe::inherit_pipe_out()
+                    },
                     config,
                 )?;
                 if let Some(ref out) = config.output_stream {
@@ -743,7 +763,7 @@ impl ShellContext {
 
             let mut stdin_buffer = None;
             let mut stdin = match pipe.stdin {
-                PipeInput::None => StdioRepr::Null, //TODO: This by default if command is job
+                PipeInput::None => StdioRepr::Null,
                 PipeInput::Inherit => StdioRepr::Inherit,
                 PipeInput::Pipe(stdio) => stdio,
                 PipeInput::Buffer(v) => {
@@ -904,6 +924,7 @@ impl ShellContext {
 
                             // Set up remainder of environment
                             std::env::set_current_dir(&self.working_directory).unwrap();
+                            //TODO: vars
 
                             let mut command_words = command_words;
                             command_words.remove(0);
@@ -1146,36 +1167,4 @@ impl From<Vec<String>> for GlobPart {
     fn from(v: Vec<String>) -> Self {
         Self::Words(v)
     }
-}
-
-#[cfg(unix)]
-use std::os::raw::{c_char, c_int};
-
-#[cfg(unix)]
-extern "C" {
-    fn strsignal(sig: c_int) -> *const c_char;
-}
-
-#[cfg(unix)]
-fn signal(status: &ExitStatus) -> String {
-    use std::ffi::CStr;
-    use std::os::unix::process::ExitStatusExt;
-
-    let signal = status.signal().expect("Expected signal");
-
-    // SAFETY: No input is invalid.
-    let sigstr_ptr = unsafe { strsignal(signal as c_int) };
-
-    if sigstr_ptr.is_null() {
-        format!("signal {}", signal)
-    } else {
-        // SAFETY: The returned string is valid until the next call to strsignal, and has been verified to be non-null.
-        let sigstr = unsafe { CStr::from_ptr(sigstr_ptr) };
-        format!("signal {} ({})", signal, sigstr.to_string_lossy())
-    }
-}
-
-#[cfg(not(unix))]
-fn signal(_: &ExitStatus) -> String {
-    panic!("Non-unix program terminated with signal");
 }
