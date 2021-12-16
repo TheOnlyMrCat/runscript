@@ -2,7 +2,6 @@
 #[macro_use]
 extern crate trace;
 
-use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::Write;
@@ -12,7 +11,6 @@ use std::sync::Arc;
 use exitcode::ExitCode;
 use getopts::Options;
 
-use parser::RunscriptSource;
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod exec;
@@ -23,7 +21,7 @@ mod script;
 use script::{Runscript, Script, ScriptPhase};
 
 use crate::exec::{exec_script, ExecConfig};
-use crate::parser::{ParsingContext, RunscriptLocation};
+use crate::parser::RunscriptLocation;
 use crate::script::ScriptType;
 
 #[cfg(feature = "trace")]
@@ -126,26 +124,29 @@ you ran it on.
 fn main() {
     std::panic::set_hook(Box::new(panic_hook));
 
-    let args = env::args().skip(1).collect::<Vec<String>>();
-    if let Ok(current_dir) = env::current_dir() {
-        let output = run(
-            &args.iter().map(|s| &**s).collect::<Vec<_>>(),
-            &current_dir,
-            false,
-            &HashMap::new(),
-        );
-        std::process::exit(output);
-    } else {
-        eprintln!("Current directory doesn't exist!");
-        std::process::exit(exitcode::NOINPUT);
+    let mut args = env::args().skip(1).collect::<Vec<String>>();
+    loop {
+        match std::panic::catch_unwind(|| {
+            let output = run(&args);
+            std::process::exit(output);
+        }) {
+            Ok(_) => unreachable!(),
+            Err(panic) => {
+                match panic.downcast::<Vec<String>>() {
+                    Ok(new_args) => {
+                        args = *new_args;
+                    }
+                    Err(payload) => {
+                        std::panic::resume_unwind(payload);
+                    }
+                }
+            }
+        }
     }
 }
 
 pub fn run(
-    args: &[&str],
-    cwd: &Path,
-    capture_stdout: bool,
-    env_remap: &HashMap<String, String>,
+    args: &[String],
 ) -> ExitCode {
     let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
 
@@ -209,8 +210,6 @@ pub fn run(
             output_stream: Some(output_stream),
             working_directory: path.parent().expect("Working environment is not sane!"),
             positional_args: matches.free.iter().skip(1).cloned().collect(),
-            capture_stdout,
-            env_remap,
         };
 
         exec::exec_script(
@@ -225,17 +224,22 @@ pub fn run(
         .code()
         .unwrap()
     } else {
-        exec_runscript(matches, output_stream, cwd, capture_stdout, env_remap)
+        exec_runscript(matches, output_stream)
     }
 }
 
 fn exec_runscript(
     matches: getopts::Matches,
     output_stream: Arc<StandardStream>,
-    cwd: &Path,
-    capture_stdout: bool,
-    env_remap: &HashMap<String, String>,
 ) -> ExitCode {
+    let cwd = match env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(e) => {
+            out::dir_read_err(&output_stream, e);
+            return exitcode::NOINPUT;
+        }
+    };
+
     let path_branch_file: String;
     let path_branch_dir: String;
     let run_target: Option<String>;
@@ -474,8 +478,6 @@ fn exec_runscript(
                 output_stream: Some(output_stream.clone()),
                 working_directory: &runfile_cwd.to_owned(),
                 positional_args: matches.free.iter().skip(1).cloned().collect(),
-                capture_stdout,
-                env_remap,
             };
 
             match match run_target.as_deref() {
