@@ -217,8 +217,14 @@ pub fn command_prompt(
         RedirectOrCmdWord::Redirect(_) => None,
         RedirectOrCmdWord::CmdWord(w) => Some(w),
     });
+    lock.set_color(
+        ColorSpec::new()
+            .set_bold(true)
+            .set_intense(true),
+    ).expect("Failed to set colour");
     for (word, evaluated) in words.zip(evaluated.iter()) {
         let word_contents = print_tl_word(&mut lock, word);
+        lock.reset().expect("Failed to reset colour");
         let evaluated_contents = evaluated.join(" ");
         //? Should perhaps compare in the other direction: split the word contents
         if word_contents != evaluated_contents {
