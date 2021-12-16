@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{OpenOptions, File};
 use std::io::{Read, Write};
+use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
@@ -40,7 +41,8 @@ pub struct ExecConfig<'a> {
 #[derive(Debug)]
 pub enum ProcessExit {
     Bool(bool),
-    Status(ExitStatus),
+    StdStatus(ExitStatus),
+    NixStatus(nix::sys::wait::WaitStatus),
 }
 
 #[derive(Debug)]
@@ -82,7 +84,8 @@ impl ProcessExit {
     pub fn success(&self) -> bool {
         match self {
             ProcessExit::Bool(b) => *b,
-            ProcessExit::Status(s) => s.success(),
+            ProcessExit::StdStatus(s) => s.success(),
+            ProcessExit::NixStatus(s) => matches!(s, nix::sys::wait::WaitStatus::Exited(_, 0)),
         }
     }
 
@@ -92,13 +95,23 @@ impl ProcessExit {
     pub fn code(&self) -> Option<i32> {
         match self {
             ProcessExit::Bool(b) => Some(!b as i32),
-            ProcessExit::Status(s) => s.code(),
+            ProcessExit::StdStatus(s) => s.code(),
+            ProcessExit::NixStatus(s) => match s {
+                nix::sys::wait::WaitStatus::Exited(_, code) => Some(*code),
+                _ => None,
+            },
         }
     }
 }
 
 enum OngoingProcess {
     Concurrent(Child),
+    Reentrant {
+        pid: nix::unistd::Pid,
+        stdin: Option<RawFd>,
+        stdout: Option<RawFd>,
+        stderr: Option<RawFd>,
+    },
     Finished(FinishedProcess),
 }
 
@@ -107,6 +120,13 @@ impl OngoingProcess {
         match self {
             OngoingProcess::Concurrent(p) => match p.stdout.take() {
                 Some(stdout) => PipeInput::Pipe(stdout.into()),
+                None => PipeInput::None,
+            },
+            OngoingProcess::Reentrant {
+                stdout,
+                ..
+            } => match stdout {
+                Some(stdout) => PipeInput::Pipe((*stdout).into()),
                 None => PipeInput::None,
             },
             OngoingProcess::Finished(p) => PipeInput::Buffer(p.stdout.clone()),
@@ -123,6 +143,18 @@ impl WaitableProcess {
     fn new(process: Child) -> WaitableProcess {
         WaitableProcess {
             process: OngoingProcess::Concurrent(process),
+            associated_jobs: vec![],
+        }
+    }
+
+    fn reentrant_nightmare(pid: nix::unistd::Pid, stdin: Option<RawFd>, stdout: Option<RawFd>, stderr: Option<RawFd>) -> WaitableProcess {
+        WaitableProcess {
+            process: OngoingProcess::Reentrant {
+                pid,
+                stdin,
+                stdout,
+                stderr,
+            },
             associated_jobs: vec![],
         }
     }
@@ -160,7 +192,15 @@ impl WaitableProcess {
             OngoingProcess::Concurrent(process) => {
                 kill(Pid::from_raw(process.id() as i32), Signal::SIGHUP).unwrap();
                 FinishedProcess {
-                    status: ProcessExit::Status(ExitStatus::from_raw(129)),
+                    status: ProcessExit::StdStatus(ExitStatus::from_raw(129)),
+                    stdout: vec![],
+                    stderr: vec![],
+                }
+            }
+            OngoingProcess::Reentrant { pid, .. } => {
+                kill(pid, Signal::SIGHUP).unwrap();
+                FinishedProcess {
+                    status: ProcessExit::StdStatus(ExitStatus::from_raw(129)),
                     stdout: vec![],
                     stderr: vec![],
                 }
@@ -198,7 +238,46 @@ impl WaitableProcess {
                 }
 
                 FinishedProcess {
-                    status: ProcessExit::Status(status),
+                    status: ProcessExit::StdStatus(status),
+                    stdout,
+                    stderr,
+                }
+            }
+            OngoingProcess::Reentrant {
+                pid,
+                stdin,
+                stdout,
+                stderr,
+            } => {
+                use std::os::unix::io::FromRawFd;
+
+                if let Some(stdin) = stdin {
+                    nix::unistd::close(stdin).unwrap();
+                }
+                let status = nix::sys::wait::waitpid(pid, None).unwrap();
+                let stdout = if let Some(stdout) = stdout {
+                    let mut stdout_file = unsafe { File::from_raw_fd(stdout) };
+                    let mut v = Vec::new();
+                    let _ = stdout_file.read_to_end(&mut v); //TODO: should I handle an error here?
+                    v
+                } else {
+                    Vec::new()
+                };
+                let stderr = if let Some(stderr) = stderr {
+                    let mut stderr_file = unsafe { File::from_raw_fd(stderr) };
+                    let mut v = Vec::new();
+                    let _ = stderr_file.read_to_end(&mut v); //TODO: should I handle an error here?
+                    v
+                } else {
+                    Vec::new()
+                };
+
+                for job in self.associated_jobs.into_iter() {
+                    job.hup();
+                }
+
+                FinishedProcess {
+                    status: ProcessExit::NixStatus(status),
                     stdout,
                     stderr,
                 }
@@ -326,7 +405,7 @@ impl From<Vec<u8>> for PipeInput {
 impl From<Output> for FinishedProcess {
     fn from(o: Output) -> Self {
         FinishedProcess {
-            status: ProcessExit::Status(o.status),
+            status: ProcessExit::StdStatus(o.status),
             stdout: o.stdout,
             stderr: o.stderr,
         }
@@ -809,8 +888,13 @@ impl ShellContext {
 
                     use nix::unistd::ForkResult;
                     match unsafe { nix::unistd::fork() } {
-                        Ok(ForkResult::Parent { child: _ }) => {
-                            Ok(WaitableProcess::empty_success()) //TODO
+                        Ok(ForkResult::Parent { child }) => {
+                            Ok(WaitableProcess::reentrant_nightmare(
+                                child,
+                                child_stdin,
+                                child_stdout,
+                                child_stderr,
+                            ))
                         }
                         Ok(ForkResult::Child) => {
                             // Set up standard I/O streams
