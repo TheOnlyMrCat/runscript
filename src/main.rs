@@ -480,8 +480,8 @@ fn exec_runscript(
                 positional_args: matches.free.iter().skip(1).cloned().collect(),
             };
 
-            match match run_target.as_deref() {
-                Some(target) => rf.get_target(target),
+            match match &run_target {
+                Some(target) => rf.get_target(target.clone()),
                 None => rf.get_default_target(),
             } {
                 Some(target) => {

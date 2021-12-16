@@ -56,15 +56,6 @@ pub enum ScriptType {
     Named(String),
 }
 
-impl std::borrow::Borrow<str> for ScriptType {
-    fn borrow(&self) -> &str {
-        match self {
-            ScriptType::Default => "",
-            ScriptType::Named(name) => name,
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct Script {
     pub commands: Vec<AtomicTopLevelCommand<String>>,
@@ -88,20 +79,10 @@ impl Runscript {
         self.scripts.targets.get(&ScriptType::Default)
     }
 
-    pub fn get_target(&self, target: &str) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
-        match self.scripts.targets.get(target).as_ref() {
+    pub fn get_target(&self, target: String) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
+        match self.scripts.targets.get(&ScriptType::Named(target)).as_ref() {
             Some(map) if map.values().any(Option::is_some) => Some(map),
-            _ => {
-                for include in &self.includes {
-                    match include.runscript.scripts.targets.get(target) {
-                        Some(map) if map.values().any(Option::is_some) => {
-                            return Some(map);
-                        }
-                        _ => {}
-                    }
-                }
-                None
-            }
+            _ => None
         }
     }
 }
