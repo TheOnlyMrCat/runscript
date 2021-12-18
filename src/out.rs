@@ -2,7 +2,11 @@ use std::io::Write;
 use std::process::ExitStatus;
 use std::sync::Arc;
 
-use conch_parser::ast::{Arithmetic, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word};
+use conch_parser::ast::{
+    Arithmetic, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, Parameter,
+    ParameterSubstitution, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand,
+    SimpleWord, Word,
+};
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 // use crate::exec::CommandExecError;
@@ -75,7 +79,15 @@ pub fn file_parse_err(
             found,
             expected,
         } => {
-            emit_error(output_stream, loc, &script, format!("Invalid identifier; found `{}` but expected `{}`", found, expected));
+            emit_error(
+                output_stream,
+                loc,
+                &script,
+                format!(
+                    "Invalid identifier; found `{}` but expected `{}`",
+                    found, expected
+                ),
+            );
         }
         RunscriptParseErrorData::DuplicateScript {
             new_location: loc,
@@ -207,15 +219,15 @@ pub fn command_prompt(
     evaluated: &[Vec<String>],
 ) {
     let mut lock = output_stream.lock();
-    let words = command.redirects_or_cmd_words.iter().filter_map(|w| match w {
-        RedirectOrCmdWord::Redirect(_) => None,
-        RedirectOrCmdWord::CmdWord(w) => Some(w),
-    });
-    lock.set_color(
-        ColorSpec::new()
-            .set_bold(true)
-            .set_intense(true),
-    ).expect("Failed to set colour");
+    let words = command
+        .redirects_or_cmd_words
+        .iter()
+        .filter_map(|w| match w {
+            RedirectOrCmdWord::Redirect(_) => None,
+            RedirectOrCmdWord::CmdWord(w) => Some(w),
+        });
+    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
+        .expect("Failed to set colour");
     for (word, evaluated) in words.zip(evaluated.iter()) {
         let word_contents = print_tl_word(&mut lock, word);
         lock.reset().expect("Failed to reset colour");
@@ -227,7 +239,8 @@ pub fn command_prompt(
                     .set_bold(true)
                     .set_intense(true)
                     .set_fg(Some(Color::Cyan)),
-            ).expect("Failed to set colour");
+            )
+            .expect("Failed to set colour");
             write!(lock, "={}", evaluated_contents).expect("Failed to write");
             lock.reset().expect("Failed to reset colour");
         }
@@ -240,22 +253,30 @@ pub fn command_prompt(
             match redirect {
                 Redirect::Read(fd, file) => write!(lock, "{}<{}", fd.unwrap_or(0), file.join(" ")),
                 Redirect::Write(fd, file) => write!(lock, "{}>{}", fd.unwrap_or(1), file.join(" ")),
-                Redirect::ReadWrite(fd, file) => write!(lock, "{}<>{}", fd.unwrap_or(0), file.join(" ")),
-                Redirect::Append(fd, file) => write!(lock, "{}>>{}", fd.unwrap_or(1), file.join(" ")),
-                Redirect::Clobber(fd, file) => write!(lock, "{}>|{}", fd.unwrap_or(1), file.join(" ")),
+                Redirect::ReadWrite(fd, file) => {
+                    write!(lock, "{}<>{}", fd.unwrap_or(0), file.join(" "))
+                }
+                Redirect::Append(fd, file) => {
+                    write!(lock, "{}>>{}", fd.unwrap_or(1), file.join(" "))
+                }
+                Redirect::Clobber(fd, file) => {
+                    write!(lock, "{}>|{}", fd.unwrap_or(1), file.join(" "))
+                }
                 Redirect::Heredoc(fd, _) => {
                     write!(lock, "{}<", fd.unwrap_or(0)).expect("Failed to write");
                     lock.set_color(
                         ColorSpec::new()
                             .set_intense(true)
                             .set_fg(Some(Color::Black)),
-                    ).expect("Failed to set colour");
+                    )
+                    .expect("Failed to set colour");
                     write!(lock, "heredoc").expect("Failed to write");
                     lock.reset()
-                },
+                }
                 Redirect::DupRead(fd, _) => todo!(),
                 Redirect::DupWrite(fd, _) => todo!(),
-            }.expect("Failed to write");
+            }
+            .expect("Failed to write");
         }
     }
 }
@@ -272,9 +293,7 @@ fn print_tl_word(
             }
             concat
         }
-        ComplexWord::Single(word) => {
-            print_word(lock, word)
-        }
+        ComplexWord::Single(word) => print_word(lock, word),
     }
 }
 
@@ -297,9 +316,7 @@ fn print_word(
     >,
 ) -> String {
     match word {
-        Word::Simple(w) => {
-            print_simple_word(lock, w)
-        },
+        Word::Simple(w) => print_simple_word(lock, w),
         Word::DoubleQuoted(w) => {
             write!(lock, "\"").expect("Failed to write");
             let mut concat = String::new();
@@ -308,11 +325,11 @@ fn print_word(
             }
             write!(lock, "\"").expect("Failed to write");
             concat
-        },
+        }
         Word::SingleQuoted(lit) => {
             write!(lock, "'{}'", lit).expect("Failed to write");
             lit.clone()
-        },
+        }
     }
 }
 
@@ -335,11 +352,11 @@ fn print_simple_word(
         SimpleWord::Literal(lit) => {
             write!(lock, "{}", lit).expect("Failed to write");
             lit.clone()
-        },
+        }
         SimpleWord::Escaped(tk) => {
             write!(lock, "\\{}", tk).expect("Failed to write");
             tk.clone()
-        },
+        }
         SimpleWord::Param(p) => {
             write!(lock, "$").expect("Failed to write");
             match p {
@@ -350,44 +367,47 @@ fn print_simple_word(
                 Parameter::Dash => write!(lock, "-").expect("Failed to write"),
                 Parameter::Dollar => write!(lock, "$").expect("Failed to write"),
                 Parameter::Bang => write!(lock, "!").expect("Failed to write"),
-                Parameter::Positional(n) if *n < 10 => write!(lock, "{}", n).expect("Failed to write"),
+                Parameter::Positional(n) if *n < 10 => {
+                    write!(lock, "{}", n).expect("Failed to write")
+                }
                 Parameter::Positional(n) => write!(lock, "{{{}}}", n).expect("Failed to write"),
                 Parameter::Var(v) => write!(lock, "{}", v).expect("Failed to write"),
             }
             "$\u{0}".to_owned()
-        },
+        }
         SimpleWord::Subst(s) => {
             match **s {
-                ParameterSubstitution::Command(_) => write!(lock, "$(...)").expect("Failed to write"),
+                ParameterSubstitution::Command(_) => {
+                    write!(lock, "$(...)").expect("Failed to write")
+                }
                 _ => todo!(),
             }
             "$\u{0}".to_owned()
-        },
+        }
         SimpleWord::Star => {
             write!(lock, "*").expect("Failed to write");
             "*".to_owned()
-        },
+        }
         SimpleWord::Question => {
             write!(lock, "?").expect("Failed to write");
             "?".to_owned()
-        },
+        }
         SimpleWord::SquareOpen => {
             write!(lock, "[").expect("Failed to write");
             "[".to_owned()
-        },
+        }
         SimpleWord::SquareClose => {
             write!(lock, "]").expect("Failed to write");
             "]".to_owned()
-        },
+        }
         SimpleWord::Tilde => {
             write!(lock, "~").expect("Failed to write");
             "~".to_owned()
-        },
+        }
         SimpleWord::Colon => {
             write!(lock, ":").expect("Failed to write");
             ":".to_owned()
-        },
-        
+        }
     }
 }
 
@@ -462,6 +482,7 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
             76 => "exit 76 (EX_PROTOCOL)".to_owned(),
             77 => "exit 77 (EX_NOPERM)".to_owned(),
             78 => "exit 78 (EX_CONFIG)".to_owned(),
+            101 => "exit 101 (Process panicked)".to_owned(),
             _ => format!("exit {}", code),
         }
     }
@@ -477,17 +498,22 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
         } else {
             // SAFETY: The returned string is valid until the next call to strsignal, and has been verified to be non-null.
             let sigstr = unsafe { CStr::from_ptr(sigstr_ptr) };
-            format!("signal {} ({}{})", signal, sigstr.to_string_lossy(), match core {
-                Some(true) => " - core dumped",
-                Some(false) => "",
-                None => {
-                    if signal & 0x80 != 0 {
-                        " - core dumped?"
-                    } else {
-                        ""
+            format!(
+                "signal {} ({}{})",
+                signal,
+                sigstr.to_string_lossy(),
+                match core {
+                    Some(true) => " - core dumped",
+                    Some(false) => "",
+                    None => {
+                        if signal & 0x80 != 0 {
+                            " - core dumped?"
+                        } else {
+                            ""
+                        }
                     }
                 }
-            })
+            )
         }
     }
 
@@ -501,7 +527,7 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
             if !*b {
                 println!("=> exit 1");
             }
-        },
+        }
         crate::exec::ProcessExit::StdStatus(status) => {
             if !status.success() {
                 if let Some(c) = status.code() {
@@ -512,19 +538,17 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
                     println!("=> {}", signal(status.signal().unwrap(), None));
                 }
             }
-        },
-        crate::exec::ProcessExit::NixStatus(status) => {
-            match status {
-                nix::sys::wait::WaitStatus::Exited(_, c) => {
-                    if *c != 0 {
-                        println!("=> {}", code(*c));
-                    }
-                },
-                nix::sys::wait::WaitStatus::Signaled(_, sig, core) => {
-                    signal((*sig) as i32, Some(*core));
-                },
-                _ => println!("=> exit ?"),
+        }
+        crate::exec::ProcessExit::NixStatus(status) => match status {
+            nix::sys::wait::WaitStatus::Exited(_, c) => {
+                if *c != 0 {
+                    println!("=> {}", code(*c));
+                }
             }
+            nix::sys::wait::WaitStatus::Signaled(_, sig, core) => {
+                signal((*sig) as i32, Some(*core));
+            }
+            _ => println!("=> exit ?"),
         },
     }
 }

@@ -22,7 +22,7 @@ export FOO
 printenv FOO
 
 [exit:r]
-run nonexistent-target >/dev/null ||:
+run nonexistent-target 2>/dev/null || :
 
 [redir:r]
 echo 'hello' >> /dev/null
