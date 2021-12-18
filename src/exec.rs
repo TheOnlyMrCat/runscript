@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::fs::{OpenOptions, File};
+use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::unix::prelude::RawFd;
 use std::path::{Path, PathBuf};
@@ -122,10 +122,7 @@ impl OngoingProcess {
                 Some(stdout) => PipeInput::Pipe(stdout.into()),
                 None => PipeInput::None,
             },
-            OngoingProcess::Reentrant {
-                stdout,
-                ..
-            } => match stdout {
+            OngoingProcess::Reentrant { stdout, .. } => match stdout {
                 Some(stdout) => PipeInput::Pipe((*stdout).into()),
                 None => PipeInput::None,
             },
@@ -147,7 +144,12 @@ impl WaitableProcess {
         }
     }
 
-    fn reentrant_nightmare(pid: nix::unistd::Pid, stdin: Option<RawFd>, stdout: Option<RawFd>, stderr: Option<RawFd>) -> WaitableProcess {
+    fn reentrant_nightmare(
+        pid: nix::unistd::Pid,
+        stdin: Option<RawFd>,
+        stdout: Option<RawFd>,
+        stderr: Option<RawFd>,
+    ) -> WaitableProcess {
         WaitableProcess {
             process: OngoingProcess::Reentrant {
                 pid,
@@ -326,23 +328,27 @@ impl From<StdioRepr> for Stdio {
             #[cfg(windows)]
             StdioRepr::Fd(handle) => {
                 use std::os::windows::io::FromRawHandle;
-                unsafe {
-                    Stdio::from_raw_handle(handle)
-                }
+                unsafe { Stdio::from_raw_handle(handle) }
             }
         }
     }
 }
 
 #[cfg(unix)]
-impl<T> From<T> for StdioRepr where T: std::os::unix::io::IntoRawFd {
+impl<T> From<T> for StdioRepr
+where
+    T: std::os::unix::io::IntoRawFd,
+{
     fn from(file: T) -> StdioRepr {
         StdioRepr::Fd(file.into_raw_fd())
     }
 }
 
 #[cfg(windows)]
-impl<T> From<T> for StdioRepr where T: std::os::windows::io::IntoRawHandle {
+impl<T> From<T> for StdioRepr
+where
+    T: std::os::windows::io::IntoRawHandle,
+{
     fn from(file: T) -> StdioRepr {
         StdioRepr::Fd(file.into_raw_handle())
     }
@@ -880,7 +886,7 @@ impl ShellContext {
                             let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
                             child_stdin = Some(write);
                             Some(read)
-                        },
+                        }
                         StdioRepr::Fd(n) => Some(n),
                     };
                     let mut child_stdout = None;
@@ -891,7 +897,7 @@ impl ShellContext {
                             let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
                             child_stdout = Some(read);
                             Some(write)
-                        },
+                        }
                         StdioRepr::Fd(n) => Some(n),
                     };
                     let mut child_stderr = None;
@@ -902,7 +908,7 @@ impl ShellContext {
                             let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
                             child_stderr = Some(read);
                             Some(write)
-                        },
+                        }
                         StdioRepr::Fd(n) => Some(n),
                     };
 
@@ -917,20 +923,36 @@ impl ShellContext {
                             ))
                         }
                         Ok(ForkResult::Child) => {
+                            fn bail() -> ! {
+                                std::process::exit(exitcode::OSERR);
+                            }
+                            fn bail_a<T, U>(_: T) -> U {
+                                bail()
+                            }
+
                             // Set up standard I/O streams
-                            nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap(); //TODO: Handle errors
-                            nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap();
-                            nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap();
+                            (nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap_or_else(bail_a) == -1)
+                                .then(bail);
+                            (nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap_or_else(bail_a) == -1)
+                                .then(bail);
+                            (nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap_or_else(bail_a) == -1)
+                                .then(bail);
 
                             // Set up remainder of environment
-                            std::env::set_current_dir(&self.working_directory).unwrap();
-                            //TODO: vars
+                            std::env::set_current_dir(&self.working_directory)
+                                .unwrap_or_else(bail_a);
+                            for (k, v) in &self.env {
+                                std::env::set_var(k, v);
+                            }
 
                             let mut command_words = command_words;
                             command_words.remove(0);
+                            // resume_unwind so as to not invoke the panic hook.
                             std::panic::resume_unwind(Box::new(command_words));
                         }
-                        Err(e) => Err(CommandExecError::CommandFailed { err: std::io::Error::from_raw_os_error(e as i32) }),
+                        Err(e) => Err(CommandExecError::CommandFailed {
+                            err: std::io::Error::from_raw_os_error(e as i32),
+                        }),
                     }
                 }
                 _ => {

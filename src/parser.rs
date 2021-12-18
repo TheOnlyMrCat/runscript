@@ -294,8 +294,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .or_insert_with(EnumMap::new);
                 target[current_script_phase] = Some(current_script);
 
-                let new_target = context.
-                    runfile
+                let new_target = context
+                    .runfile
                     .scripts
                     .targets
                     .entry(ScriptType::Named(name.clone()))
@@ -315,21 +315,24 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                 current_script_type = ScriptType::Named(name);
                 current_script_phase = phase;
             }
-            (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => { context.iterator.next(); },
+            (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => {
+                context.iterator.next();
+            }
             (i, _) => {
                 let command_pos = context.get_loc(i);
 
                 let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
                 let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
-                let command = parser.complete_command().map_err(|e| {
-                    RunscriptParseErrorData::CommandParseError {
+                let command = parser
+                    .complete_command()
+                    .map_err(|e| RunscriptParseErrorData::CommandParseError {
                         location: command_pos,
                         error: e,
-                    }
-                })?.unwrap(); // The only error that can occur is EOF, but we already skip whitespace
+                    })?
+                    .unwrap(); // The only error that can occur is EOF, but we already skip whitespace
 
                 current_script.commands.push(command);
-            },
+            }
         }
     }
 

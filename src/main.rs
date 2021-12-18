@@ -131,23 +131,19 @@ fn main() {
             std::process::exit(output);
         }) {
             Ok(_) => unreachable!(),
-            Err(panic) => {
-                match panic.downcast::<Vec<String>>() {
-                    Ok(new_args) => {
-                        args = *new_args;
-                    }
-                    Err(payload) => {
-                        std::panic::resume_unwind(payload);
-                    }
+            Err(panic) => match panic.downcast::<Vec<String>>() {
+                Ok(new_args) => {
+                    args = *new_args;
                 }
-            }
+                Err(payload) => {
+                    std::panic::resume_unwind(payload);
+                }
+            },
         }
     }
 }
 
-pub fn run(
-    args: &[String],
-) -> ExitCode {
+pub fn run(args: &[String]) -> ExitCode {
     let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
 
     let mut options = Options::new();
@@ -195,9 +191,11 @@ pub fn run(
             }
         };
         let lexer = conch_parser::lexer::Lexer::new(source.chars());
-        let mut parser = conch_parser::parse::Parser::<_, conch_parser::ast::builder::AtomicDefaultBuilder<String>>::new(lexer);
-        let commands = match parser
-            .command_group(Default::default()).map(|x| x.commands) {
+        let mut parser = conch_parser::parse::Parser::<
+            _,
+            conch_parser::ast::builder::AtomicDefaultBuilder<String>,
+        >::new(lexer);
+        let commands = match parser.command_group(Default::default()).map(|x| x.commands) {
             Ok(commands) => commands,
             Err(e) => {
                 //TODO: print error from out:: module
@@ -228,10 +226,7 @@ pub fn run(
     }
 }
 
-fn exec_runscript(
-    matches: getopts::Matches,
-    output_stream: Arc<StandardStream>,
-) -> ExitCode {
+fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>) -> ExitCode {
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => {
@@ -406,15 +401,21 @@ fn exec_runscript(
                         writeln!(lock).expect("Failed to write");
                     }
 
-                    if let Some(default_script) = runscript.scripts.targets.get(&ScriptType::Default) {
+                    if let Some(default_script) =
+                        runscript.scripts.targets.get(&ScriptType::Default)
+                    {
                         print_phase_list(lock, "default", name_length, default_script);
                     }
 
-                    for (target, map) in runscript
-                        .scripts
-                        .targets
-                        .iter()
-                        .filter_map(|(target, map)| match target { ScriptType::Default => None, ScriptType::Named(s) => Some((s, map)) })
+                    for (target, map) in
+                        runscript
+                            .scripts
+                            .targets
+                            .iter()
+                            .filter_map(|(target, map)| match target {
+                                ScriptType::Default => None,
+                                ScriptType::Named(s) => Some((s, map)),
+                            })
                     {
                         print_phase_list(lock, target, name_length, map);
                     }
@@ -424,11 +425,9 @@ fn exec_runscript(
                     .scripts
                     .targets
                     .keys()
-                    .map(|s| {
-                        match s {
-                            ScriptType::Default => "default".len(),
-                            ScriptType::Named(s) => s.len()
-                        }
+                    .map(|s| match s {
+                        ScriptType::Default => "default".len(),
+                        ScriptType::Named(s) => s.len(),
                     })
                     .max()
                     .unwrap_or(0);
@@ -440,11 +439,9 @@ fn exec_runscript(
                             .scripts
                             .targets
                             .keys()
-                            .map(|s| {
-                                match s {
-                                    ScriptType::Default => "default".len(),
-                                    ScriptType::Named(s) => s.len()
-                                }
+                            .map(|s| match s {
+                                ScriptType::Default => "default".len(),
+                                ScriptType::Named(s) => s.len(),
                             })
                             .max()
                             .unwrap_or(0),
