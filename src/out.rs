@@ -1,10 +1,8 @@
 use std::io::Write;
-use std::process::ExitStatus;
-use std::sync::Arc;
 
 use conch_parser::ast::{
     Arithmetic, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, Parameter,
-    ParameterSubstitution, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand,
+    ParameterSubstitution, Redirect, RedirectOrCmdWord, SimpleCommand,
     SimpleWord, Word,
 };
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
@@ -13,22 +11,22 @@ use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
 use crate::script::{Runscript, ScriptPhase};
 
-pub fn no_runfile_err(output_stream: &Arc<StandardStream>) {
+pub fn no_runfile_err(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
     writeln!(lock, "Could not find runfile to execute").expect("Failed to write");
 }
 
-pub fn dir_read_err(output_stream: &Arc<StandardStream>, err: std::io::Error) {
+pub fn dir_read_err(output_stream: &StandardStream, err: std::io::Error) {
     let mut lock = output_stream.lock();
     writeln!(lock, "Failed to access working directory: {}", err).expect("Failed to write");
 }
 
-pub fn file_read_err(output_stream: &Arc<StandardStream>, err: std::io::Error) {
+pub fn file_read_err(output_stream: &StandardStream, err: std::io::Error) {
     let mut lock = output_stream.lock();
     writeln!(lock, "Failed to read script: {}", err).expect("Failed to write");
 }
 
-pub fn bad_phase_err(output_stream: &Arc<StandardStream>, phase: &str) {
+pub fn bad_phase_err(output_stream: &StandardStream, phase: &str) {
     let mut lock = output_stream.lock();
     writeln!(
         lock,
@@ -38,13 +36,13 @@ pub fn bad_phase_err(output_stream: &Arc<StandardStream>, phase: &str) {
     .expect("Failed to write");
 }
 
-pub fn option_parse_err(output_stream: &Arc<StandardStream>, err: getopts::Fail) {
+pub fn option_parse_err(output_stream: &StandardStream, err: clap::Error) {
     let mut lock = output_stream.lock();
     writeln!(lock, "{}", err).expect("Failed to write");
 }
 
 pub fn file_parse_err(
-    output_stream: &Arc<StandardStream>,
+    output_stream: &StandardStream,
     RunscriptParseError { script, data }: RunscriptParseError,
 ) {
     match &data {
@@ -145,7 +143,7 @@ pub fn file_parse_err(
     }
 }
 
-// pub fn bad_command_err(output_stream: &Arc<StandardStream>, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
+// pub fn bad_command_err(output_stream: &StandardStream, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
 // 	match &error {
 // 		CommandExecError::BadCommand { err, loc } => match cmd {
 // 		    ScriptEntry::Command(TopLevelCommand::Command(cmd)) => emit_error(&output_stream, loc, script, match err.kind() {
@@ -161,17 +159,17 @@ pub fn file_parse_err(
 // 	//TODO Verbose output option
 // }
 
-pub fn bad_target(output_stream: &Arc<StandardStream>, target: &str) {
+pub fn bad_target(output_stream: &StandardStream, target: &str) {
     let mut lock = output_stream.lock();
     writeln!(lock, "No target with name {}", target).expect("Failed to write");
 }
 
-pub fn bad_default(output_stream: &Arc<StandardStream>) {
+pub fn bad_default(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
     writeln!(lock, "No default target").expect("Failed to write");
 }
 
-pub fn bad_script_phase(output_stream: &Arc<StandardStream>) {
+pub fn bad_script_phase(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
     writeln!(lock, "No scripts to execute for specified phase").expect("Failed to write");
 }
@@ -192,7 +190,7 @@ pub fn phase_color(phase: ScriptPhase) -> Color {
     }
 }
 
-pub fn phase_message(output_stream: &Arc<StandardStream>, phase: ScriptPhase, name: &str) {
+pub fn phase_message(output_stream: &StandardStream, phase: ScriptPhase, name: &str) {
     let mut lock = output_stream.lock();
     lock.set_color(
         ColorSpec::new()
@@ -207,7 +205,7 @@ pub fn phase_message(output_stream: &Arc<StandardStream>, phase: ScriptPhase, na
 }
 
 pub fn command_prompt(
-    output_stream: &Arc<StandardStream>,
+    output_stream: &StandardStream,
     command: &SimpleCommand<
         String,
         AtomicTopLevelWord<String>,
@@ -410,7 +408,7 @@ fn print_simple_word(
 }
 
 fn emit_error(
-    output_stream: &Arc<StandardStream>,
+    output_stream: &StandardStream,
     location: &RunscriptLocation,
     script: &Runscript,
     error_msg: String,

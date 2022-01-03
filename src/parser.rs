@@ -2,10 +2,8 @@ use std::path::PathBuf;
 use std::str::CharIndices;
 
 use conch_parser::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
-use conch_parser::ast::AtomicTopLevelCommand;
 use conch_parser::lexer::Lexer;
-use conch_parser::parse::{CommandGroupDelimiters, ParseError, Parser};
-use conch_parser::token::Token;
+use conch_parser::parse::{ParseError, Parser};
 use enum_map::EnumMap;
 use linked_hash_map::LinkedHashMap;
 
@@ -14,14 +12,12 @@ use crate::script::*;
 use crate::DEPTH;
 
 /// Source code of a runscript which can be consumed by [`parse_runscript`](fn.parse_runscript.html)
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct RunscriptSource {
     /// The name of the runfile this runscript belongs to, for location-tracking purposes.
-    pub file: PathBuf,
+    pub path: PathBuf,
     /// The directory the runfile's name should be considered relative to
-    pub base: PathBuf,
-    /// The include-nesting index of this runscript
-    pub index: Vec<usize>,
+    pub dir: PathBuf,
     /// The runscript code to be parsed. Generally the contents of a runfile.
     pub source: String,
 }
@@ -119,38 +115,21 @@ pub fn parse_runfile(path: impl Into<PathBuf>) -> Result<Runscript, ParseOrIOErr
     let path = path.into();
     parse_runscript(RunscriptSource {
         source: std::fs::read_to_string(&path).map_err(ParseOrIOError::IOError)?,
-        base: path.parent().expect("Runfile has no parent!").to_owned(),
-        file: path,
-        index: Vec::new(),
-    })
-    .map_err(ParseOrIOError::ParseError)
-}
-
-pub fn parse_runfile_nested(
-    path: impl Into<PathBuf>,
-    base: impl Into<PathBuf>,
-    index: Vec<usize>,
-) -> Result<Runscript, ParseOrIOError> {
-    let path = path.into();
-    parse_runscript(RunscriptSource {
-        source: std::fs::read_to_string(&path).map_err(ParseOrIOError::IOError)?,
-        file: path,
-        base: base.into(),
-        index,
+        dir: path.parent().expect("Runfile has no parent!").to_owned(),
+        path,
     })
     .map_err(ParseOrIOError::ParseError)
 }
 
 #[derive(Debug)]
-pub struct ParsingContext<'a, T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
+pub struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
     pub iterator: std::iter::Peekable<T>,
     pub runfile: Runscript,
-    pub index: &'a Vec<usize>,
     pub line_indices: Vec<usize>,
 }
 
-impl ParsingContext<'_, CharIndices<'_>> {
-    pub fn new(source: &RunscriptSource) -> ParsingContext<'_, CharIndices<'_>> {
+impl ParsingContext<CharIndices<'_>> {
+    pub fn new(source: &RunscriptSource) -> ParsingContext<CharIndices<'_>> {
         ParsingContext {
             iterator: source.source.char_indices().peekable(),
             line_indices: source
@@ -159,8 +138,8 @@ impl ParsingContext<'_, CharIndices<'_>> {
                 .filter_map(|(index, ch)| if ch == '\n' { Some(index) } else { None })
                 .collect(),
             runfile: Runscript {
-                name: (&source.file)
-                    .strip_prefix(&source.base)
+                name: (&source.path)
+                    .strip_prefix(&source.dir)
                     .unwrap() //TODO: Something other than unwrap
                     .to_string_lossy()
                     .into_owned(),
@@ -171,12 +150,11 @@ impl ParsingContext<'_, CharIndices<'_>> {
                 },
                 options: Vec::new(),
             },
-            index: &source.index,
         }
     }
 }
 
-impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> {
+impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<T> {
     #[cfg_attr(feature = "trace", trace)]
     pub fn get_loc(&self, index: usize) -> RunscriptLocation {
         let (line, column) = self
@@ -205,7 +183,7 @@ impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<'_, T> 
                 )
             });
         RunscriptLocation {
-            index: self.index.clone(),
+            index: vec![],
             line,
             column,
         }

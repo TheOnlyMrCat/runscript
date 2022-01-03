@@ -8,10 +8,11 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use clap::{arg, ArgMatches};
 use config::Config;
 use exitcode::ExitCode;
-use getopts::Options;
 
+use parser::RunscriptSource;
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod exec;
@@ -22,29 +23,6 @@ mod script;
 use script::{Runscript, Script, ScriptPhase};
 
 use crate::exec::{exec_script, ExecConfig};
-use crate::parser::RunscriptLocation;
-
-#[cfg(feature = "trace")]
-trace::init_depth_var!();
-
-const HELP_TEXT: &str = "\
-Usage: run [options] [[file]:[target][:phase] arguments]
-
-Runscript looks for a file named `run` in the current directory
-(or otherwise specified) and interprets that as a runscript.
-Syntax documentation is available on the github page:
-https://github.com/TheOnlyMrCat/runscript
-
-PHASE SELECTION:
-    -b, --build-only: Execute `b!` and `b` scripts
-     --build-and-run: Execute `b`, `br`, and `r` scripts (default)
-       -r --run-only: Execute `r` and `r!` scripts
-
-OUTPUT:
-     -l: List targets and scripts in the target runfile in a colourful fashion
-     -q: Do not show output of executed commands
-    -qq: Produce no output to stderr either
-";
 
 const VERSION_TEXT: &str = "\
 Written by TheOnlyMrCat
@@ -138,34 +116,43 @@ fn main() {
 pub fn run(args: &[String]) -> ExitCode {
     let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
 
-    let mut options = Options::new();
+    let mut app = clap::App::new("run")
+        .about("Project script manager and executor")
+        .version(VERSION)
+        .author("TheOnlyMrCat")
+        .setting(clap::AppSettings::NoBinaryName)
+        .setting(clap::AppSettings::TrailingVarArg)
+        .arg(arg!([target] "Target to run in the script"))
+        .arg(arg!([args] ... "Arguments to pass to the script"))
+        .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false))
+        .arg(arg!(-l --list "List targets in the script file"))
+        .arg(arg!(-b --build "Shorthand for `--phase build`"))
+        .arg(arg!(-r --run "Shorthand for `--phase run`"))
+        .arg(
+            arg!(-p --phase <PHASE> "Run a specific phase of the script")
+                .required(false)
+                .use_delimiter(true)
+                .default_value_if("build", None, Some("build"))
+                .default_value_if("run", None, Some("run"))
+                .conflicts_with("list")
+        );
 
-    options.optflag("h", "help", "");
-    options.optflag("", "version", "");
-    options.optflag("l", "list", "");
-    options.optopt("s", "script", "", "");
-    options.optflag("b", "build-only", "");
-    options.optflag("", "build-and-run", "");
-    options.optflag("r", "run-only", "");
-
-    let matches = match options.parse(args) {
+    let options = match app.try_get_matches_from_mut(args) {
         Ok(m) => m,
+        Err(clap::Error { kind: clap::ErrorKind::DisplayHelp, .. }) => {
+            app.print_help().expect("Failed to write clap help");
+            return exitcode::OK;
+        }
+        Err(clap::Error { kind: clap::ErrorKind::DisplayVersion, .. }) => {
+            println!("Runscript {}", VERSION);
+            print!("{}", VERSION_TEXT); // VERSION_TEXT contains a newline already
+            return exitcode::OK;
+        }
         Err(x) => {
-            out::option_parse_err(&output_stream, x);
+            x.print().expect("Failed to write clap error");
             return exitcode::USAGE;
         }
     };
-
-    if matches.opt_present("help") {
-        print!("{}", HELP_TEXT); // There's a trailing newline in the string anyway
-        return exitcode::OK;
-    }
-
-    if matches.opt_present("version") {
-        println!("Runscript {}", VERSION);
-        print!("{}", VERSION_TEXT);
-        return exitcode::OK;
-    }
 
     let config = {
         let mut config = Config::new();
@@ -212,59 +199,7 @@ pub fn run(args: &[String]) -> ExitCode {
         let _ = config.merge(config::Environment::with_prefix("RUNSCRIPT").separator("_"));
         config
     };
-
-    if let Some(path) = matches.opt_str("script") {
-        let path = match Path::new(&path).canonicalize() {
-            Ok(path) => path,
-            Err(e) => {
-                out::file_read_err(&output_stream, e);
-                return exitcode::NOINPUT;
-            }
-        };
-        let source = match std::fs::read_to_string(&path) {
-            Ok(s) => s,
-            Err(e) => {
-                out::file_read_err(&output_stream, e);
-                return exitcode::IOERR;
-            }
-        };
-        let lexer = conch_parser::lexer::Lexer::new(source.chars());
-        let mut parser = conch_parser::parse::Parser::<
-            _,
-            conch_parser::ast::builder::AtomicDefaultBuilder<String>,
-        >::new(lexer);
-        let commands = match parser.command_group(Default::default()).map(|x| x.commands) {
-            Ok(commands) => commands,
-            Err(e) => {
-                //TODO: print error from out:: module
-                eprintln!("run: Error parsing command: {}", e);
-                return exitcode::DATAERR;
-            }
-        };
-
-        let exec_cfg = ExecConfig {
-            output_stream: Some(output_stream),
-            working_directory: path.parent().expect("Working environment is not sane!"),
-            positional_args: matches.free.iter().skip(1).cloned().collect(),
-        };
-
-        exec::exec_script(
-            &Script {
-                commands,
-                location: RunscriptLocation::default(),
-            },
-            &exec_cfg,
-        )
-        .unwrap()
-        .status
-        .code()
-        .unwrap()
-    } else {
-        exec_runscript(matches, output_stream, &config)
-    }
-}
-
-fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>, config: &Config) -> ExitCode {
+    
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => {
@@ -273,38 +208,15 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>,
         }
     };
 
-    let run_target = matches.free.get(0).map(|x| x.as_str());
-    let phases = &[ScriptPhase::BuildAndRun];
-
-    let file_names: Vec<String> = config.get("file.names").unwrap();
-    let mut runfile_data: Option<(String, PathBuf)> = None;
-    for path in cwd.ancestors() {
-        for file in &file_names {
-            let runfile_path = path.join(file);
-            if let Ok(s) = std::fs::read_to_string(&runfile_path) {
-                runfile_data = Some((s, runfile_path));
-                break;
-            }
-        }
-    }
-    let (runfile_source, runfile_path) = match runfile_data {
-        Some(r) => r,
-        None => {
-            out::no_runfile_err(&output_stream);
-            return exitcode::NOINPUT;
-        }
+    let runfile = match select_file(&options, &config, &cwd, &output_stream) {
+        Ok(runfile) => runfile,
+        Err(code) => return code,
     };
-    let runfile_cwd = runfile_path
-        .parent()
-        .expect("Expected runfile to have parent");
-    match parser::parse_runscript(parser::RunscriptSource {
-        file: runfile_path.clone(),
-        base: runfile_cwd.to_owned(),
-        index: vec![],
-        source: runfile_source,
-    }) {
+
+    let phases = &[ScriptPhase::BuildAndRun, ScriptPhase::Run];
+    match parser::parse_runscript(runfile.clone()) {
         Ok(rf) => {
-            if matches.opt_present("list") {
+            if options.is_present("list") {
                 fn list_scripts_for(
                     lock: &mut termcolor::StandardStreamLock,
                     name_length: usize,
@@ -423,18 +335,20 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>,
 
             let exec_cfg = ExecConfig {
                 output_stream: Some(output_stream.clone()),
-                working_directory: &runfile_cwd.to_owned(),
-                positional_args: matches.free.iter().skip(1).cloned().collect(),
+                working_directory: &runfile.dir,
+                positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
             };
 
-            match match &run_target {
-                Some(target) => rf.get_target(&target),
+            let target = options.value_of("target");
+
+            match match &target {
+                Some(target) => rf.get_target(target),
                 None => rf.get_target(""),
             } {
-                Some(target) => {
+                Some(target_scripts) => {
                     let scripts = phases
                         .iter()
-                        .filter_map(|&phase| target[phase].as_ref().map(|target| (target, phase)))
+                        .filter_map(|&phase| target_scripts[phase].as_ref().map(|target| (target, phase)))
                         .collect::<Vec<_>>();
                     if scripts.is_empty() {
                         out::bad_script_phase(&output_stream);
@@ -444,7 +358,7 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>,
                         out::phase_message(
                             &output_stream,
                             phase,
-                            run_target.as_deref().unwrap_or("default"),
+                            target.unwrap_or("default"),
                         );
                         exec_script(script, &exec_cfg).unwrap();
                     }
@@ -452,7 +366,7 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>,
                     exitcode::OK
                 }
                 None => {
-                    match run_target {
+                    match target {
                         Some(name) => out::bad_target(&output_stream, &name),
                         None => out::bad_default(&output_stream),
                     }
@@ -463,6 +377,41 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>,
         Err(e) => {
             out::file_parse_err(&output_stream, e);
             exitcode::DATAERR
+        }
+    }
+}
+
+fn select_file(options: &ArgMatches, config: &Config, cwd: &Path, output_stream: &StandardStream) -> Result<RunscriptSource, ExitCode> {
+    match options.value_of("file") {
+        Some(file) => {
+            let path = std::fs::canonicalize(file).map_err(|err| {
+                out::file_read_err(output_stream, err);
+                exitcode::NOINPUT
+            })?;
+            let source = std::fs::read_to_string(&path).map_err(|err| {
+                out::file_read_err(output_stream, err);
+                exitcode::NOINPUT
+            })?;
+            let dir = path.parent().unwrap_or_else(|| Path::new("")).to_owned();
+            Ok(RunscriptSource { path, source, dir })
+        },
+        None => {
+            let file_names: Vec<String> = config.get("file.names").unwrap();
+        
+            for path in cwd.ancestors() {
+                for file in &file_names {
+                    let runfile_path = path.join(file);
+                    if let Ok(s) = std::fs::read_to_string(&runfile_path) {
+                        return Ok(RunscriptSource {
+                            path: runfile_path,
+                            source: s,
+                            dir: path.to_owned(),
+                        });
+                    }
+                }
+            }
+            out::no_runfile_err(&output_stream);
+            return Err(exitcode::NOINPUT);
         }
     }
 }
