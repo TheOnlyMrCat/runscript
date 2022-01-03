@@ -233,7 +233,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
         commands: Vec::new(),
         location: context.get_loc(0),
     };
-    let mut current_script_type = ScriptType::Default;
+    let mut current_script_target = "".to_owned();
     let mut current_script_phase = ScriptPhase::BuildAndRun;
     while let Some(tk) = context.iterator.peek().copied() {
         match tk {
@@ -255,11 +255,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .map(|idx| {
                             let phase = name.split_off(idx + 1);
                             Ok(match phase.as_str() {
-                                "b!" => ScriptPhase::BuildOnly,
                                 "b" => ScriptPhase::Build,
-                                "br" => ScriptPhase::BuildAndRun,
                                 "r" => ScriptPhase::Run,
-                                "r!" => ScriptPhase::RunOnly,
                                 phase => {
                                     return Err(RunscriptParseErrorData::InvalidValue {
                                         location: location.clone(),
@@ -290,7 +287,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .runfile
                     .scripts
                     .targets
-                    .entry(current_script_type)
+                    .entry(current_script_target)
                     .or_insert_with(EnumMap::new);
                 target[current_script_phase] = Some(current_script);
 
@@ -298,7 +295,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .runfile
                     .scripts
                     .targets
-                    .entry(ScriptType::Named(name.clone()))
+                    .entry(name.clone())
                     .or_insert_with(EnumMap::new);
                 if let Some(script) = &new_target[phase] {
                     return Err(RunscriptParseErrorData::DuplicateScript {
@@ -312,7 +309,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     location: context.get_loc(i),
                     commands: Vec::new(),
                 };
-                current_script_type = ScriptType::Named(name);
+                current_script_target = name;
                 current_script_phase = phase;
             }
             (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => {
@@ -340,41 +337,11 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
         .runfile
         .scripts
         .targets
-        .entry(current_script_type)
+        .entry(current_script_target)
         .or_insert_with(EnumMap::new);
     target[current_script_phase] = Some(current_script);
 
     Ok(())
-}
-
-/// Parses a block of commands for the given `ParsingContext`, terminating when it reaches a `$|`
-#[cfg_attr(feature = "trace", trace)]
-pub fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
-    context: &mut ParsingContext<T>,
-) -> Result<
-    Vec<AtomicTopLevelCommand<String>>,
-    ParseError<<DefaultBuilder<String> as Builder>::Error>,
-> {
-    let lexer = Lexer::new((&mut context.iterator).map(|(_, c)| c));
-    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
-    let mut commands = vec![];
-    loop {
-        //TODO: Parser keeps track of position... if commands are parsed manually, line numbers can be derived from that
-        commands.extend(
-            parser
-                .command_group(CommandGroupDelimiters {
-                    reserved_tokens: &[Token::Dollar],
-                    ..Default::default()
-                })?
-                .commands,
-        );
-        parser.reserved_token(&[Token::Dollar])?;
-        if let Some(&Token::Pipe) = parser.peek_reserved_token(&[Token::Pipe]) {
-            break;
-        }
-    }
-    context.iterator.next();
-    Ok(commands)
 }
 
 #[derive(Debug)]

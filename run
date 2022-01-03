@@ -3,7 +3,7 @@ cargo build
 #/
 
 #-
-cargo run -- "test:$1"
+cargo run
 #/
 
 #trace
