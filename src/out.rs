@@ -32,7 +32,7 @@ pub fn bad_phase_err(output_stream: &Arc<StandardStream>, phase: &str) {
     let mut lock = output_stream.lock();
     writeln!(
         lock,
-        "`{}` is not a valid phase identifier; expected [`b!`, `b`, `br`, `r`, `r!`]",
+        "`{}` is not a valid phase identifier; expected [`b`, `r`]",
         phase
     )
     .expect("Failed to write");
@@ -179,17 +179,15 @@ pub fn bad_script_phase(output_stream: &Arc<StandardStream>) {
 pub fn phase_color(phase: ScriptPhase) -> Color {
     if std::env::var_os("RUNSCRIPT_TRANS").is_some() {
         match phase {
-            ScriptPhase::BuildOnly | ScriptPhase::RunOnly => Color::Cyan,
-            ScriptPhase::Build | ScriptPhase::Run => Color::Magenta,
+            ScriptPhase::Build => Color::Cyan,
             ScriptPhase::BuildAndRun => Color::White,
+            ScriptPhase::Run => Color::Magenta,
         }
     } else {
         match phase {
-            ScriptPhase::BuildOnly => Color::Red,
-            ScriptPhase::Build => Color::Yellow,
+            ScriptPhase::Build => Color::Red,
             ScriptPhase::BuildAndRun => Color::Green,
             ScriptPhase::Run => Color::Blue,
-            ScriptPhase::RunOnly => Color::Magenta,
         }
     }
 }

@@ -8,6 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use config::Config;
 use exitcode::ExitCode;
 use getopts::Options;
 
@@ -22,7 +23,6 @@ use script::{Runscript, Script, ScriptPhase};
 
 use crate::exec::{exec_script, ExecConfig};
 use crate::parser::RunscriptLocation;
-use crate::script::ScriptType;
 
 #[cfg(feature = "trace")]
 trace::init_depth_var!();
@@ -52,14 +52,6 @@ Source code available at https://github.com/TheOnlyMrCat/runscript
 ";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-
-const PHASES_B: [ScriptPhase; 2] = [ScriptPhase::BuildOnly, ScriptPhase::Build];
-const PHASES_T: [ScriptPhase; 3] = [
-    ScriptPhase::Build,
-    ScriptPhase::BuildAndRun,
-    ScriptPhase::Run,
-];
-const PHASES_R: [ScriptPhase; 2] = [ScriptPhase::Run, ScriptPhase::RunOnly];
 
 fn panic_hook(info: &std::panic::PanicInfo) {
     let mut tries = 0;
@@ -175,6 +167,52 @@ pub fn run(args: &[String]) -> ExitCode {
         return exitcode::OK;
     }
 
+    let config = {
+        let mut config = Config::new();
+        config.set_default("file.names", vec!["run", "run.local"]).unwrap();
+
+        // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
+        // or $HOME/.config/runscript/config.toml on unix.
+        // It is at {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
+        let config_dir: PathBuf;
+        if let Some(dir) = env::var_os("RUNSCRIPT_CONFIG_DIR") {
+            config_dir = dir.into();
+        } else if let Some(mut dir) = env::var_os("XDG_CONFIG_HOME") {
+            dir.push("runscript");
+            config_dir = dir.into();
+        } else if let Some(mut dir) = env::var_os("HOME") {
+            dir.push(".config/runscript");
+            config_dir = dir.into();
+        } else {
+            #[cfg(unix)]
+            {
+                config_dir = PathBuf::from("~/.config/runscript");
+            }
+            #[cfg(windows)]
+            unsafe {
+                use winapi::shared::winerror;
+                use winapi::um::{combaseapi, knownfolders, shlobj, shtypes, winbase, winnt};
+
+                let mut path_ptr: winnt::PWSTR = ptr::null_mut();
+                let result = shlobj::SHGetKnownFolderPath(&knownfolders::FOLDERID_LocalAppData, 0, ptr::null_mut(), &mut path_ptr);
+                if result == winerror::S_OK {
+                    let len = winbase::lstrlenW(path_ptr) as usize;
+                    let path = slice::from_raw_parts(path_ptr, len);
+                    let ostr: OsString = OsStringExt::from_wide(path);
+                    combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
+                    Some(PathBuf::from(ostr))
+                } else {
+                    combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
+                    None
+                }
+            }
+        }
+        // Ignore errors for this merge; the default config will suffice.
+        let _ = config.merge(config::File::from(config_dir.join("config.toml")));
+        let _ = config.merge(config::Environment::with_prefix("RUNSCRIPT").separator("_"));
+        config
+    };
+
     if let Some(path) = matches.opt_str("script") {
         let path = match Path::new(&path).canonicalize() {
             Ok(path) => path,
@@ -222,11 +260,11 @@ pub fn run(args: &[String]) -> ExitCode {
         .code()
         .unwrap()
     } else {
-        exec_runscript(matches, output_stream)
+        exec_runscript(matches, output_stream, &config)
     }
 }
 
-fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>) -> ExitCode {
+fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>, config: &Config) -> ExitCode {
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => {
@@ -235,105 +273,18 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>)
         }
     };
 
-    let path_branch_file: String;
-    let path_branch_dir: String;
-    let run_target: Option<String>;
-    let run_phase: Option<String>;
-    if let Some(target) = matches.free.get(0) {
-        let v = target.split(':').collect::<Vec<&str>>();
+    let run_target = matches.free.get(0).map(|x| x.as_str());
+    let phases = &[ScriptPhase::BuildAndRun];
 
-        if v.len() == 1 {
-            path_branch_file = "".to_owned();
-            path_branch_dir = "run".to_owned();
-            run_target = Some(v[0].to_owned());
-            run_phase = None;
-        } else if v.len() >= 2 {
-            let path_branch = v[0].to_owned();
-            if path_branch.is_empty() {
-                path_branch_file = "".to_owned();
-                path_branch_dir = "run".to_owned();
-            } else {
-                let mut pbf = path_branch.clone();
-                pbf.push_str(".run");
-                path_branch_file = pbf;
-
-                let mut pbd = path_branch;
-                pbd.push_str("/run");
-                path_branch_dir = pbd;
-            }
-
-            if v[1].is_empty() {
-                run_target = None
-            } else {
-                run_target = Some(v[1].to_owned());
-            }
-
-            if v.len() >= 3 {
-                run_phase = Some(v[2].to_owned());
-            } else {
-                run_phase = None;
-            }
-        } else {
-            path_branch_file = "".to_owned();
-            path_branch_dir = "run".to_owned();
-            run_target = None;
-            run_phase = None;
-        }
-    } else {
-        path_branch_file = "".to_owned();
-        path_branch_dir = "run".to_owned();
-        run_target = None;
-        run_phase = None;
-    }
-    let b_pos = matches
-        .opt_positions("build-only")
-        .iter()
-        .fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
-    let t_pos = matches
-        .opt_positions("build-and-run")
-        .iter()
-        .fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
-    let r_pos = matches
-        .opt_positions("run-only")
-        .iter()
-        .fold(-1, |acc, &x| if x as i32 > acc { x as i32 } else { acc });
-    let phases: &[ScriptPhase];
-    if let Some(run_phase) = run_phase {
-        phases = match &*run_phase {
-            "b!" => &[ScriptPhase::BuildOnly],
-            "b" => &[ScriptPhase::Build],
-            "br" => &[ScriptPhase::BuildAndRun],
-            "r" => &[ScriptPhase::Run],
-            "r!" => &[ScriptPhase::RunOnly],
-            _ => {
-                out::bad_phase_err(&output_stream, &run_phase);
-                return exitcode::USAGE;
-            }
-        }
-    } else if b_pos + t_pos + r_pos == -3 || t_pos > b_pos && t_pos > r_pos {
-        phases = &PHASES_T;
-    } else if b_pos > t_pos && b_pos > r_pos {
-        phases = &PHASES_B;
-    } else if r_pos > t_pos && r_pos > b_pos {
-        phases = &PHASES_R;
-    } else {
-        panic!(
-            "Failed to identify script phases to run; b_pos={},t_pos={},r_pos={}",
-            b_pos, t_pos, r_pos
-        )
-    }
+    let file_names: Vec<String> = config.get("file.names").unwrap();
     let mut runfile_data: Option<(String, PathBuf)> = None;
     for path in cwd.ancestors() {
-        let file_path = path.join(&path_branch_file);
-        if let Ok(s) = std::fs::read_to_string(&file_path) {
-            runfile_data = Some((s, file_path));
-            break;
-        }
-
-        let dir_path = path.join(&path_branch_dir);
-        if let Ok(s) = std::fs::read_to_string(&dir_path) {
-            runfile_data = Some((s, dir_path));
-            break;
+        for file in &file_names {
+            let runfile_path = path.join(file);
+            if let Ok(s) = std::fs::read_to_string(&runfile_path) {
+                runfile_data = Some((s, runfile_path));
+                break;
+            }
         }
     }
     let (runfile_source, runfile_path) = match runfile_data {
@@ -385,11 +336,9 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>)
                                     lock,
                                     "{}",
                                     match phase {
-                                        ScriptPhase::BuildOnly => "B",
                                         ScriptPhase::Build => "b",
                                         ScriptPhase::BuildAndRun => "&",
                                         ScriptPhase::Run => "r",
-                                        ScriptPhase::RunOnly => "R",
                                     }
                                 )
                                 .expect("Failed to write");
@@ -402,7 +351,7 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>)
                     }
 
                     if let Some(default_script) =
-                        runscript.scripts.targets.get(&ScriptType::Default)
+                        runscript.scripts.targets.get("")
                     {
                         print_phase_list(lock, "default", name_length, default_script);
                     }
@@ -412,9 +361,10 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>)
                             .scripts
                             .targets
                             .iter()
-                            .filter_map(|(target, map)| match target {
-                                ScriptType::Default => None,
-                                ScriptType::Named(s) => Some((s, map)),
+                            .filter_map(|(target, map)| if target.is_empty() {
+                                None
+                            } else {
+                                Some((target, map))
                             })
                     {
                         print_phase_list(lock, target, name_length, map);
@@ -425,9 +375,9 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>)
                     .scripts
                     .targets
                     .keys()
-                    .map(|s| match s {
-                        ScriptType::Default => "default".len(),
-                        ScriptType::Named(s) => s.len(),
+                    .map(|s| match s.as_str() {
+                        "" => "default".len(),
+                        s => s.len(),
                     })
                     .max()
                     .unwrap_or(0);
@@ -439,9 +389,9 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>)
                             .scripts
                             .targets
                             .keys()
-                            .map(|s| match s {
-                                ScriptType::Default => "default".len(),
-                                ScriptType::Named(s) => s.len(),
+                            .map(|s| match s.as_str() {
+                                "" => "default".len(),
+                                s => s.len(),
                             })
                             .max()
                             .unwrap_or(0),
@@ -478,8 +428,8 @@ fn exec_runscript(matches: getopts::Matches, output_stream: Arc<StandardStream>)
             };
 
             match match &run_target {
-                Some(target) => rf.get_target(target.clone()),
-                None => rf.get_default_target(),
+                Some(target) => rf.get_target(&target),
+                None => rf.get_target(""),
             } {
                 Some(target) => {
                     let scripts = phases

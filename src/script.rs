@@ -1,7 +1,4 @@
-use std::{
-    borrow::Cow,
-    fmt::{self, Display, Formatter},
-};
+use std::fmt::{self, Display, Formatter};
 
 use conch_parser::ast::AtomicTopLevelCommand;
 use enum_map::EnumMap;
@@ -38,22 +35,14 @@ pub struct Scripts {
     /// The scripts defined under `$#name`
     ///
     /// These scripts are executed in their respective `ScriptPhase` if they were chosen as the target
-    pub targets: LinkedHashMap<ScriptType, EnumMap<ScriptPhase, Option<Script>>>,
+    pub targets: LinkedHashMap<String, EnumMap<ScriptPhase, Option<Script>>>,
 }
 
 #[derive(Debug, PartialEq, Hash, Eq, Clone, Copy, enum_map::Enum)]
 pub enum ScriptPhase {
-    BuildOnly,   // b!
     Build,       // b
-    BuildAndRun, // br (default)
+    BuildAndRun, // br (default) //TODO: Come up with a better name?
     Run,         // r
-    RunOnly,     // r!
-}
-
-#[derive(Debug, PartialEq, Hash, Eq, Clone)]
-pub enum ScriptType {
-    Default,
-    Named(String),
 }
 
 #[derive(Clone, Debug)]
@@ -75,16 +64,11 @@ impl Runscript {
         }
     }
 
-    pub fn get_default_target(&self) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
-        self.scripts.targets.get(&ScriptType::Default)
-    }
-
-    pub fn get_target(&self, target: String) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
-        //TODO: Might be able to do this with a borrowed string, if I manually implement Hash for ScriptType
+    pub fn get_target(&self, target: &str) -> Option<&EnumMap<ScriptPhase, Option<Script>>> {
         match self
             .scripts
             .targets
-            .get(&ScriptType::Named(target))
+            .get(target)
             .as_ref()
         {
             Some(map) if map.values().any(Option::is_some) => Some(map),
@@ -99,11 +83,9 @@ impl Display for ScriptPhase {
             f,
             "{}",
             match self {
-                ScriptPhase::BuildOnly => "Build!",
                 ScriptPhase::Build => "Build",
                 ScriptPhase::BuildAndRun => "Build & Run",
                 ScriptPhase::Run => "Run",
-                ScriptPhase::RunOnly => "Run!",
             }
         )
     }
