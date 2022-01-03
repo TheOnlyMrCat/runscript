@@ -1,13 +1,17 @@
+#no_exec r!
+__run_panic
+#/
+
 #- b!
 cargo build
 #/
 
 #-
-cargo run
+cargo run -- -f test/run -r
 #/
 
-#trace
-cargo run --features trace -- test: -r
+#args
+cargo run -- $@
 #/
 
 #pkg b

@@ -14,7 +14,7 @@ name = "run"
 path = "src/main.rs"
 
 [dependencies]
-getopts = "0.2"
+clap = "3.0"
 termcolor = "1.1"
 enum-map = "0.6"
 atty = "0.2"
@@ -28,8 +28,6 @@ config = { version = "0.11", features = ["toml"] }
 # Panic handling
 uuid = { version = "0.8", features = ["v4"], default-features = false }
 os_info = { version = "3.0" }
-
-trace = { version = "0.1", optional = true }
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3"

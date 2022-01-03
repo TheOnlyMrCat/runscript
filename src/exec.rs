@@ -860,6 +860,9 @@ impl ShellContext {
 
             match command_words[0].as_str() {
                 ":" => Ok(WaitableProcess::empty_success()),
+                "__run_panic" => {
+                    panic!("Explicit command panic")
+                }
                 "cd" => {
                     //TODO: Extended cd options
                     let dir = &command_words[1];
