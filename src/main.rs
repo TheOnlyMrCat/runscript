@@ -156,7 +156,8 @@ pub fn run(args: &[String]) -> ExitCode {
 
     let config = {
         let mut config = Config::new();
-        config.set_default("file.names", vec!["run", "run.local"]).unwrap();
+        config.set_default("file.names", vec!["run", ".run"]).unwrap();
+        config.set_default("dev.panic", false).unwrap();
 
         // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
         // or $HOME/.config/runscript/config.toml on unix.
@@ -165,10 +166,10 @@ pub fn run(args: &[String]) -> ExitCode {
         if let Some(dir) = env::var_os("RUNSCRIPT_CONFIG_DIR") {
             config_dir = dir.into();
         } else if let Some(mut dir) = env::var_os("XDG_CONFIG_HOME") {
-            dir.push("runscript");
+            dir.push("/runscript");
             config_dir = dir.into();
         } else if let Some(mut dir) = env::var_os("HOME") {
-            dir.push(".config/runscript");
+            dir.push("/.config/runscript");
             config_dir = dir.into();
         } else {
             #[cfg(unix)]
@@ -194,11 +195,17 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
-        // Ignore errors for this merge; the default config will suffice.
-        let _ = config.merge(config::File::from(config_dir.join("config.toml")));
+        let config_file = config_dir.join("config.toml");
+        if config_file.exists() {
+            let _ = config.merge(config::File::from(config_dir.join("config.toml")));
+        }
         let _ = config.merge(config::Environment::with_prefix("RUNSCRIPT").separator("_"));
         config
     };
+
+    if config.get_bool("dev.panic").unwrap_or(false) {
+        let _ = std::panic::take_hook();
+    }
     
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
