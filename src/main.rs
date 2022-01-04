@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use clap::{arg, ArgMatches};
+use clap::{arg, ArgMatches, ValueHint};
 use config::Config;
 use exitcode::ExitCode;
 
@@ -122,12 +122,13 @@ pub fn run(args: &[String]) -> ExitCode {
         .author("TheOnlyMrCat")
         .setting(clap::AppSettings::NoBinaryName)
         .setting(clap::AppSettings::TrailingVarArg)
-        .arg(arg!([target] "Target to run in the script"))
-        .arg(arg!([args] ... "Arguments to pass to the script"))
-        .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false))
+        .setting(clap::AppSettings::DeriveDisplayOrder)
+        .override_usage("run [OPTIONS] [TARGET] [ARGS]")
+        .arg(arg!([target] "Target to run in the script").hide(true))
+        .arg(arg!([args] ... "Arguments to pass to the script").hide(true))
+        .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false).value_hint(ValueHint::FilePath))
         .arg(arg!(-l --list "List targets in the script file"))
-        .arg(arg!(-b --build "Shorthand for `--phase build`"))
-        .arg(arg!(-r --run "Shorthand for `--phase run`"))
+        .help_heading("PHASE SELECTION")
         .arg(
             arg!(-p --phase <PHASE> "Run a specific phase of the script")
                 .required(false)
@@ -135,7 +136,9 @@ pub fn run(args: &[String]) -> ExitCode {
                 .default_value_if("build", None, Some("build"))
                 .default_value_if("run", None, Some("run"))
                 .conflicts_with("list")
-        );
+        )
+        .arg(arg!(-b --build "Shorthand for `--phase build`"))
+        .arg(arg!(-r --run "Shorthand for `--phase run`"));
 
     let options = match app.try_get_matches_from_mut(args) {
         Ok(m) => m,
@@ -374,7 +377,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
                 None => {
                     match target {
-                        Some(name) => out::bad_target(&output_stream, &name),
+                        Some(name) => out::bad_target(&output_stream, name),
                         None => out::bad_default(&output_stream),
                     }
                     exitcode::NOINPUT
@@ -417,8 +420,8 @@ fn select_file(options: &ArgMatches, config: &Config, cwd: &Path, output_stream:
                     }
                 }
             }
-            out::no_runfile_err(&output_stream);
-            return Err(exitcode::NOINPUT);
+            out::no_runfile_err(output_stream);
+            Err(exitcode::NOINPUT)
         }
     }
 }
