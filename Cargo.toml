@@ -27,6 +27,7 @@ config = { version = "0.11", features = ["toml"] } # TODO: Implement it myself
 # Panic handling
 uuid = { version = "0.8", features = ["v4"], default-features = false }
 os_info = { version = "3.0" }
+tempfile = "3.3.0"
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3"

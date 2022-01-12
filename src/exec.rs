@@ -75,6 +75,7 @@ pub enum CommandExecError {
         err: std::io::Error,
         // loc: RunscriptLocation,
     },
+    UnsupportedRedirect,
 }
 
 impl ProcessExit {
@@ -852,9 +853,20 @@ impl ShellContext {
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::Heredoc(_fd, _) => todo!(),
-                    Redirect::DupRead(_fd, _) => todo!(),
-                    Redirect::DupWrite(_fd, _) => todo!(),
+                    Redirect::Heredoc(fd, word) => {
+                        let mut file = tempfile::tempfile().map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        for word in word {
+                            file.write_all(word.as_bytes()).map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        }
+                        match fd {
+                            None | Some(0) => stdin = StdioRepr::from(file),
+                            Some(1) => stdout = StdioRepr::from(file),
+                            Some(2) => stderr = StdioRepr::from(file),
+                            Some(_fd) => todo!(), // Might have to use nix::dup2?
+                        }
+                    },
+                    Redirect::DupRead(_fd, _) => return Err(CommandExecError::UnsupportedRedirect),
+                    Redirect::DupWrite(_fd, _) => return Err(CommandExecError::UnsupportedRedirect),
                 }
             }
 
@@ -886,7 +898,7 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(0),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
+                            let (read, write) = nix::unistd::pipe().map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
                             child_stdin = Some(write);
                             Some(read)
                         }
@@ -897,7 +909,7 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(1),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
+                            let (read, write) = nix::unistd::pipe().map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
                             child_stdout = Some(read);
                             Some(write)
                         }
@@ -908,7 +920,7 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(2),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe().unwrap(); //TODO: Handle errors
+                            let (read, write) = nix::unistd::pipe().map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
                             child_stderr = Some(read);
                             Some(write)
                         }
@@ -918,6 +930,22 @@ impl ShellContext {
                     use nix::unistd::ForkResult;
                     match unsafe { nix::unistd::fork() } {
                         Ok(ForkResult::Parent { child }) => {
+                            if let Some(buffer) = stdin_buffer {
+                                if let Some(write_fd) = child_stdin.take() {
+                                    use std::os::unix::prelude::FromRawFd;
+
+                                    // This approach can cause a deadlock if the following conditions are true:
+                                    // - The child is using a piped stdout
+                                    // - The stdin buffer is larger than the pipe buffer
+                                    // - The child writes more than one pipe buffer of data without reading enough of stdin
+                                    //? Could run this on separate thread to mitigate this, if necessary.
+                                    let _ = unsafe {
+                                        // SAFETY: child_stdin has been take()n, so no other code might assume it exists.
+                                        File::from_raw_fd(write_fd)
+                                    }.write_all(&buffer); //TODO: Do I need to worry about an error here?
+                                }
+                            }
+
                             Ok(WaitableProcess::reentrant_nightmare(
                                 child,
                                 child_stdin,
@@ -926,6 +954,7 @@ impl ShellContext {
                             ))
                         }
                         Ok(ForkResult::Child) => {
+                            // If any of this setup fails, exit immediately with the OSERR exitcode.
                             fn bail() -> ! {
                                 std::process::exit(exitcode::OSERR);
                             }

@@ -27,3 +27,7 @@ run nonexistent-target 2>/dev/null || :
 [redir:run]
 echo 'hello' >> /dev/null
 cat < ../.gitignore
+
+cat << EOF
+Heredoc
+EOF

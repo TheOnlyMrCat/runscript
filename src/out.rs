@@ -2,8 +2,7 @@ use std::io::Write;
 
 use conch_parser::ast::{
     Arithmetic, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, Parameter,
-    ParameterSubstitution, Redirect, RedirectOrCmdWord, SimpleCommand,
-    SimpleWord, Word,
+    ParameterSubstitution, Redirect, RedirectOrCmdWord, SimpleCommand, SimpleWord, Word,
 };
 use config::Config;
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
@@ -177,7 +176,11 @@ pub fn bad_script_phase(output_stream: &StandardStream) {
 
 pub fn phase_color(config: &Config, phase: &str) -> Color {
     let colours = config.get_table("colors.phases").unwrap();
-    if colours.get("enabled").and_then(|value| value.clone().into_bool().ok()).unwrap_or(false) {
+    if colours
+        .get("enabled")
+        .and_then(|value| value.clone().into_bool().ok())
+        .unwrap_or(false)
+    {
         match colours.get(phase) {
             Some(value) => {
                 if let Ok(i) = value.clone().into_int() {
@@ -185,10 +188,8 @@ pub fn phase_color(config: &Config, phase: &str) -> Color {
                 } else {
                     Color::White
                 }
-            },
-            None => {
-                Color::White
             }
+            None => Color::White,
         }
     } else {
         Color::White
@@ -204,9 +205,7 @@ pub fn phase_message(output_stream: &StandardStream, config: &Config, phase: &st
             .set_fg(Some(phase_color(config, phase))),
     )
     .expect("Failed to set colour");
-    write!(lock, "{}", {
-        phase[0..1].to_uppercase() + &phase[1..]
-    }).expect("Failed to write");
+    write!(lock, "{}", { phase[0..1].to_uppercase() + &phase[1..] }).expect("Failed to write");
     lock.reset().expect("Failed to reset colour");
     writeln!(lock, " {}", name).expect("Failed to write");
 }
@@ -273,11 +272,11 @@ pub fn command_prompt(
                             .set_fg(Some(Color::Black)),
                     )
                     .expect("Failed to set colour");
-                    write!(lock, "heredoc").expect("Failed to write");
+                    write!(lock, "(heredoc)").expect("Failed to write");
                     lock.reset()
                 }
-                Redirect::DupRead(fd, _) => todo!(),
-                Redirect::DupWrite(fd, _) => todo!(),
+                Redirect::DupRead(_fd, _) => todo!(),
+                Redirect::DupWrite(_fd, _) => todo!(),
             }
             .expect("Failed to write");
         }
@@ -509,7 +508,17 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
                     Some(true) => " - core dumped",
                     Some(false) => "",
                     None => {
-                        if signal & 0x80 != 0 {
+                        // Signals that core dump by default.
+                        if signal == 3
+                            || signal == 4
+                            || signal == 5
+                            || signal == 6
+                            || signal == 7
+                            || signal == 8
+                            || signal == 10
+                            || signal == 11
+                            || signal == 12
+                        {
                             " - core dumped?"
                         } else {
                             ""
@@ -518,11 +527,6 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
                 }
             )
         }
-    }
-
-    #[cfg(not(unix))]
-    fn signal(_: &ExitStatus) -> String {
-        panic!("Non-unix program terminated with signal");
     }
 
     match status {

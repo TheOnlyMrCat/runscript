@@ -240,127 +240,6 @@ pub fn run(args: &[String]) -> ExitCode {
     match parser::parse_runscript(runfile.clone()) {
         Ok(rf) => {
             if options.is_present("list") {
-                fn list_scripts_for(
-                    lock: &mut termcolor::StandardStreamLock,
-                    config: &Config,
-                    name_length: usize,
-                    runscript: &Runscript,
-                ) {
-                    fn print_phase_list(
-                        lock: &mut termcolor::StandardStreamLock,
-                        config: &Config,
-                        name: &str,
-                        name_length: usize,
-                        target: &HashMap<String, Script>,
-                    ) {
-                        write!(
-                            lock,
-                            "{0:1$} ",
-                            if name.is_empty() { "default" } else { name },
-                            name_length
-                        )
-                        .expect("Failed to write");
-                        if target.contains_key("build") {
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_bold(true)
-                                    .set_intense(true)
-                                    .set_fg(Some(out::phase_color(config, "build"))),
-                            )
-                            .expect("Failed to set colour");
-                            write!(lock, "B");
-                        } else {
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_bold(false)
-                                    .set_intense(false)
-                                    .set_fg(Some(out::phase_color(config, "build"))),
-                            )
-                            .expect("Failed to set colour");
-                            write!(lock, ".");
-                        }
-                        if target.contains_key("exec") {
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_bold(true)
-                                    .set_intense(true)
-                                    .set_fg(Some(out::phase_color(config, "exec"))),
-                            )
-                            .expect("Failed to set colour");
-                            write!(lock, "&");
-                        } else {
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_bold(false)
-                                    .set_intense(false)
-                                    .set_fg(Some(out::phase_color(config, "exec"))),
-                            )
-                            .expect("Failed to set colour");
-                            write!(lock, ".");
-                        }
-                        if target.contains_key("run") {
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_bold(true)
-                                    .set_intense(true)
-                                    .set_fg(Some(out::phase_color(config, "run"))),
-                            )
-                            .expect("Failed to set colour");
-                            write!(lock, "R");
-                        } else {
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_bold(false)
-                                    .set_intense(false)
-                                    .set_fg(Some(out::phase_color(config, "run"))),
-                            )
-                            .expect("Failed to set colour");
-                            write!(lock, ".");
-                        }
-                        
-                        for phase in target.keys() {
-                            if phase == "exec" || phase == "build" || phase == "run" {
-                                continue;
-                            }
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_bold(true)
-                                    .set_intense(true)
-                                    .set_fg(Some(out::phase_color(config, phase))),
-                            )
-                            .expect("Failed to set colour");
-                            write!(
-                                lock,
-                                "{}",
-                                phase
-                            )
-                            .expect("Failed to write");
-                        }
-                        lock.reset().expect("Failed to reset colour");
-                        writeln!(lock).expect("Failed to write");
-                    }
-
-                    if let Some(default_script) =
-                        runscript.scripts.targets.get("")
-                    {
-                        print_phase_list(lock, config, "default", name_length, default_script);
-                    }
-
-                    for (target, map) in
-                        runscript
-                            .scripts
-                            .targets
-                            .iter()
-                            .filter_map(|(target, map)| if target.is_empty() {
-                                None
-                            } else {
-                                Some((target, map))
-                            })
-                    {
-                        print_phase_list(lock, config, target, name_length, map);
-                    }
-                }
-
                 let mut longest_target = rf
                     .scripts
                     .targets
@@ -516,4 +395,125 @@ fn select_file(options: &ArgMatches, config: &Config, cwd: &Path, output_stream:
             Err(exitcode::NOINPUT)
         }
     }
+}
+
+fn list_scripts_for(
+    lock: &mut termcolor::StandardStreamLock,
+    config: &Config,
+    name_length: usize,
+    runscript: &Runscript,
+) {
+    if let Some(default_script) =
+        runscript.scripts.targets.get("")
+    {
+        print_phase_list(lock, config, "default", name_length, default_script);
+    }
+
+    for (target, map) in
+        runscript
+            .scripts
+            .targets
+            .iter()
+            .filter_map(|(target, map)| if target.is_empty() {
+                None
+            } else {
+                Some((target, map))
+            })
+    {
+        print_phase_list(lock, config, target, name_length, map);
+    }
+}
+
+fn print_phase_list(
+    lock: &mut termcolor::StandardStreamLock,
+    config: &Config,
+    name: &str,
+    name_length: usize,
+    target: &HashMap<String, Script>,
+) {
+    write!(
+        lock,
+        "{0:1$} ",
+        if name.is_empty() { "default" } else { name },
+        name_length
+    )
+    .expect("Failed to write");
+    if target.contains_key("build") {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(true)
+                .set_intense(true)
+                .set_fg(Some(out::phase_color(config, "build"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, "B").unwrap();
+    } else {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(false)
+                .set_intense(false)
+                .set_fg(Some(out::phase_color(config, "build"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, ".").unwrap();
+    }
+    if target.contains_key("exec") {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(true)
+                .set_intense(true)
+                .set_fg(Some(out::phase_color(config, "exec"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, "&").unwrap();
+    } else {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(false)
+                .set_intense(false)
+                .set_fg(Some(out::phase_color(config, "exec"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, ".").unwrap();
+    }
+    if target.contains_key("run") {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(true)
+                .set_intense(true)
+                .set_fg(Some(out::phase_color(config, "run"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, "R").unwrap();
+    } else {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(false)
+                .set_intense(false)
+                .set_fg(Some(out::phase_color(config, "run"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, ".").unwrap();
+    }
+    
+    for phase in target.keys() {
+        if phase == "exec" || phase == "build" || phase == "run" {
+            continue;
+        }
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(true)
+                .set_intense(true)
+                .set_fg(Some(out::phase_color(config, phase))),
+        )
+        .expect("Failed to set colour");
+        write!(
+            lock,
+            "{}",
+            phase
+        )
+        .expect("Failed to write");
+    }
+    lock.reset().expect("Failed to reset colour");
+    writeln!(lock).expect("Failed to write");
 }
