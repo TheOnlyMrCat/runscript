@@ -1,11 +1,11 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::CharIndices;
 
 use conch_parser::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::{ParseError, Parser};
-use enum_map::EnumMap;
-use linked_hash_map::LinkedHashMap;
+use indexmap::IndexMap;
 
 use crate::script::*;
 #[cfg(feature = "trace")]
@@ -146,7 +146,7 @@ impl ParsingContext<CharIndices<'_>> {
                 source: source.source.clone(),
                 includes: Vec::new(),
                 scripts: Scripts {
-                    targets: LinkedHashMap::new(),
+                    targets: IndexMap::new(),
                 },
                 options: Vec::new(),
             },
@@ -212,7 +212,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
         location: context.get_loc(0),
     };
     let mut current_script_target = "".to_owned();
-    let mut current_script_phase = ScriptPhase::BuildAndRun;
+    let mut current_script_phase = "exec".to_owned();
     while let Some(tk) = context.iterator.peek().copied() {
         match tk {
             // Comment
@@ -231,21 +231,9 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     let phase = name
                         .rfind(':')
                         .map(|idx| {
-                            let phase = name.split_off(idx + 1);
-                            Ok(match phase.as_str() {
-                                "b" => ScriptPhase::Build,
-                                "r" => ScriptPhase::Run,
-                                phase => {
-                                    return Err(RunscriptParseErrorData::InvalidValue {
-                                        location: location.clone(),
-                                        found: phase.to_owned(),
-                                        expected: "b!|b|br|r|r!".to_owned(),
-                                    })
-                                }
-                            })
+                            name.split_off(idx + 1)
                         })
-                        .transpose()?
-                        .unwrap_or(ScriptPhase::BuildAndRun);
+                        .unwrap_or_else(|| "exec".to_owned());
                     name.pop();
                     (name, phase)
                 };
@@ -266,16 +254,16 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .scripts
                     .targets
                     .entry(current_script_target)
-                    .or_insert_with(EnumMap::new);
-                target[current_script_phase] = Some(current_script);
+                    .or_insert_with(HashMap::new);
+                target.insert(current_script_phase, current_script);
 
                 let new_target = context
                     .runfile
                     .scripts
                     .targets
                     .entry(name.clone())
-                    .or_insert_with(EnumMap::new);
-                if let Some(script) = &new_target[phase] {
+                    .or_insert_with(HashMap::new);
+                if let Some(script) = new_target.get(&phase) {
                     return Err(RunscriptParseErrorData::DuplicateScript {
                         previous_location: script.location.clone(),
                         new_location: script.location.clone(),
@@ -316,8 +304,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
         .scripts
         .targets
         .entry(current_script_target)
-        .or_insert_with(EnumMap::new);
-    target[current_script_phase] = Some(current_script);
+        .or_insert_with(HashMap::new);
+    target.insert(current_script_phase, current_script);
 
     Ok(())
 }

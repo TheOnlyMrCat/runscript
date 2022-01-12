@@ -5,11 +5,12 @@ use conch_parser::ast::{
     ParameterSubstitution, Redirect, RedirectOrCmdWord, SimpleCommand,
     SimpleWord, Word,
 };
+use config::Config;
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 // use crate::exec::CommandExecError;
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
-use crate::script::{Runscript, ScriptPhase};
+use crate::script::Runscript;
 
 pub fn no_runfile_err(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
@@ -174,32 +175,38 @@ pub fn bad_script_phase(output_stream: &StandardStream) {
     writeln!(lock, "No scripts to execute for specified phase").expect("Failed to write");
 }
 
-pub fn phase_color(phase: ScriptPhase) -> Color {
-    if std::env::var_os("RUNSCRIPT_TRANS").is_some() {
-        match phase {
-            ScriptPhase::Build => Color::Cyan,
-            ScriptPhase::BuildAndRun => Color::White,
-            ScriptPhase::Run => Color::Magenta,
+pub fn phase_color(config: &Config, phase: &str) -> Color {
+    let colours = config.get_table("colors.phases").unwrap();
+    if colours.get("enabled").and_then(|value| value.clone().into_bool().ok()).unwrap_or(false) {
+        match colours.get(phase) {
+            Some(value) => {
+                if let Ok(i) = value.clone().into_int() {
+                    Color::Ansi256(i as u8)
+                } else {
+                    Color::White
+                }
+            },
+            None => {
+                Color::White
+            }
         }
     } else {
-        match phase {
-            ScriptPhase::Build => Color::Red,
-            ScriptPhase::BuildAndRun => Color::Green,
-            ScriptPhase::Run => Color::Blue,
-        }
+        Color::White
     }
 }
 
-pub fn phase_message(output_stream: &StandardStream, phase: ScriptPhase, name: &str) {
+pub fn phase_message(output_stream: &StandardStream, config: &Config, phase: &str, name: &str) {
     let mut lock = output_stream.lock();
     lock.set_color(
         ColorSpec::new()
             .set_bold(true)
             .set_intense(true)
-            .set_fg(Some(phase_color(phase))),
+            .set_fg(Some(phase_color(config, phase))),
     )
     .expect("Failed to set colour");
-    write!(lock, "{}", phase).expect("Failed to write");
+    write!(lock, "{}", {
+        phase[0..1].to_uppercase() + &phase[1..]
+    }).expect("Failed to write");
     lock.reset().expect("Failed to reset colour");
     writeln!(lock, " {}", name).expect("Failed to write");
 }

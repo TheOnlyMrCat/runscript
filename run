@@ -7,7 +7,7 @@ cargo build
 #/
 
 #-
-cargo run -- -f test/run -r
+cargo run -- -f test/run
 #/
 
 #args

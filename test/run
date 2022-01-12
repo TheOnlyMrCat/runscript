@@ -4,15 +4,15 @@ run env
 run exit
 run redir
 
-[args:r]
+[args:run]
 echo Test 'basic command' "with textual" arguments
 echo 'environment variables:' $HOME
 echo 'globs:' ../src/*.rs
 
-[chain:r]
+[chain:run]
 yes | head -n 2
 
-[env:r]
+[env:run]
 FOO='bar' echo $FOO
 FOO='bar' printenv FOO
 FOO='bar'
@@ -21,9 +21,9 @@ printenv FOO
 export FOO
 printenv FOO
 
-[exit:r]
+[exit:run]
 run nonexistent-target 2>/dev/null || :
 
-[redir:r]
+[redir:run]
 echo 'hello' >> /dev/null
 cat < ../.gitignore
