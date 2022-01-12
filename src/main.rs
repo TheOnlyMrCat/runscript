@@ -127,6 +127,12 @@ pub fn run(args: &[String]) -> ExitCode {
         .override_usage("run [OPTIONS] [TARGET] [ARGS]")
         .arg(arg!([target] "Target to run in the script").hide(true))
         .arg(arg!([args] ... "Arguments to pass to the script").hide(true))
+        .arg(
+            arg!(-c --command <COMMAND> "Execute a command")
+                .required(false)
+                .value_hint(ValueHint::CommandString)
+                .conflicts_with_all(&["file", "list", "phase", "target", "args"])
+        )
         .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false).value_hint(ValueHint::FilePath))
         .arg(arg!(-l --list "List targets in the script file"))
         .help_heading("PHASE SELECTION")
@@ -232,132 +238,156 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
 
-    let runfile = match select_file(&options, &config, &cwd, &output_stream) {
-        Ok(runfile) => runfile,
-        Err(code) => return code,
-    };
+    if let Some(command) = options.value_of("command") {
+        match parser::parse_command(command) {
+            Ok(command) => {
+                let script = Script {
+                    commands: vec![command],
+                    location: parser::RunscriptLocation { index: vec![], line: 0, column: 0 },
+                };
+                let exec_cfg = ExecConfig {
+                    output_stream: Some(output_stream),
+                    working_directory: &cwd,
+                    positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
+                };
 
-    match parser::parse_runscript(runfile.clone()) {
-        Ok(rf) => {
-            if options.is_present("list") {
-                let mut longest_target = rf
-                    .scripts
-                    .targets
-                    .keys()
-                    .map(|s| match s.as_str() {
-                        "" => "default".len(),
-                        s => s.len(),
-                    })
-                    .max()
-                    .unwrap_or(0);
-                for include in &rf.includes {
-                    longest_target = std::cmp::max(
-                        longest_target,
-                        include
-                            .runscript
-                            .scripts
-                            .targets
-                            .keys()
-                            .map(|s| match s.as_str() {
-                                "" => "default".len(),
-                                s => s.len(),
-                            })
-                            .max()
-                            .unwrap_or(0),
-                    );
-                }
-
-                let mut lock = output_stream.lock();
-
-                list_scripts_for(&mut lock, &config, longest_target, &rf);
-
-                fn recursive_list_includes(
-                    lock: &mut termcolor::StandardStreamLock,
-                    config: &Config,
-                    name_length: usize,
-                    runscript: &Runscript,
-                ) {
-                    for include in &runscript.includes {
-                        writeln!(lock).expect("Failed to write");
-                        writeln!(lock, "From {}:", include.runscript.name)
-                            .expect("Failed to write");
-                        list_scripts_for(lock, config, name_length, &include.runscript);
-                        recursive_list_includes(lock, config, name_length, &include.runscript);
-                    }
-                }
-
-                recursive_list_includes(&mut lock, &config, longest_target, &rf);
-
-                return exitcode::OK;
+                exec_script(&script, &exec_cfg).unwrap();
+                exitcode::OK
             }
+            Err(e) => {
+                let mut lock = output_stream.lock();
+                writeln!(lock, "{}", e).unwrap();
+                exitcode::DATAERR
+            }
+        }
+    } else {
+        let runfile = match select_file(&options, &config, &cwd, &output_stream) {
+            Ok(runfile) => runfile,
+            Err(code) => return code,
+        };
 
-            let exec_cfg = ExecConfig {
-                output_stream: Some(output_stream.clone()),
-                working_directory: &runfile.dir,
-                positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
-            };
-
-            let target = options.value_of("target");
-
-            match match &target {
-                Some(target) => rf.get_target(target),
-                None => rf.get_target(""),
-            } {
-                Some(target_scripts) => {
-                    let phase = options.value_of("phase").unwrap_or("exec");
-                    if let Some(script) = target_scripts.get(phase) {
-                        out::phase_message(
-                            &output_stream,
-                            &config,
-                            phase,
-                            target.unwrap_or("default"),
+        match parser::parse_runscript(runfile.clone()) {
+            Ok(rf) => {
+                if options.is_present("list") {
+                    let mut longest_target = rf
+                        .scripts
+                        .targets
+                        .keys()
+                        .map(|s| match s.as_str() {
+                            "" => "default".len(),
+                            s => s.len(),
+                        })
+                        .max()
+                        .unwrap_or(0);
+                    for include in &rf.includes {
+                        longest_target = std::cmp::max(
+                            longest_target,
+                            include
+                                .runscript
+                                .scripts
+                                .targets
+                                .keys()
+                                .map(|s| match s.as_str() {
+                                    "" => "default".len(),
+                                    s => s.len(),
+                                })
+                                .max()
+                                .unwrap_or(0),
                         );
-                        exec_script(script, &exec_cfg).unwrap();
-                        exitcode::OK
-                    } else if phase == "exec" {
-                        let build_script = target_scripts.get("build");
-                        let run_script = target_scripts.get("run");
-                        if build_script.is_none() && run_script.is_none() {
+                    }
+
+                    let mut lock = output_stream.lock();
+
+                    list_scripts_for(&mut lock, &config, longest_target, &rf);
+
+                    fn recursive_list_includes(
+                        lock: &mut termcolor::StandardStreamLock,
+                        config: &Config,
+                        name_length: usize,
+                        runscript: &Runscript,
+                    ) {
+                        for include in &runscript.includes {
+                            writeln!(lock).expect("Failed to write");
+                            writeln!(lock, "From {}:", include.runscript.name)
+                                .expect("Failed to write");
+                            list_scripts_for(lock, config, name_length, &include.runscript);
+                            recursive_list_includes(lock, config, name_length, &include.runscript);
+                        }
+                    }
+
+                    recursive_list_includes(&mut lock, &config, longest_target, &rf);
+
+                    return exitcode::OK;
+                }
+
+                let exec_cfg = ExecConfig {
+                    output_stream: Some(output_stream.clone()),
+                    working_directory: &runfile.dir,
+                    positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
+                };
+
+                let target = options.value_of("target");
+
+                match match &target {
+                    Some(target) => rf.get_target(target),
+                    None => rf.get_target(""),
+                } {
+                    Some(target_scripts) => {
+                        let phase = options.value_of("phase").unwrap_or("exec");
+                        if let Some(script) = target_scripts.get(phase) {
+                            out::phase_message(
+                                &output_stream,
+                                &config,
+                                phase,
+                                target.unwrap_or("default"),
+                            );
+                            exec_script(script, &exec_cfg).unwrap();
+                            exitcode::OK
+                        } else if phase == "exec" {
+                            let build_script = target_scripts.get("build");
+                            let run_script = target_scripts.get("run");
+                            if build_script.is_none() && run_script.is_none() {
+                                out::bad_script_phase(&output_stream);
+                                exitcode::NOINPUT
+                            } else {
+                                if let Some(script) = build_script {
+                                    out::phase_message(
+                                        &output_stream,
+                                        &config,
+                                        "build",
+                                        target.unwrap_or("default"),
+                                    );
+                                    exec_script(script, &exec_cfg).unwrap();
+                                }
+                                if let Some(script) = run_script {
+                                    out::phase_message(
+                                        &output_stream,
+                                        &config,
+                                        "run",
+                                        target.unwrap_or("default"),
+                                    );
+                                    exec_script(script, &exec_cfg).unwrap();
+                                }
+                                exitcode::OK
+                            }
+                        } else {
                             out::bad_script_phase(&output_stream);
                             exitcode::NOINPUT
-                        } else {
-                            if let Some(script) = build_script {
-                                out::phase_message(
-                                    &output_stream,
-                                    &config,
-                                    "build",
-                                    target.unwrap_or("default"),
-                                );
-                                exec_script(script, &exec_cfg).unwrap();
-                            }
-                            if let Some(script) = run_script {
-                                out::phase_message(
-                                    &output_stream,
-                                    &config,
-                                    "run",
-                                    target.unwrap_or("default"),
-                                );
-                                exec_script(script, &exec_cfg).unwrap();
-                            }
-                            exitcode::OK
                         }
-                    } else {
-                        out::bad_script_phase(&output_stream);
+                    }
+                    None => {
+                        match target {
+                            Some(name) => out::bad_target(&output_stream, name),
+                            None => out::bad_default(&output_stream),
+                        }
                         exitcode::NOINPUT
                     }
                 }
-                None => {
-                    match target {
-                        Some(name) => out::bad_target(&output_stream, name),
-                        None => out::bad_default(&output_stream),
-                    }
-                    exitcode::NOINPUT
-                }
             }
-        }
-        Err(e) => {
-            out::file_parse_err(&output_stream, e);
-            exitcode::DATAERR
+            Err(e) => {
+                out::file_parse_err(&output_stream, e);
+                exitcode::DATAERR
+            }
         }
     }
 }

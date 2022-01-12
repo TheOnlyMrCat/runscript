@@ -1,12 +1,13 @@
 use std::io::Write;
 
 use conch_parser::ast::{
-    Arithmetic, AtomicTopLevelCommand, AtomicTopLevelWord, ComplexWord, Parameter,
-    ParameterSubstitution, Redirect, RedirectOrCmdWord, SimpleCommand, SimpleWord, Word,
+    AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, Redirect, RedirectOrCmdWord,
+    SimpleCommand, SimpleWord, Word,
 };
 use config::Config;
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
+use crate::exec::AtomicSimpleWord;
 // use crate::exec::CommandExecError;
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
 use crate::script::Runscript;
@@ -26,52 +27,11 @@ pub fn file_read_err(output_stream: &StandardStream, err: std::io::Error) {
     writeln!(lock, "Failed to read script: {}", err).expect("Failed to write");
 }
 
-pub fn bad_phase_err(output_stream: &StandardStream, phase: &str) {
-    let mut lock = output_stream.lock();
-    writeln!(
-        lock,
-        "`{}` is not a valid phase identifier; expected [`b`, `r`]",
-        phase
-    )
-    .expect("Failed to write");
-}
-
-pub fn option_parse_err(output_stream: &StandardStream, err: clap::Error) {
-    let mut lock = output_stream.lock();
-    writeln!(lock, "{}", err).expect("Failed to write");
-}
-
 pub fn file_parse_err(
     output_stream: &StandardStream,
     RunscriptParseError { script, data }: RunscriptParseError,
 ) {
     match &data {
-        RunscriptParseErrorData::UnexpectedToken {
-            location: loc,
-            found,
-            expected,
-        } => {
-            emit_error(
-                output_stream,
-                loc,
-                &script,
-                format!(
-                    "Unexpected token; found `{}` but expected {}",
-                    found, expected
-                ),
-            );
-        }
-        RunscriptParseErrorData::UnexpectedEOF {
-            location: loc,
-            expected,
-        } => {
-            emit_error(
-                output_stream,
-                loc,
-                &script,
-                format!("Unexpected end of file; expected {}", expected),
-            );
-        }
         RunscriptParseErrorData::InvalidValue {
             location: loc,
             found,
@@ -110,26 +70,6 @@ pub fn file_parse_err(
                 prev,
                 &script,
                 "Previous definition is here".to_owned(),
-            );
-        }
-        RunscriptParseErrorData::BadInclude { location: loc, .. } => {
-            emit_error(
-                output_stream,
-                loc,
-                &script,
-                "Could not include referenced runfile".to_owned(),
-            );
-            //TODO: I/O error notes
-        }
-        RunscriptParseErrorData::NestedError {
-            include_location: loc,
-            ..
-        } => {
-            emit_error(
-                output_stream,
-                loc,
-                &script,
-                "Parse error in included file".to_owned(),
             );
         }
         RunscriptParseErrorData::CommandParseError { location, error } => {
@@ -299,24 +239,7 @@ fn print_tl_word(
     }
 }
 
-fn print_word(
-    lock: &mut StandardStreamLock,
-    word: &Word<
-        String,
-        SimpleWord<
-            String,
-            Parameter<String>,
-            Box<
-                ParameterSubstitution<
-                    Parameter<String>,
-                    AtomicTopLevelWord<String>,
-                    AtomicTopLevelCommand<String>,
-                    Arithmetic<String>,
-                >,
-            >,
-        >,
-    >,
-) -> String {
+fn print_word(lock: &mut StandardStreamLock, word: &Word<String, AtomicSimpleWord>) -> String {
     match word {
         Word::Simple(w) => print_simple_word(lock, w),
         Word::DoubleQuoted(w) => {
@@ -335,21 +258,7 @@ fn print_word(
     }
 }
 
-fn print_simple_word(
-    lock: &mut StandardStreamLock,
-    word: &SimpleWord<
-        String,
-        Parameter<String>,
-        Box<
-            ParameterSubstitution<
-                Parameter<String>,
-                AtomicTopLevelWord<String>,
-                AtomicTopLevelCommand<String>,
-                Arithmetic<String>,
-            >,
-        >,
-    >,
-) -> String {
+fn print_simple_word(lock: &mut StandardStreamLock, word: &AtomicSimpleWord) -> String {
     match word {
         SimpleWord::Literal(lit) => {
             write!(lock, "{}", lit).expect("Failed to write");

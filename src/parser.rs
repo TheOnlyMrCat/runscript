@@ -3,13 +3,12 @@ use std::path::PathBuf;
 use std::str::CharIndices;
 
 use conch_parser::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
+use conch_parser::ast::AtomicTopLevelCommand;
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::{ParseError, Parser};
 use indexmap::IndexMap;
 
 use crate::script::*;
-#[cfg(feature = "trace")]
-use crate::DEPTH;
 
 /// Source code of a runscript which can be consumed by [`parse_runscript`](fn.parse_runscript.html)
 #[derive(Debug, Clone)]
@@ -35,17 +34,6 @@ pub struct RunscriptLocation {
     pub column: usize,
 }
 
-/// An error from a parse function which involves an I/O operation
-///
-/// This enum exists only to propagate [`std::io::Error`](https://doc.rust-lang.org/std/io/struct.Error.html)s to the
-/// calling function without including it in the main [`RunscriptParseError`](struct.RunscriptParseError)
-#[derive(Debug)]
-#[allow(clippy::large_enum_variant)]
-pub enum ParseOrIOError {
-    IOError(std::io::Error),
-    ParseError(RunscriptParseError),
-}
-
 /// An error which occurred during parsing of a runscript
 #[derive(Debug)]
 pub struct RunscriptParseError {
@@ -59,24 +47,6 @@ pub struct RunscriptParseError {
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum RunscriptParseErrorData {
-    /// End-of-file in an unexpected location
-    UnexpectedEOF {
-        location: RunscriptLocation,
-        /// The token or token type which was expected to come before an end-of-file.
-        ///
-        /// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
-        expected: String,
-    },
-    /// Found a token in a place which does not match the context
-    UnexpectedToken {
-        location: RunscriptLocation,
-        /// The text of the token which triggered the error
-        found: String,
-        /// The token or token type which was expected to come before or instead of the `found` token.
-        ///
-        /// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
-        expected: String,
-    },
     /// Found a name of a script which contains characters outside of `[A-Za-z_-]`
     InvalidValue {
         location: RunscriptLocation,
@@ -84,19 +54,6 @@ pub enum RunscriptParseErrorData {
         found: String,
         /// A description of what was expected instead of the `found` identifier
         expected: String,
-    },
-    /// Tried to include a runfile but couldn't access the file
-    BadInclude {
-        location: RunscriptLocation,
-        /// The I/O error which occurred when trying to access `path/to/file.run`
-        file_err: std::io::Error,
-        /// The I/O error which occurred when trying to access `path/to/dir/run`
-        dir_err: std::io::Error,
-    },
-    /// An error occurred in a nested runscript
-    NestedError {
-        include_location: RunscriptLocation,
-        error: Box<RunscriptParseError>,
     },
     /// Attempted to define the same script twice
     DuplicateScript {
@@ -109,16 +66,6 @@ pub enum RunscriptParseErrorData {
         /// Detail of the error
         error: ParseError<<DefaultBuilder<String> as Builder>::Error>,
     },
-}
-
-pub fn parse_runfile(path: impl Into<PathBuf>) -> Result<Runscript, ParseOrIOError> {
-    let path = path.into();
-    parse_runscript(RunscriptSource {
-        source: std::fs::read_to_string(&path).map_err(ParseOrIOError::IOError)?,
-        dir: path.parent().expect("Runfile has no parent!").to_owned(),
-        path,
-    })
-    .map_err(ParseOrIOError::ParseError)
 }
 
 #[derive(Debug)]
@@ -155,7 +102,6 @@ impl ParsingContext<CharIndices<'_>> {
 }
 
 impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<T> {
-    #[cfg_attr(feature = "trace", trace)]
     pub fn get_loc(&self, index: usize) -> RunscriptLocation {
         let (line, column) = self
             .line_indices
@@ -190,10 +136,9 @@ impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<T> {
     }
 }
 
-#[cfg_attr(feature = "trace", trace)]
 pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptParseError> {
     let mut context = ParsingContext::new(&source);
-    match parse_root(&mut context, &source) {
+    match parse_root(&mut context) {
         Ok(()) => Ok(context.runfile),
         Err(data) => Err(RunscriptParseError {
             script: context.runfile,
@@ -202,10 +147,8 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
     }
 }
 
-#[cfg_attr(feature = "trace", trace)]
 fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-    source: &RunscriptSource,
 ) -> Result<(), RunscriptParseErrorData> {
     let mut current_script = Script {
         commands: Vec::new(),
@@ -230,9 +173,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .collect::<String>();
                     let phase = name
                         .rfind(':')
-                        .map(|idx| {
-                            name.split_off(idx + 1)
-                        })
+                        .map(|idx| name.split_off(idx + 1))
                         .unwrap_or_else(|| "exec".to_owned());
                     name.pop();
                     (name, phase)
@@ -310,31 +251,20 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     Ok(())
 }
 
+pub fn parse_command(
+    command: &str,
+) -> Result<AtomicTopLevelCommand<String>, ParseError<<DefaultBuilder<String> as Builder>::Error>> {
+    let lexer = Lexer::new(command.chars());
+    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+    parser.complete_command().map(Option::unwrap)
+}
+
 #[derive(Debug)]
 pub enum BreakCondition {
     Newline(usize),
     Eof,
-    Parse,
 }
 
-#[cfg_attr(feature = "trace", trace)]
-pub fn consume_word(
-    iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug),
-) -> (String, BreakCondition) {
-    let mut buf = String::new();
-    let nl = loop {
-        match iterator.next() {
-            Some((i, '\n')) => break BreakCondition::Newline(i),
-            Some((_, ' ')) | Some((_, '\t')) => break BreakCondition::Parse,
-            Some((_, '\r')) => continue,
-            Some((_, c)) => buf.push(c),
-            None => break BreakCondition::Eof,
-        }
-    };
-    (buf, nl)
-}
-
-#[cfg_attr(feature = "trace", trace)]
 pub fn consume_line(
     iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug),
 ) -> (String, BreakCondition) {

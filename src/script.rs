@@ -1,4 +1,4 @@
-use std::{fmt::{self, Display, Formatter}, collections::HashMap};
+use std::collections::HashMap;
 
 use conch_parser::ast::AtomicTopLevelCommand;
 use indexmap::IndexMap;

@@ -24,7 +24,7 @@ type AtomicParameterSubstitution = ParameterSubstitution<
     AtomicTopLevelCommand<String>,
     Arithmetic<String>,
 >;
-type AtomicSimpleWord = SimpleWord<String, Parameter<String>, Box<AtomicParameterSubstitution>>;
+pub type AtomicSimpleWord = SimpleWord<String, Parameter<String>, Box<AtomicParameterSubstitution>>;
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
