@@ -32,47 +32,6 @@ If you have cargo, and are fine with building from source, runscript is on [crat
 cargo install runscript
 ```
 
-## How it works
-
-When `run` is executed, it looks for a file `run` in the current working directory (other files can be specified). It
-searches this runfile for scripts, which look like the following:
-
-```run
-$target phase
-commands
-$|
-```
-
-`target` can be `-` for the default target, `#` for the global target, or anything else for a named target (matching the regex
-`[A-Za-z0-9_]*`).
-
-`phase` can be one of the following sets of characters:
-
-| Text    | Phase         |
-| ------: | :------------ |
-|    `b!` | Build Only    |
-|     `b` | Build         |
-| (blank) | Build and Run |
-|    `br` | Build and Run |
-|     `r` | Run           |
-|    `r!` | Run Only      |
-
-The phases that are executed depend on flags passed to `run`. 
-
-|         Phase | `-b`, `--build-only` | (blank), `--build-and-run` | `-r`, `--run-only` |
-| ------------: | :------------------: | :------------------------: | :----------------: |
-|    Build Only |          ✓           |                            |                    |
-|         Build |          ✓           |             ✓              |                    |
-| Build and Run |                      |             ✓              |                    |
-|           Run |                      |             ✓              |         ✓          |
-|      Run Only |                      |                            |         ✓          |
-
-If multiple phase flags are passed, the one provided last is used.
-
-`commands` is a newline-separated list of terminal commands to be executed. In other words, a shell script. I don't currently
-have documentation on everything supported by the runscript shell, but a general overview of what to expect is in the
-"Features" section above.
-
 ## License
 
 Licensed under either of
