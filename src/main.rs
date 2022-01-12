@@ -2,6 +2,7 @@
 #[macro_use]
 extern crate trace;
 
+use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::Write;
@@ -20,7 +21,7 @@ mod out;
 mod parser;
 mod script;
 
-use script::{Runscript, Script, ScriptPhase};
+use script::{Runscript, Script};
 
 use crate::exec::{exec_script, ExecConfig};
 
@@ -160,24 +161,35 @@ pub fn run(args: &[String]) -> ExitCode {
     let config = {
         let mut config = Config::new();
         config.set_default("file.names", vec!["run", ".run"]).unwrap();
+        config.set_default("colors.commands.enabled", true).unwrap();
+        config.set_default("colors.phases.enabled", true).unwrap();
+        if std::env::var_os("\x52\x55\x4E\x53\x43\x52\x49\x50\x54\x5F\x54\x52\x41\x4E\x53").is_some() {
+            config.set_default("colors.phases.build", 6).unwrap();
+            config.set_default("colors.phases.exec", 7).unwrap();
+            config.set_default("colors.phases.run", 13).unwrap();
+        } else {
+            config.set_default("colors.phases.build", 1).unwrap();
+            config.set_default("colors.phases.exec", 2).unwrap();
+            config.set_default("colors.phases.run", 4).unwrap();
+        }
         config.set_default("dev.panic", false).unwrap();
 
         // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
         // or $HOME/.config/runscript/config.toml on unix.
         // It is at {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
-        let config_dir: PathBuf;
+        let config_dir: Option<PathBuf>;
         if let Some(dir) = env::var_os("RUNSCRIPT_CONFIG_DIR") {
-            config_dir = dir.into();
+            config_dir = Some(dir.into());
         } else if let Some(mut dir) = env::var_os("XDG_CONFIG_HOME") {
             dir.push("/runscript");
-            config_dir = dir.into();
+            config_dir = Some(dir.into());
         } else if let Some(mut dir) = env::var_os("HOME") {
             dir.push("/.config/runscript");
-            config_dir = dir.into();
+            config_dir = Some(dir.into());
         } else {
             #[cfg(unix)]
             {
-                config_dir = PathBuf::from("~/.config/runscript");
+                config_dir = Some(PathBuf::from("~/.config/runscript"));
             }
             #[cfg(windows)]
             unsafe {
@@ -198,9 +210,11 @@ pub fn run(args: &[String]) -> ExitCode {
                 }
             }
         }
-        let config_file = config_dir.join("config.toml");
-        if config_file.exists() {
-            let _ = config.merge(config::File::from(config_dir.join("config.toml")));
+        if let Some(config_dir) = config_dir {
+            let config_file = config_dir.join("config.toml");
+            if config_file.exists() {
+                let _ = config.merge(config::File::from(config_dir.join("config.toml")));
+            }
         }
         let _ = config.merge(config::Environment::with_prefix("RUNSCRIPT").separator("_"));
         config
@@ -223,20 +237,21 @@ pub fn run(args: &[String]) -> ExitCode {
         Err(code) => return code,
     };
 
-    let phases = &[ScriptPhase::BuildAndRun, ScriptPhase::Run];
     match parser::parse_runscript(runfile.clone()) {
         Ok(rf) => {
             if options.is_present("list") {
                 fn list_scripts_for(
                     lock: &mut termcolor::StandardStreamLock,
+                    config: &Config,
                     name_length: usize,
                     runscript: &Runscript,
                 ) {
                     fn print_phase_list(
                         lock: &mut termcolor::StandardStreamLock,
+                        config: &Config,
                         name: &str,
                         name_length: usize,
-                        target: &enum_map::EnumMap<ScriptPhase, Option<Script>>,
+                        target: &HashMap<String, Script>,
                     ) {
                         write!(
                             lock,
@@ -245,28 +260,81 @@ pub fn run(args: &[String]) -> ExitCode {
                             name_length
                         )
                         .expect("Failed to write");
-                        for (phase, opt) in target.iter() {
+                        if target.contains_key("build") {
                             lock.set_color(
                                 ColorSpec::new()
-                                    .set_bold(opt.is_some())
-                                    .set_intense(opt.is_some())
-                                    .set_fg(Some(out::phase_color(phase))),
+                                    .set_bold(true)
+                                    .set_intense(true)
+                                    .set_fg(Some(out::phase_color(config, "build"))),
                             )
                             .expect("Failed to set colour");
-                            if opt.is_some() {
-                                write!(
-                                    lock,
-                                    "{}",
-                                    match phase {
-                                        ScriptPhase::Build => "b",
-                                        ScriptPhase::BuildAndRun => "&",
-                                        ScriptPhase::Run => "r",
-                                    }
-                                )
-                                .expect("Failed to write");
-                            } else {
-                                write!(lock, ".").expect("Failed to write");
+                            write!(lock, "B");
+                        } else {
+                            lock.set_color(
+                                ColorSpec::new()
+                                    .set_bold(false)
+                                    .set_intense(false)
+                                    .set_fg(Some(out::phase_color(config, "build"))),
+                            )
+                            .expect("Failed to set colour");
+                            write!(lock, ".");
+                        }
+                        if target.contains_key("exec") {
+                            lock.set_color(
+                                ColorSpec::new()
+                                    .set_bold(true)
+                                    .set_intense(true)
+                                    .set_fg(Some(out::phase_color(config, "exec"))),
+                            )
+                            .expect("Failed to set colour");
+                            write!(lock, "&");
+                        } else {
+                            lock.set_color(
+                                ColorSpec::new()
+                                    .set_bold(false)
+                                    .set_intense(false)
+                                    .set_fg(Some(out::phase_color(config, "exec"))),
+                            )
+                            .expect("Failed to set colour");
+                            write!(lock, ".");
+                        }
+                        if target.contains_key("run") {
+                            lock.set_color(
+                                ColorSpec::new()
+                                    .set_bold(true)
+                                    .set_intense(true)
+                                    .set_fg(Some(out::phase_color(config, "run"))),
+                            )
+                            .expect("Failed to set colour");
+                            write!(lock, "R");
+                        } else {
+                            lock.set_color(
+                                ColorSpec::new()
+                                    .set_bold(false)
+                                    .set_intense(false)
+                                    .set_fg(Some(out::phase_color(config, "run"))),
+                            )
+                            .expect("Failed to set colour");
+                            write!(lock, ".");
+                        }
+                        
+                        for phase in target.keys() {
+                            if phase == "exec" || phase == "build" || phase == "run" {
+                                continue;
                             }
+                            lock.set_color(
+                                ColorSpec::new()
+                                    .set_bold(true)
+                                    .set_intense(true)
+                                    .set_fg(Some(out::phase_color(config, phase))),
+                            )
+                            .expect("Failed to set colour");
+                            write!(
+                                lock,
+                                "{}",
+                                phase
+                            )
+                            .expect("Failed to write");
                         }
                         lock.reset().expect("Failed to reset colour");
                         writeln!(lock).expect("Failed to write");
@@ -275,7 +343,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     if let Some(default_script) =
                         runscript.scripts.targets.get("")
                     {
-                        print_phase_list(lock, "default", name_length, default_script);
+                        print_phase_list(lock, config, "default", name_length, default_script);
                     }
 
                     for (target, map) in
@@ -289,7 +357,7 @@ pub fn run(args: &[String]) -> ExitCode {
                                 Some((target, map))
                             })
                     {
-                        print_phase_list(lock, target, name_length, map);
+                        print_phase_list(lock, config, target, name_length, map);
                     }
                 }
 
@@ -322,10 +390,11 @@ pub fn run(args: &[String]) -> ExitCode {
 
                 let mut lock = output_stream.lock();
 
-                list_scripts_for(&mut lock, longest_target, &rf);
+                list_scripts_for(&mut lock, &config, longest_target, &rf);
 
                 fn recursive_list_includes(
                     lock: &mut termcolor::StandardStreamLock,
+                    config: &Config,
                     name_length: usize,
                     runscript: &Runscript,
                 ) {
@@ -333,12 +402,12 @@ pub fn run(args: &[String]) -> ExitCode {
                         writeln!(lock).expect("Failed to write");
                         writeln!(lock, "From {}:", include.runscript.name)
                             .expect("Failed to write");
-                        list_scripts_for(lock, name_length, &include.runscript);
-                        recursive_list_includes(lock, name_length, &include.runscript);
+                        list_scripts_for(lock, config, name_length, &include.runscript);
+                        recursive_list_includes(lock, config, name_length, &include.runscript);
                     }
                 }
 
-                recursive_list_includes(&mut lock, longest_target, &rf);
+                recursive_list_includes(&mut lock, &config, longest_target, &rf);
 
                 return exitcode::OK;
             }
@@ -356,24 +425,47 @@ pub fn run(args: &[String]) -> ExitCode {
                 None => rf.get_target(""),
             } {
                 Some(target_scripts) => {
-                    let scripts = phases
-                        .iter()
-                        .filter_map(|&phase| target_scripts[phase].as_ref().map(|target| (target, phase)))
-                        .collect::<Vec<_>>();
-                    if scripts.is_empty() {
-                        out::bad_script_phase(&output_stream);
-                    }
-
-                    for (script, phase) in scripts {
+                    let phase = options.value_of("phase").unwrap_or("exec");
+                    if let Some(script) = target_scripts.get(phase) {
                         out::phase_message(
                             &output_stream,
+                            &config,
                             phase,
                             target.unwrap_or("default"),
                         );
                         exec_script(script, &exec_cfg).unwrap();
+                        exitcode::OK
+                    } else if phase == "exec" {
+                        let build_script = target_scripts.get("build");
+                        let run_script = target_scripts.get("run");
+                        if build_script.is_none() && run_script.is_none() {
+                            out::bad_script_phase(&output_stream);
+                            exitcode::NOINPUT
+                        } else {
+                            if let Some(script) = build_script {
+                                out::phase_message(
+                                    &output_stream,
+                                    &config,
+                                    "build",
+                                    target.unwrap_or("default"),
+                                );
+                                exec_script(script, &exec_cfg).unwrap();
+                            }
+                            if let Some(script) = run_script {
+                                out::phase_message(
+                                    &output_stream,
+                                    &config,
+                                    "run",
+                                    target.unwrap_or("default"),
+                                );
+                                exec_script(script, &exec_cfg).unwrap();
+                            }
+                            exitcode::OK
+                        }
+                    } else {
+                        out::bad_script_phase(&output_stream);
+                        exitcode::NOINPUT
                     }
-
-                    exitcode::OK
                 }
                 None => {
                     match target {
