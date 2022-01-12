@@ -1,6 +1,6 @@
 run args
 run chain
-run env
+run params
 run exit
 run redir
 
@@ -12,11 +12,11 @@ echo 'globs:' ../src/*.rs
 [chain:run]
 yes | head -n 2
 
-[env:run]
-FOO='bar' echo $FOO
+[params:run]
+FOO='bar' echo ${FOO-No foo}
 FOO='bar' printenv FOO
 FOO='bar'
-echo $FOO
+echo ${FOO-No foo}
 printenv FOO
 export FOO
 printenv FOO

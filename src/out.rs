@@ -270,26 +270,21 @@ fn print_simple_word(lock: &mut StandardStreamLock, word: &AtomicSimpleWord) -> 
         }
         SimpleWord::Param(p) => {
             write!(lock, "$").expect("Failed to write");
-            match p {
-                Parameter::At => write!(lock, "@").expect("Failed to write"),
-                Parameter::Star => write!(lock, "*").expect("Failed to write"),
-                Parameter::Pound => write!(lock, "#").expect("Failed to write"),
-                Parameter::Question => write!(lock, "?").expect("Failed to write"),
-                Parameter::Dash => write!(lock, "-").expect("Failed to write"),
-                Parameter::Dollar => write!(lock, "$").expect("Failed to write"),
-                Parameter::Bang => write!(lock, "!").expect("Failed to write"),
-                Parameter::Positional(n) if *n < 10 => {
-                    write!(lock, "{}", n).expect("Failed to write")
-                }
-                Parameter::Positional(n) => write!(lock, "{{{}}}", n).expect("Failed to write"),
-                Parameter::Var(v) => write!(lock, "{}", v).expect("Failed to write"),
-            }
-            "$\u{0}".to_owned()
+            print_parameter(lock, p)
         }
         SimpleWord::Subst(s) => {
             match **s {
                 ParameterSubstitution::Command(_) => {
                     write!(lock, "$(...)").expect("Failed to write")
+                }
+                ParameterSubstitution::Default(colon, ref param, ref default) => {
+                    write!(lock, "${{").expect("Failed to write");
+                    print_parameter(lock, param);
+                    write!(lock, "{}-", if colon { ":" } else { "" }).expect("Failed to write");
+                    if let Some(word) = default {
+                        print_tl_word(lock, word);
+                    }
+                    write!(lock, "}}").expect("Failed to write");
                 }
                 _ => todo!(),
             }
@@ -320,6 +315,24 @@ fn print_simple_word(lock: &mut StandardStreamLock, word: &AtomicSimpleWord) -> 
             ":".to_owned()
         }
     }
+}
+
+fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter<String>) -> String {
+    match parameter {
+        Parameter::At => write!(lock, "@").expect("Failed to write"),
+        Parameter::Star => write!(lock, "*").expect("Failed to write"),
+        Parameter::Pound => write!(lock, "#").expect("Failed to write"),
+        Parameter::Question => write!(lock, "?").expect("Failed to write"),
+        Parameter::Dash => write!(lock, "-").expect("Failed to write"),
+        Parameter::Dollar => write!(lock, "$").expect("Failed to write"),
+        Parameter::Bang => write!(lock, "!").expect("Failed to write"),
+        Parameter::Positional(n) if *n < 10 => {
+            write!(lock, "{}", n).expect("Failed to write")
+        }
+        Parameter::Positional(n) => write!(lock, "{{{}}}", n).expect("Failed to write"),
+        Parameter::Var(v) => write!(lock, "{}", v).expect("Failed to write"),
+    }
+    "$\u{0}".to_owned()
 }
 
 fn emit_error(

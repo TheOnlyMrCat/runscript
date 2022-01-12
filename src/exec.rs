@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::prelude::RawFd;
+use std::os::unix::prelude::{RawFd, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
@@ -93,13 +93,24 @@ impl ProcessExit {
     /// The exit code the process exited with, if any.
     ///
     /// Coerces the `Bool` variant into `true = 0`, `false = 1`
-    pub fn code(&self) -> Option<i32> {
+    /// Signals are converted to an exit code of `128 + signal`
+    pub fn code(&self) -> i32 {
         match self {
-            ProcessExit::Bool(b) => Some(!b as i32),
-            ProcessExit::StdStatus(s) => s.code(),
+            ProcessExit::Bool(b) => !b as i32,
+            ProcessExit::StdStatus(s) => s.code().unwrap_or_else(|| {
+                #[cfg(unix)]
+                {
+                    s.signal().map(|s| 128 + s as i32).unwrap()
+                }
+                #[cfg(not(unix))]
+                {
+                    panic!()
+                }
+            }),
             ProcessExit::NixStatus(s) => match s {
-                nix::sys::wait::WaitStatus::Exited(_, code) => Some(*code),
-                _ => None,
+                nix::sys::wait::WaitStatus::Exited(_, code) => *code,
+                nix::sys::wait::WaitStatus::Signaled(_, sig, _) => 128 + *sig as i32,
+                _ => panic!(),
             },
         }
     }
@@ -180,11 +191,18 @@ impl WaitableProcess {
         }
     }
 
+    fn pid(&self) -> i32 {
+        match &self.process {
+            OngoingProcess::Concurrent(p) => p.id() as i32,
+            OngoingProcess::Reentrant { pid, .. } => pid.as_raw(),
+            OngoingProcess::Finished(_) => 0,
+        }
+    }
+
     #[cfg(unix)]
     fn hup(self) -> FinishedProcess {
-        use std::os::unix::prelude::ExitStatusExt;
-
         use nix::sys::signal::{kill, Signal};
+        use nix::sys::wait::WaitStatus;
         use nix::unistd::Pid;
 
         for job in self.associated_jobs {
@@ -193,9 +211,10 @@ impl WaitableProcess {
 
         match self.process {
             OngoingProcess::Concurrent(process) => {
-                kill(Pid::from_raw(process.id() as i32), Signal::SIGHUP).unwrap();
+                let pid = Pid::from_raw(process.id() as i32);
+                kill(pid, Signal::SIGHUP).unwrap();
                 FinishedProcess {
-                    status: ProcessExit::StdStatus(ExitStatus::from_raw(129)),
+                    status: ProcessExit::NixStatus(WaitStatus::Signaled(pid, Signal::SIGHUP, false)),
                     stdout: vec![],
                     stderr: vec![],
                 }
@@ -203,7 +222,7 @@ impl WaitableProcess {
             OngoingProcess::Reentrant { pid, .. } => {
                 kill(pid, Signal::SIGHUP).unwrap();
                 FinishedProcess {
-                    status: ProcessExit::StdStatus(ExitStatus::from_raw(129)),
+                    status: ProcessExit::NixStatus(WaitStatus::Signaled(pid, Signal::SIGHUP, false)),
                     stdout: vec![],
                     stderr: vec![],
                 }
@@ -434,6 +453,8 @@ pub fn exec_script(
         working_directory: config.working_directory.to_owned(),
         vars: HashMap::new(),
         env: HashMap::new(),
+        pid: -1,
+        exit_code: 0,
     }
     .exec_script_entries(&script.commands, config)?
     .wait())
@@ -447,6 +468,10 @@ struct ShellContext {
     vars: HashMap<String, String>,
     /// Exported varables
     env: HashMap<String, String>,
+    /// PID of most recent job
+    pid: i32,
+    /// Exit code of most recent top-level command
+    exit_code: i32, //TODO: This will always be 0..
 }
 
 impl ShellContext {
@@ -468,9 +493,11 @@ impl ShellContext {
 
                 let proc = self.exec_andor_list(command, config, is_job)?;
                 if is_job {
+                    self.pid = proc.pid();
                     jobs.push(proc);
                 } else {
-                    proc.wait();
+                    let finished = proc.wait();
+                    self.exit_code = finished.status.code();
                 }
             }
         }
@@ -1155,7 +1182,18 @@ impl ShellContext {
                 }
             )],
             ParameterSubstitution::Arith(_) => todo!(),
-            ParameterSubstitution::Default(_, _, _) => todo!(),
+            ParameterSubstitution::Default(null_is_unset, parameter, default) => {
+                let parameter = self.evaluate_parameter(parameter, config);
+                if parameter.is_empty() || (*null_is_unset && parameter.len() == 1 && parameter[0].is_empty()) {
+                    if let Some(word) = default {
+                        self.evaluate_tl_word(word, config)?
+                    } else {
+                        vec![]
+                    }
+                } else {
+                    parameter
+                }
+            },
             ParameterSubstitution::Assign(_, _, _) => todo!(),
             ParameterSubstitution::Error(_, _, _) => todo!(),
             ParameterSubstitution::Alternative(_, _, _) => todo!(),
@@ -1188,11 +1226,11 @@ impl ShellContext {
             Parameter::At => config.positional_args.clone(),
             Parameter::Pound => vec![format!("{}", config.positional_args.len())],
             Parameter::Dollar => vec![format!("{}", std::process::id())],
+            Parameter::Question => vec![format!("{}", self.exit_code)],
+            Parameter::Bang => vec![format!("{}", self.pid)],
 
             Parameter::Star => todo!(), // Like @ but runs evaluate_word on each word
-            Parameter::Question => todo!(), // Exit code of previous top-level command
             Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
-            Parameter::Bang => todo!(), // PID of most recent job
         }
     }
 }
