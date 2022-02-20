@@ -471,7 +471,7 @@ struct ShellContext {
     /// PID of most recent job
     pid: i32,
     /// Exit code of most recent top-level command
-    exit_code: i32, //TODO: This will always be 0..
+    exit_code: i32, //TODO: This will always be 0...
 }
 
 impl ShellContext {

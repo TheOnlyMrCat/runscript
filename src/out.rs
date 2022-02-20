@@ -407,11 +407,11 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
             77 => "exit 77 (EX_NOPERM)".to_owned(),
             78 => "exit 78 (EX_CONFIG)".to_owned(),
             101 => "exit 101 (Process panicked)".to_owned(),
-            _ => format!("exit {}", code),
+            _ => format!("exit {code}"),
         }
     }
 
-    fn signal(signal: i32, core: Option<bool>) -> String {
+    fn signal(signal: i32, core: bool) -> String {
         use std::ffi::CStr;
 
         // SAFETY: No input is invalid.
@@ -423,29 +423,12 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
             // SAFETY: The returned string is valid until the next call to strsignal, and has been verified to be non-null.
             let sigstr = unsafe { CStr::from_ptr(sigstr_ptr) };
             format!(
-                "signal {} ({}{})",
-                signal,
+                "signal {signal} ({}){}",
                 sigstr.to_string_lossy(),
-                match core {
-                    Some(true) => " - core dumped",
-                    Some(false) => "",
-                    None => {
-                        // Signals that core dump by default.
-                        if signal == 3
-                            || signal == 4
-                            || signal == 5
-                            || signal == 6
-                            || signal == 7
-                            || signal == 8
-                            || signal == 10
-                            || signal == 11
-                            || signal == 12
-                        {
-                            " - core dumped?"
-                        } else {
-                            ""
-                        }
-                    }
+                if core {
+                    " - core dumped"
+                } else {
+                    ""
                 }
             )
         }
@@ -464,7 +447,7 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
                 } else {
                     use std::os::unix::process::ExitStatusExt;
 
-                    println!("=> {}", signal(status.signal().unwrap(), None));
+                    println!("=> {}", signal(status.signal().unwrap(), status.core_dumped()));
                 }
             }
         }
@@ -475,7 +458,7 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
                 }
             }
             nix::sys::wait::WaitStatus::Signaled(_, sig, core) => {
-                signal((*sig) as i32, Some(*core));
+                signal((*sig) as i32, *core);
             }
             _ => println!("=> exit ?"),
         },
