@@ -155,7 +155,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
         location: context.get_loc(0),
     };
     let mut current_script_target = "".to_owned();
-    let mut current_script_phase = "exec".to_owned();
+    let mut current_script_phase = "run".to_owned();
     while let Some(tk) = context.iterator.peek().copied() {
         match tk {
             // Comment
@@ -173,9 +173,12 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .collect::<String>();
                     let phase = name
                         .rfind(':')
-                        .map(|idx| name.split_off(idx + 1))
-                        .unwrap_or_else(|| "exec".to_owned());
-                    name.pop();
+                        .map(|idx| {
+                            let phase = name.split_off(idx + 1);
+                            name.pop(); // To remove the `:` as well
+                            phase
+                        })
+                        .unwrap_or_else(|| "run".to_owned());
                     (name, phase)
                 };
 

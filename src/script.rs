@@ -56,10 +56,17 @@ impl Runscript {
         }
     }
 
-    pub fn get_target(&self, target: &str) -> Option<&HashMap<String, Script>> {
+    pub fn get_default_target(&self) -> Option<(&String, &HashMap<String, Script>)> {
         self
             .scripts
             .targets
-            .get(target)
+            .get_index(0)
+    }
+
+    pub fn get_target(&self, target: &str) -> Option<(&String, &HashMap<String, Script>)> {
+        self
+            .scripts
+            .targets
+            .get_key_value(target)
     }
 }

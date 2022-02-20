@@ -93,8 +93,6 @@ you ran it on.
 }
 
 fn main() {
-    std::panic::set_hook(Box::new(panic_hook));
-
     let mut args = env::args().skip(1).collect::<Vec<String>>();
     loop {
         match std::panic::catch_unwind(|| {
@@ -115,8 +113,6 @@ fn main() {
 }
 
 pub fn run(args: &[String]) -> ExitCode {
-    let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
-
     let mut app = clap::App::new("run")
         .about("Project script manager and executor")
         .version(VERSION)
@@ -124,33 +120,26 @@ pub fn run(args: &[String]) -> ExitCode {
         .setting(clap::AppSettings::NoBinaryName)
         .setting(clap::AppSettings::TrailingVarArg)
         .setting(clap::AppSettings::DeriveDisplayOrder)
-        .override_usage("run [OPTIONS] [TARGET] [ARGS]")
+        .override_usage("run [OPTIONS] [TARGET:PHASE] [--] [ARGS]")
         .arg(arg!([target] "Target to run in the script").hide(true))
         .arg(arg!([args] ... "Arguments to pass to the script").hide(true))
         .arg(
             arg!(-c --command <COMMAND> "Execute a command")
                 .required(false)
                 .value_hint(ValueHint::CommandString)
-                .conflicts_with_all(&["file", "list", "phase", "target", "args"])
+                .conflicts_with_all(&["file", "list", "target", "args", "build", "run", "test"])
         )
         .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false).value_hint(ValueHint::FilePath))
-        .arg(arg!(-l --list "List targets in the script file"))
-        .help_heading("PHASE SELECTION")
-        .arg(
-            arg!(-p --phase <PHASE> "Run a specific phase of the script")
-                .required(false)
-                .use_delimiter(true)
-                .default_value_if("build", None, Some("build"))
-                .default_value_if("run", None, Some("run"))
-                .conflicts_with("list")
-        )
+        .arg(arg!(-l --list "List targets in the script file").conflicts_with_all(&["build", "run", "test"]))
+        .arg(arg!(--color <WHEN>).possible_values(&["auto", "always", "ansi", "never"]).required(false).default_value("auto"))
         .arg(arg!(-b --build "Shorthand for `--phase build`"))
-        .arg(arg!(-r --run "Shorthand for `--phase run`"));
+        .arg(arg!(-r --run "Shorthand for `--phase run`"))
+        .arg(arg!(-t --test "Shorthand for `--phase test`"));
 
     let options = match app.try_get_matches_from_mut(args) {
         Ok(m) => m,
         Err(clap::Error { kind: clap::ErrorKind::DisplayHelp, .. }) => {
-            app.print_help().expect("Failed to write clap help");
+            app.print_help().expect("Failed to print clap help");
             return exitcode::OK;
         }
         Err(clap::Error { kind: clap::ErrorKind::DisplayVersion, .. }) => {
@@ -171,12 +160,12 @@ pub fn run(args: &[String]) -> ExitCode {
         config.set_default("colors.phases.enabled", true).unwrap();
         if std::env::var_os("\x52\x55\x4E\x53\x43\x52\x49\x50\x54\x5F\x54\x52\x41\x4E\x53").is_some() {
             config.set_default("colors.phases.build", 6).unwrap();
-            config.set_default("colors.phases.exec", 7).unwrap();
             config.set_default("colors.phases.run", 13).unwrap();
+            config.set_default("colors.phases.test", 7).unwrap();
         } else {
             config.set_default("colors.phases.build", 1).unwrap();
-            config.set_default("colors.phases.exec", 2).unwrap();
             config.set_default("colors.phases.run", 4).unwrap();
+            config.set_default("colors.phases.test", 2).unwrap();
         }
         config.set_default("dev.panic", false).unwrap();
 
@@ -195,7 +184,7 @@ pub fn run(args: &[String]) -> ExitCode {
         } else {
             #[cfg(unix)]
             {
-                config_dir = Some(PathBuf::from("~/.config/runscript"));
+                config_dir = None;
             }
             #[cfg(windows)]
             unsafe {
@@ -226,8 +215,10 @@ pub fn run(args: &[String]) -> ExitCode {
         config
     };
 
-    if config.get_bool("dev.panic").unwrap_or(false) {
-        let _ = std::panic::take_hook();
+    let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
+
+    if !config.get_bool("dev.panic").unwrap_or(false) {
+        std::panic::set_hook(Box::new(panic_hook));
     }
     
     let cwd = match env::current_dir() {
@@ -326,59 +317,34 @@ pub fn run(args: &[String]) -> ExitCode {
                     positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
                 };
 
-                let target = options.value_of("target");
+                let target = options.value_of("target").unwrap_or("");
+                let (target, phase) = target.split_once(':').unwrap_or((target, "run"));
 
-                match match &target {
-                    Some(target) => rf.get_target(target),
-                    None => rf.get_target(""),
+                match if target.is_empty() {
+                    rf.get_default_target()
+                } else {
+                    rf.get_target(target)
                 } {
-                    Some(target_scripts) => {
-                        let phase = options.value_of("phase").unwrap_or("exec");
-                        if let Some(script) = target_scripts.get(phase) {
+                    Some((name, scripts)) => {
+                        if let Some(script) = scripts.get(phase) {
                             out::phase_message(
                                 &output_stream,
                                 &config,
                                 phase,
-                                target.unwrap_or("default"),
+                                name,
                             );
                             exec_script(script, &exec_cfg).unwrap();
                             exitcode::OK
-                        } else if phase == "exec" {
-                            let build_script = target_scripts.get("build");
-                            let run_script = target_scripts.get("run");
-                            if build_script.is_none() && run_script.is_none() {
-                                out::bad_script_phase(&output_stream);
-                                exitcode::NOINPUT
-                            } else {
-                                if let Some(script) = build_script {
-                                    out::phase_message(
-                                        &output_stream,
-                                        &config,
-                                        "build",
-                                        target.unwrap_or("default"),
-                                    );
-                                    exec_script(script, &exec_cfg).unwrap();
-                                }
-                                if let Some(script) = run_script {
-                                    out::phase_message(
-                                        &output_stream,
-                                        &config,
-                                        "run",
-                                        target.unwrap_or("default"),
-                                    );
-                                    exec_script(script, &exec_cfg).unwrap();
-                                }
-                                exitcode::OK
-                            }
                         } else {
                             out::bad_script_phase(&output_stream);
                             exitcode::NOINPUT
                         }
                     }
                     None => {
-                        match target {
-                            Some(name) => out::bad_target(&output_stream, name),
-                            None => out::bad_default(&output_stream),
+                        if target.is_empty() {
+                            out::bad_default(&output_stream);
+                        } else {
+                            out::bad_target(&output_stream, target);
                         }
                         exitcode::NOINPUT
                     }
@@ -468,6 +434,7 @@ fn print_phase_list(
         name_length
     )
     .expect("Failed to write");
+    //TODO: This could be configured
     if target.contains_key("build") {
         lock.set_color(
             ColorSpec::new()
@@ -483,25 +450,6 @@ fn print_phase_list(
                 .set_bold(false)
                 .set_intense(false)
                 .set_fg(Some(out::phase_color(config, "build"))),
-        )
-        .expect("Failed to set colour");
-        write!(lock, ".").unwrap();
-    }
-    if target.contains_key("exec") {
-        lock.set_color(
-            ColorSpec::new()
-                .set_bold(true)
-                .set_intense(true)
-                .set_fg(Some(out::phase_color(config, "exec"))),
-        )
-        .expect("Failed to set colour");
-        write!(lock, "&").unwrap();
-    } else {
-        lock.set_color(
-            ColorSpec::new()
-                .set_bold(false)
-                .set_intense(false)
-                .set_fg(Some(out::phase_color(config, "exec"))),
         )
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
@@ -525,9 +473,28 @@ fn print_phase_list(
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
     }
+    if target.contains_key("test") {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(true)
+                .set_intense(true)
+                .set_fg(Some(out::phase_color(config, "test"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, "T").unwrap();
+    } else {
+        lock.set_color(
+            ColorSpec::new()
+                .set_bold(false)
+                .set_intense(false)
+                .set_fg(Some(out::phase_color(config, "test"))),
+        )
+        .expect("Failed to set colour");
+        write!(lock, ".").unwrap();
+    }
     
     for phase in target.keys() {
-        if phase == "exec" || phase == "build" || phase == "run" {
+        if phase == "test" || phase == "build" || phase == "run" {
             continue;
         }
         lock.set_color(
