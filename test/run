@@ -1,3 +1,4 @@
+[all:test]
 run args
 run chain
 run params

@@ -66,6 +66,9 @@ pub enum RunscriptParseErrorData {
         /// Detail of the error
         error: ParseError<<DefaultBuilder<String> as Builder>::Error>,
     },
+    IllegalCommandLocation {
+        location: RunscriptLocation,
+    },
 }
 
 #[derive(Debug)]
@@ -150,12 +153,13 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
 fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
 ) -> Result<(), RunscriptParseErrorData> {
-    let mut current_script = Script {
-        commands: Vec::new(),
-        location: context.get_loc(0),
-    };
-    let mut current_script_target = "".to_owned();
-    let mut current_script_phase = "run".to_owned();
+    struct CurrentScript {
+        script: Script,
+        target: String,
+        phase: String,
+    }
+
+    let mut current_script: Option<CurrentScript> = None;
     while let Some(tk) = context.iterator.peek().copied() {
         match tk {
             // Comment
@@ -193,13 +197,15 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     });
                 }
 
-                let target = context
-                    .runfile
-                    .scripts
-                    .targets
-                    .entry(current_script_target)
-                    .or_insert_with(HashMap::new);
-                target.insert(current_script_phase, current_script);
+                if let Some(current_script) = current_script {
+                    let target = context
+                        .runfile
+                        .scripts
+                        .targets
+                        .entry(current_script.target)
+                        .or_insert_with(HashMap::new);
+                    target.insert(current_script.phase, current_script.script);
+                }
 
                 let new_target = context
                     .runfile
@@ -215,41 +221,51 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     });
                 }
 
-                current_script = Script {
-                    location: context.get_loc(i),
-                    commands: Vec::new(),
-                };
-                current_script_target = name;
-                current_script_phase = phase;
+                current_script = Some(CurrentScript {
+                    script: Script {
+                        location: context.get_loc(i),
+                        commands: Vec::new(),
+                    },
+                    target: name,
+                    phase,
+                });
             }
             (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => {
                 context.iterator.next();
             }
-            (i, _) => {
-                let command_pos = context.get_loc(i);
-
-                let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
-                let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
-                let command = parser
-                    .complete_command()
-                    .map_err(|e| RunscriptParseErrorData::CommandParseError {
-                        location: command_pos,
-                        error: e,
-                    })?
-                    .unwrap(); // The only error that can occur is EOF, but we already skip whitespace
-
-                current_script.commands.push(command);
+            (i, c) => {
+                if let Some(ref mut current_script) = current_script {
+                    let command_pos = context.get_loc(i);
+    
+                    let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
+                    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+                    let command = parser
+                        .complete_command()
+                        .map_err(|e| RunscriptParseErrorData::CommandParseError {
+                            location: command_pos,
+                            error: e,
+                        })?
+                        .unwrap(); // The only error that can occur is EOF, but we already skip whitespace
+    
+                    current_script.script.commands.push(command);
+                } else {
+                    return Err(RunscriptParseErrorData::IllegalCommandLocation {
+                        location: context.get_loc(i),
+                    });
+                }
             }
         }
     }
 
-    let target = context
-        .runfile
-        .scripts
-        .targets
-        .entry(current_script_target)
-        .or_insert_with(HashMap::new);
-    target.insert(current_script_phase, current_script);
+    if let Some(current_script) = current_script {
+        let target = context
+            .runfile
+            .scripts
+            .targets
+            .entry(current_script.target)
+            .or_insert_with(HashMap::new);
+        target.insert(current_script.phase, current_script.script);
+    }
 
     Ok(())
 }

@@ -71,10 +71,11 @@ Panic message:
 
     let mut stderr = StandardStream::stderr(ColorChoice::Auto);
     let _ = stderr.set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Red)));
+    let _ = writeln!(stderr, "Runscript had a problem and panicked (crashed).");
+    let _ = stderr.reset();
     let _ = writeln!(
         stderr,
         "\
-Runscript had a problem and panicked (crashed).
 This is a bug, please report it at https://github.com/TheOnlyMrCat/runscript/issues/new{}.
 
 Please include the arguments with which you invoked runscript, and, if possible, the script
@@ -132,8 +133,8 @@ pub fn run(args: &[String]) -> ExitCode {
         .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false).value_hint(ValueHint::FilePath))
         .arg(arg!(-l --list "List targets in the script file").conflicts_with_all(&["build", "run", "test"]))
         .arg(arg!(--color <WHEN>).possible_values(&["auto", "always", "ansi", "never"]).required(false).default_value("auto"))
-        .arg(arg!(-b --build "Shorthand for `--phase build`"))
-        .arg(arg!(-r --run "Shorthand for `--phase run`"))
+        .arg(arg!(-b --build "Shorthand for `--phase build`").conflicts_with_all(&["run", "test"]))
+        .arg(arg!(-r --run "Shorthand for `--phase run`").conflicts_with_all(&["test"]))
         .arg(arg!(-t --test "Shorthand for `--phase test`"));
 
     let options = match app.try_get_matches_from_mut(args) {
@@ -318,7 +319,15 @@ pub fn run(args: &[String]) -> ExitCode {
                 };
 
                 let target = options.value_of("target").unwrap_or("");
-                let (target, phase) = target.split_once(':').unwrap_or((target, "run"));
+                let (target, phase) = target.split_once(':').unwrap_or_else(|| {
+                    if options.is_present("build") {
+                        (target, "build")
+                    } else if options.is_present("test") {
+                        (target, "test")
+                    } else {
+                        (target, "run")
+                    }
+                });
 
                 match if target.is_empty() {
                     rf.get_default_target()
