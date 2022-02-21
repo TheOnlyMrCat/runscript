@@ -1,33 +1,26 @@
-#no_exec r!
-__run_panic
-#/
-
-#- b!
+[runscript:build]
 cargo build
-#/
 
-#-
-cargo run -- -f test/run
-#/
+[runscript:run]
+cargo run -- -t -f test/run
 
-#args
+[args]
 cargo run -- $@
-#/
 
-#pkg b
+[no_exec]
+__run_panic
+
+[pkg]
 run pkg-nowin
 run pkg-win
-#/
 
-#pkg-win b
+[pkg-win]
 cargo build --release --target x86_64-pc-windows-gnu
 tar czf runscript-windows-x86_64.tar.gz -C target/x86_64-pc-windows-gnu/release run.exe
-#/
 
-#pkg-nowin b
+[pkg-nowin]
 cargo build --release --target x86_64-apple-darwin
 tar czf runscript-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release run
 
 cargo build --release --target x86_64-unknown-linux-musl
 tar czf runscript-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-musl/release run
-#/

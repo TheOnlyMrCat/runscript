@@ -80,6 +80,14 @@ pub fn file_parse_err(
                 format!("Error parsing command: {}", error),
             );
         }
+        RunscriptParseErrorData::IllegalCommandLocation { location } => {
+            emit_error(
+                output_stream,
+                location,
+                &script,
+                "Illegal command location".to_owned(),
+            );
+        }
     }
 }
 
