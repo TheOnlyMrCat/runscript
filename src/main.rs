@@ -19,6 +19,7 @@ use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 mod exec;
 mod out;
 mod parser;
+mod old_parser;
 mod script;
 
 use script::{Runscript, Script};
@@ -128,9 +129,10 @@ pub fn run(args: &[String]) -> ExitCode {
             arg!(-c --command <COMMAND> "Execute a command")
                 .required(false)
                 .value_hint(ValueHint::CommandString)
-                .conflicts_with_all(&["file", "list", "target", "args", "build", "run", "test"])
+                .conflicts_with_all(&["file", "old-format", "list", "target", "args", "build", "run", "test"])
         )
         .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false).value_hint(ValueHint::FilePath))
+        .arg(arg!(-'1' --"old-format" "Use the old format to parse the script file"))
         .arg(arg!(-l --list "List targets in the script file").conflicts_with_all(&["build", "run", "test"]))
         .arg(arg!(--color <WHEN>).possible_values(&["auto", "always", "ansi", "never"]).required(false).default_value("auto"))
         .arg(arg!(-b --build "Shorthand for `--phase build`").conflicts_with_all(&["run", "test"]))
@@ -235,12 +237,13 @@ pub fn run(args: &[String]) -> ExitCode {
             Ok(command) => {
                 let script = Script {
                     commands: vec![command],
-                    location: parser::RunscriptLocation { index: vec![], line: 0, column: 0 },
+                    location: parser::RunscriptLocation { line: 0, column: 0 },
                 };
                 let exec_cfg = ExecConfig {
                     output_stream: Some(output_stream),
                     working_directory: &cwd,
                     positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
+                    old_format: false,
                 };
 
                 exec_script(&script, &exec_cfg).unwrap();
@@ -258,7 +261,16 @@ pub fn run(args: &[String]) -> ExitCode {
             Err(code) => return code,
         };
 
-        match parser::parse_runscript(runfile.clone()) {
+        match if options.is_present("old-format") { 
+            old_parser::parse_runscript(runfile.clone()).map_err(|e| {
+                parser::RunscriptParseError {
+                    script: e.script,
+                    data: parser::RunscriptParseErrorData::OldParseError(e.data),
+                }
+            })
+        } else {
+            parser::parse_runscript(runfile.clone())
+        } {
             Ok(rf) => {
                 if options.is_present("list") {
                     let mut longest_target = rf
@@ -316,6 +328,7 @@ pub fn run(args: &[String]) -> ExitCode {
                     output_stream: Some(output_stream.clone()),
                     working_directory: &runfile.dir,
                     positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
+                    old_format: options.is_present("old-format"),
                 };
 
                 let target = options.value_of("target").unwrap_or("");

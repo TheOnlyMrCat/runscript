@@ -57,12 +57,7 @@ pub fn file_parse_err(
                 loc,
                 &script,
                 format!(
-                    "Multiple definitions of `{}`",
-                    match &**t {
-                        "#" => "global target".to_owned(),
-                        "-" => "default target".to_owned(),
-                        s => format!("`{}`", s),
-                    }
+                    "Multiple definitions of `{t}`"
                 ),
             );
             emit_error(
@@ -87,6 +82,9 @@ pub fn file_parse_err(
                 &script,
                 "Illegal command location".to_owned(),
             );
+        }
+        RunscriptParseErrorData::OldParseError(e) => {
+            dbg!(e);
         }
     }
 }
@@ -350,46 +348,12 @@ fn emit_error(
     error_msg: String,
 ) {
     let mut lock = output_stream.lock();
-    match script.unwind_fileid(&location.index) {
-        Some(file) => {
-            writeln!(
-                lock,
-                "{}({}:{}): {}",
-                file.name, location.line, location.column, error_msg
-            )
-            .expect("Failed to write");
-            fn recursive_include_unwind(
-                lock: &mut termcolor::StandardStreamLock,
-                script: &Runscript,
-                fileid: &[usize],
-            ) {
-                let (first, rest) = match fileid.split_first() {
-                    Some(x) => x,
-                    None => return,
-                };
-                let mut name = &script.name;
-                let mut loc_ref = &script.includes[*first];
-                for index in rest {
-                    name = &loc_ref.runscript.name;
-                    loc_ref = &loc_ref.runscript.includes[*index];
-                }
-                let line = loc_ref.location.line;
-                writeln!(lock, "-> In file included from {}:{}", name, line)
-                    .expect("Failed to write");
-                recursive_include_unwind(lock, script, fileid.split_last().unwrap().1);
-            }
-            recursive_include_unwind(&mut lock, script, &location.index);
-        }
-        None => {
-            writeln!(lock, "run: Failed to build include tree for error").expect("Failed to write");
-            writeln!(
-                lock,
-                "-> Error at {}:{}: {}",
-                location.line, location.column, error_msg
-            )
-            .expect("Failed to write");
-        }
-    }
+    writeln!(
+        lock,
+        "{}({}:{}): {}",
+        script.name, location.line, location.column, error_msg
+    )
+    .expect("Failed to write");
 }
 
 pub fn process_finish(status: &crate::exec::ProcessExit) {

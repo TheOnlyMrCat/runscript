@@ -24,10 +24,8 @@ pub struct RunscriptSource {
 /// A location in a runscript
 ///
 /// Runscript locations include the line and column number, as well as an index used to track include-nesting
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct RunscriptLocation {
-    /// The include-nesting index of this runscript
-    pub index: Vec<usize>,
     /// The line of the referenced code
     pub line: usize,
     /// The column of the referenced code
@@ -69,6 +67,7 @@ pub enum RunscriptParseErrorData {
     IllegalCommandLocation {
         location: RunscriptLocation,
     },
+    OldParseError(crate::old_parser::RunscriptParseErrorData),
 }
 
 #[derive(Debug)]
@@ -132,7 +131,6 @@ impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<T> {
                 )
             });
         RunscriptLocation {
-            index: vec![],
             line,
             column,
         }
@@ -233,7 +231,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
             (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => {
                 context.iterator.next();
             }
-            (i, c) => {
+            (i, _) => {
                 if let Some(ref mut current_script) = current_script {
                     let command_pos = context.get_loc(i);
     

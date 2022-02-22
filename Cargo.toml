@@ -28,6 +28,7 @@ tempfile = "3.3.0"
 # Panic handling
 uuid = { version = "0.8", features = ["v4"], default-features = false }
 os_info = { version = "3.0" }
+void = "1.0.2"
 
 [target.'cfg(windows)'.dependencies]
 winapi = "0.3"

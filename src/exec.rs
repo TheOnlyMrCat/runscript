@@ -36,6 +36,8 @@ pub struct ExecConfig<'a> {
     ///
     ///The first argument replaces `$1`, the second replaces `$2`, etc.
     pub positional_args: Vec<String>,
+    /// Pass the -1 flag on to recursive `run` calls
+    pub old_format: bool,
 }
 
 #[derive(Debug)]
@@ -1005,7 +1007,11 @@ impl ShellContext {
                             }
 
                             let mut command_words = command_words;
-                            command_words.remove(0);
+                            if config.old_format {
+                                command_words[0] = "--old-format".to_owned();
+                            } else {
+                                command_words.remove(0);
+                            }
                             // resume_unwind so as to not invoke the panic hook.
                             std::panic::resume_unwind(Box::new(command_words));
                         }
@@ -1028,10 +1034,11 @@ impl ShellContext {
 
                     if let Some(stdin) = stdin_buffer {
                         // This approach can cause a deadlock if the following conditions are true:
-                        // - The child is using a piped stdout
+                        // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
                         // - The stdin buffer is larger than the pipe buffer
                         // - The child writes more than one pipe buffer of data without reading enough of stdin
                         //? Could run this on separate thread to mitigate this, if necessary.
+                        //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
                         let _ = child.stdin.take().unwrap().write_all(&stdin); //TODO: Do I need to worry about an error here?
                     }
 
