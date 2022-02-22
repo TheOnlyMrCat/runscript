@@ -1,0 +1,40 @@
+#-
+run args -f old.run
+run -b params -f old.run
+run chain -f old.run
+run exit -f old.run
+run -b redir -f old.run
+#/
+
+#args
+echo Test 'basic command' "with textual" arguments
+echo 'environment variables:' $HOME
+echo 'globs:' ../src/*.rs
+#/
+
+#chain r!
+yes | head -n 2
+#/
+
+#params b!
+FOO='bar' echo ${FOO-No foo}
+FOO='bar' printenv FOO
+FOO='bar'
+echo ${FOO-No foo}
+printenv FOO
+export FOO
+printenv FOO
+#/
+
+#exit br
+run nonexistent-target 2>/dev/null || :
+#/
+
+#redir b
+echo 'hello' >> /dev/null
+cat < ../.gitignore
+
+cat << EOF
+Heredoc
+EOF
+#/
