@@ -1,9 +1,9 @@
 #-
-run args -f old.run
-run -b params -f old.run
-run chain -f old.run
-run exit -f old.run
-run -b redir -f old.run
+run args
+run -b params
+run chain
+run exit
+run -b redir
 #/
 
 #args
