@@ -34,6 +34,8 @@ pub struct ExecConfig<'a> {
     pub working_directory: &'a Path,
     /// The path to the script file being executed
     pub script_path: Option<PathBuf>,
+    /// The name of the target being executed
+    pub target_name: Option<&'a str>,
     /// Positional arguments to pass to the script.
     ///
     ///The first argument replaces `$1`, the second replaces `$2`, etc.
@@ -45,6 +47,7 @@ pub struct ExecConfig<'a> {
 pub struct BaseExecContext {
     pub old_format: bool,
     pub current_file: Option<PathBuf>,
+    pub current_target: Option<String>,
     pub args: Vec<String>,
 }
 
@@ -1036,6 +1039,7 @@ impl ShellContext {
                             let recursive_context = BaseExecContext {
                                 args,
                                 current_file: config.script_path.to_owned(),
+                                current_target: config.target_name.map(ToOwned::to_owned),
                                 old_format: config.old_format,
                             };
                             // resume_unwind so as to not invoke the panic hook.

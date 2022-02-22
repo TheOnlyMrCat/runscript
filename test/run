@@ -3,6 +3,7 @@ run args
 run chain
 run params
 run exit
+run recursive
 run redir
 
 [args]
@@ -24,6 +25,12 @@ printenv FOO
 
 [exit]
 run nonexistent-target 2>/dev/null || :
+
+[recursive]
+run ':alt'
+
+[recursive:alt]
+echo 'Hello from :alt'
 
 [redir]
 echo 'hello' >> /dev/null
