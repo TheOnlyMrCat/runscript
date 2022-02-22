@@ -96,7 +96,6 @@ impl ParsingContext<CharIndices<'_>> {
                     .to_string_lossy()
                     .into_owned(),
                 source: source.source.clone(),
-                includes: Vec::new(),
                 scripts: Scripts {
                     targets: IndexMap::new(),
                 },
@@ -133,10 +132,7 @@ impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<T> {
                     index - self.line_indices.last().copied().unwrap_or(0),
                 )
             });
-        RunscriptLocation {
-            line,
-            column,
-        }
+        RunscriptLocation { line, column }
     }
 }
 
@@ -216,8 +212,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .or_insert_with(HashMap::new);
                 if let Some(script) = new_target.get(&phase) {
                     return Err(RunscriptParseErrorData::DuplicateScript {
-                        previous_location: script.location.clone(),
-                        new_location: script.location.clone(),
+                        previous_location: script.location,
+                        new_location: script.location,
                         target_name: name,
                     });
                 }
@@ -237,7 +233,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
             (i, _) => {
                 if let Some(ref mut current_script) = current_script {
                     let command_pos = context.get_loc(i);
-    
+
                     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
                     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
                     let command = parser
@@ -247,7 +243,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                             error: e,
                         })?
                         .unwrap(); // The only error that can occur is EOF, but we already skip whitespace
-    
+
                     current_script.script.commands.push(command);
                 } else {
                     return Err(RunscriptParseErrorData::IllegalCommandLocation {

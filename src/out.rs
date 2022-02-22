@@ -56,9 +56,7 @@ pub fn file_parse_err(
                 output_stream,
                 loc,
                 &script,
-                format!(
-                    "Multiple definitions of `{t}`"
-                ),
+                format!("Multiple definitions of `{t}`"),
             );
             emit_error(
                 output_stream,
@@ -84,12 +82,7 @@ pub fn file_parse_err(
             );
         }
         RunscriptParseErrorData::OldParseError { location, data } => {
-            emit_error(
-                output_stream,
-                location,
-                &script,
-                data.clone(),
-            )
+            emit_error(output_stream, location, &script, data.clone())
         }
     }
 }
@@ -337,9 +330,7 @@ fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter<String>)
         Parameter::Dash => write!(lock, "-").expect("Failed to write"),
         Parameter::Dollar => write!(lock, "$").expect("Failed to write"),
         Parameter::Bang => write!(lock, "!").expect("Failed to write"),
-        Parameter::Positional(n) if *n < 10 => {
-            write!(lock, "{}", n).expect("Failed to write")
-        }
+        Parameter::Positional(n) if *n < 10 => write!(lock, "{}", n).expect("Failed to write"),
         Parameter::Positional(n) => write!(lock, "{{{}}}", n).expect("Failed to write"),
         Parameter::Var(v) => write!(lock, "{}", v).expect("Failed to write"),
     }
@@ -402,11 +393,7 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
             format!(
                 "signal {signal} ({}){}",
                 sigstr.to_string_lossy(),
-                if core {
-                    " - core dumped"
-                } else {
-                    ""
-                }
+                if core { " - core dumped" } else { "" }
             )
         }
     }
@@ -424,7 +411,10 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
                 } else {
                     use std::os::unix::process::ExitStatusExt;
 
-                    println!("=> {}", signal(status.signal().unwrap(), status.core_dumped()));
+                    println!(
+                        "=> {}",
+                        signal(status.signal().unwrap(), status.core_dumped())
+                    );
                 }
             }
         }
