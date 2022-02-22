@@ -83,8 +83,13 @@ pub fn file_parse_err(
                 "Illegal command location".to_owned(),
             );
         }
-        RunscriptParseErrorData::OldParseError(e) => {
-            dbg!(e);
+        RunscriptParseErrorData::OldParseError { location, data } => {
+            emit_error(
+                output_stream,
+                location,
+                &script,
+                data.clone(),
+            )
         }
     }
 }

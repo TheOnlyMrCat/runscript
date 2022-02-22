@@ -1,13 +1,10 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use conch_parser::ast::AtomicTopLevelCommand;
-use conch_parser::ast::builder::{AtomicDefaultBuilder, Newline};
+use conch_parser::ast::builder::{AtomicDefaultBuilder, Newline, Builder};
 use conch_parser::lexer::Lexer;
 use conch_parser::parse::{Parser, ParseError};
-use conch_parser::token::Token;
 use indexmap::IndexMap;
-use void::Void;
 
 use crate::parser::{RunscriptLocation, RunscriptSource};
 use crate::script::*;
@@ -55,14 +52,6 @@ pub enum RunscriptParseErrorData {
 		/// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
 		expected: String,
 	},
-	/// Found a token which is reserved for later use
-	ReservedToken {
-		location: RunscriptLocation,
-		/// The text of the token which triggered the error
-		token: String,
-		/// The reason the token is reserved
-		reason: String,
-	},
 	/// Found a name of a script which contains characters outside of `[A-Za-z_-]`
 	InvalidID {
 		location: RunscriptLocation,
@@ -75,22 +64,28 @@ pub enum RunscriptParseErrorData {
 		new_location: RunscriptLocation,
 		target_name: String,
 	},
-	/// An environment variable declaration was found in an illegal location
-	IllegalEnv {
-		location: RunscriptLocation,
-		/// The message to continue the string `"Environment variables illegal "`
-		msg: String,
-	},
     UnsupportedFeature {
         location: RunscriptLocation,
         msg: String,
     },
-    CommandParseError(ParseError<Void>),
+    CommandParseError {
+        location: RunscriptLocation,
+        error: ParseError<<AtomicDefaultBuilder<String> as Builder>::Error>,
+    }
 }
 
-impl From<ParseError<Void>> for RunscriptParseErrorData {
-    fn from(err: ParseError<Void>) -> Self {
-        RunscriptParseErrorData::CommandParseError(err)
+type NewData = crate::parser::RunscriptParseErrorData;
+
+impl From<RunscriptParseErrorData> for NewData {
+    fn from(err: RunscriptParseErrorData) -> Self {
+        match err {
+            RunscriptParseErrorData::UnexpectedEOF { location, expected } => NewData::OldParseError { location, data: format!("Unexpected EOF, expected `{expected}`") },
+            RunscriptParseErrorData::UnexpectedToken { location, found, expected } => NewData::OldParseError { location, data: format!("Unexpected token `{found}`, expected `{expected}`") },
+            RunscriptParseErrorData::InvalidID { location, found } => NewData::InvalidValue { location, expected: "alphanumeric".to_owned(), found },
+            RunscriptParseErrorData::MultipleDefinition { previous_location, new_location, target_name } => NewData::DuplicateScript { previous_location, new_location, target_name },
+            RunscriptParseErrorData::UnsupportedFeature { location, msg } => NewData::OldParseError { location, data: msg },
+            RunscriptParseErrorData::CommandParseError { location, error } => NewData::CommandParseError { location, error },
+        }
     }
 }
 
@@ -162,7 +157,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 		(i, '$') => {
 			let (special, bk) = consume_word(&mut context.iterator);
 
-			if matches!(bk, BreakCondition::EOF) {
+			if matches!(bk, BreakCondition::Eof) {
 				return Err(RunscriptParseErrorData::UnexpectedEOF { location: context.get_loc(i + 1), expected: "include".to_owned() });
 			}
 
@@ -173,7 +168,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 				"opt" => {
 					context.runfile.options.push(consume_line(&mut context.iterator).0);
 				}
-				_ => return Err(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: special, expected: "include".to_owned() })
+				_ => return Err(RunscriptParseErrorData::UnexpectedToken { location: context.get_loc(i + 1), found: special, expected: "include` or `opt".to_owned() })
 			}
 		},
 		// Script
@@ -245,6 +240,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut
 #[cfg_attr(feature="trace", trace)]
 fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: &mut ParsingContext<T>) -> Result<Vec<AtomicTopLevelCommand<String>>, RunscriptParseErrorData> {
 	let mut cmds = Vec::new();
+    let i = context.iterator.peek().unwrap().0;
+    let start_loc = context.get_loc(i);
     let eof_loc = context.get_loc(context.runfile.source.len());
 	
     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
@@ -255,7 +252,10 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: 
                 break;
             }
         }
-        cmds.push(parser.complete_command()?.ok_or(RunscriptParseErrorData::UnexpectedEOF { location: eof_loc, expected: "#/".to_owned() })?);
+        cmds.push(parser.complete_command().map_err(|e| RunscriptParseErrorData::CommandParseError {
+            location: start_loc,
+            error: e,
+        })?.ok_or(RunscriptParseErrorData::UnexpectedEOF { location: eof_loc, expected: "#/".to_owned() })?);
     }
     
 	Ok(cmds)
@@ -265,7 +265,7 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(context: 
 #[derive(Debug)]
 enum BreakCondition {
 	Newline(usize),
-	EOF,
+	Eof,
 	Parse,
 	Punctuation(char),
 }
@@ -279,7 +279,7 @@ fn consume_word(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::
 			Some((_, ' ')) | Some((_, '\t')) => break BreakCondition::Parse,
 			Some((_, '\r')) => continue,
 			Some((_, c)) => buf.push(c),
-			None => break BreakCondition::EOF,
+			None => break BreakCondition::Eof,
 		}
 	};
 	(buf, nl)
@@ -295,7 +295,7 @@ fn consume_word_break_punctuation(iterator: &mut (impl Iterator<Item = (usize, c
 			Some((_, '\r')) => continue,
 			Some((_, c)) if brk.contains(&c) => break BreakCondition::Punctuation(c),
 			Some((_, c)) => buf.push(c),
-			None => break BreakCondition::EOF,
+			None => break BreakCondition::Eof,
 		}
 	};
 	(buf, nl)
@@ -309,7 +309,7 @@ fn consume_line(iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::
 			Some((i, '\n')) => break BreakCondition::Newline(i),
 			Some((_, '\r')) => continue,
 			Some((_, c)) => buf.push(c),
-			None => break BreakCondition::EOF, //TODO: Get an index for this
+			None => break BreakCondition::Eof, //TODO: Get an index for this
 		}
 	};
 	(buf, bk)
