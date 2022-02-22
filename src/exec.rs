@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::prelude::{RawFd, ExitStatusExt};
+use std::os::unix::prelude::{ExitStatusExt, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
@@ -224,7 +224,11 @@ impl WaitableProcess {
                 let pid = Pid::from_raw(process.id() as i32);
                 kill(pid, Signal::SIGHUP).unwrap();
                 FinishedProcess {
-                    status: ProcessExit::NixStatus(WaitStatus::Signaled(pid, Signal::SIGHUP, false)),
+                    status: ProcessExit::NixStatus(WaitStatus::Signaled(
+                        pid,
+                        Signal::SIGHUP,
+                        false,
+                    )),
                     stdout: vec![],
                     stderr: vec![],
                 }
@@ -232,7 +236,11 @@ impl WaitableProcess {
             OngoingProcess::Reentrant { pid, .. } => {
                 kill(pid, Signal::SIGHUP).unwrap();
                 FinishedProcess {
-                    status: ProcessExit::NixStatus(WaitStatus::Signaled(pid, Signal::SIGHUP, false)),
+                    status: ProcessExit::NixStatus(WaitStatus::Signaled(
+                        pid,
+                        Signal::SIGHUP,
+                        false,
+                    )),
                     stdout: vec![],
                     stderr: vec![],
                 }
@@ -891,9 +899,12 @@ impl ShellContext {
                         }
                     }
                     Redirect::Heredoc(fd, word) => {
-                        let mut file = tempfile::tempfile().map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        let mut file = tempfile::tempfile()
+                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         for word in word {
-                            file.write_all(word.as_bytes()).map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                            file.write_all(word.as_bytes())
+                                .map_err(|e| CommandExecError::BadRedirect { err: e })?;
+                            //TODO: Handle errors
                         }
                         match fd {
                             None | Some(0) => stdin = StdioRepr::from(file),
@@ -901,9 +912,11 @@ impl ShellContext {
                             Some(2) => stderr = StdioRepr::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
-                    },
+                    }
                     Redirect::DupRead(_fd, _) => return Err(CommandExecError::UnsupportedRedirect),
-                    Redirect::DupWrite(_fd, _) => return Err(CommandExecError::UnsupportedRedirect),
+                    Redirect::DupWrite(_fd, _) => {
+                        return Err(CommandExecError::UnsupportedRedirect)
+                    }
                 }
             }
 
@@ -935,7 +948,8 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(0),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe().map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
+                            let (read, write) = nix::unistd::pipe()
+                                .map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
                             child_stdin = Some(write);
                             Some(read)
                         }
@@ -946,7 +960,8 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(1),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe().map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
+                            let (read, write) = nix::unistd::pipe()
+                                .map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
                             child_stdout = Some(read);
                             Some(write)
                         }
@@ -957,7 +972,8 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(2),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe().map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
+                            let (read, write) = nix::unistd::pipe()
+                                .map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
                             child_stderr = Some(read);
                             Some(write)
                         }
@@ -979,7 +995,8 @@ impl ShellContext {
                                     let _ = unsafe {
                                         // SAFETY: child_stdin has been take()n, so no other code might assume it exists.
                                         File::from_raw_fd(write_fd)
-                                    }.write_all(&buffer); //TODO: Do I need to worry about an error here?
+                                    }
+                                    .write_all(&buffer); //TODO: Do I need to worry about an error here?
                                 }
                             }
 
@@ -1200,7 +1217,9 @@ impl ShellContext {
             ParameterSubstitution::Arith(_) => todo!(),
             ParameterSubstitution::Default(null_is_unset, parameter, default) => {
                 let parameter = self.evaluate_parameter(parameter, config);
-                if parameter.is_empty() || (*null_is_unset && parameter.len() == 1 && parameter[0].is_empty()) {
+                if parameter.is_empty()
+                    || (*null_is_unset && parameter.len() == 1 && parameter[0].is_empty())
+                {
                     if let Some(word) = default {
                         self.evaluate_tl_word(word, config)?
                     } else {
@@ -1209,7 +1228,7 @@ impl ShellContext {
                 } else {
                     parameter
                 }
-            },
+            }
             ParameterSubstitution::Assign(_, _, _) => todo!(),
             ParameterSubstitution::Error(_, _, _) => todo!(),
             ParameterSubstitution::Alternative(_, _, _) => todo!(),

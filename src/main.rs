@@ -18,9 +18,9 @@ use parser::RunscriptSource;
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod exec;
+mod old_parser;
 mod out;
 mod parser;
-mod old_parser;
 mod script;
 
 use script::{Runscript, Script};
@@ -135,23 +135,50 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             arg!(-c --command <COMMAND> "Execute a command")
                 .required(false)
                 .value_hint(ValueHint::CommandString)
-                .conflicts_with_all(&["file", "old-format", "list", "target", "args", "build", "run", "test"])
+                .conflicts_with_all(&[
+                    "file",
+                    "old-format",
+                    "list",
+                    "target",
+                    "args",
+                    "build",
+                    "run",
+                    "test",
+                ]),
         )
-        .arg(arg!(-f --file <FILE> "Explicitly specify a script file to run").required(false).value_hint(ValueHint::FilePath))
+        .arg(
+            arg!(-f --file <FILE> "Explicitly specify a script file to run")
+                .required(false)
+                .value_hint(ValueHint::FilePath),
+        )
         .arg(arg!(-'1' --"old-format" "Use the old format to parse the script file"))
-        .arg(arg!(-l --list "List targets in the script file").conflicts_with_all(&["build", "run", "test"]))
-        .arg(arg!(--color <WHEN>).possible_values(&["auto", "always", "ansi", "never"]).required(false).default_value("auto"))
+        .arg(
+            arg!(-l --list "List targets in the script file")
+                .conflicts_with_all(&["build", "run", "test"]),
+        )
+        .arg(
+            arg!(--color <WHEN>)
+                .possible_values(&["auto", "always", "ansi", "never"])
+                .required(false)
+                .default_value("auto"),
+        )
         .arg(arg!(-b --build "Shorthand for `--phase build`").conflicts_with_all(&["run", "test"]))
         .arg(arg!(-r --run "Shorthand for `--phase run`").conflicts_with_all(&["test"]))
         .arg(arg!(-t --test "Shorthand for `--phase test`"));
 
     let options = match app.try_get_matches_from_mut(context.args) {
         Ok(m) => m,
-        Err(clap::Error { kind: clap::ErrorKind::DisplayHelp, .. }) => {
+        Err(clap::Error {
+            kind: clap::ErrorKind::DisplayHelp,
+            ..
+        }) => {
             app.print_help().expect("Failed to print clap help");
             return exitcode::OK;
         }
-        Err(clap::Error { kind: clap::ErrorKind::DisplayVersion, .. }) => {
+        Err(clap::Error {
+            kind: clap::ErrorKind::DisplayVersion,
+            ..
+        }) => {
             println!("Runscript {}", VERSION);
             print!("{}", VERSION_TEXT); // VERSION_TEXT contains a newline already
             return exitcode::OK;
@@ -164,10 +191,14 @@ pub fn run(context: BaseExecContext) -> ExitCode {
 
     let config = {
         let mut config = Config::new();
-        config.set_default("file.names", vec!["run", ".run"]).unwrap();
+        config
+            .set_default("file.names", vec!["run", ".run"])
+            .unwrap();
         config.set_default("colors.commands.enabled", true).unwrap();
         config.set_default("colors.phases.enabled", true).unwrap();
-        if std::env::var_os("\x52\x55\x4E\x53\x43\x52\x49\x50\x54\x5F\x54\x52\x41\x4E\x53").is_some() {
+        if std::env::var_os("\x52\x55\x4E\x53\x43\x52\x49\x50\x54\x5F\x54\x52\x41\x4E\x53")
+            .is_some()
+        {
             config.set_default("colors.phases.build", 6).unwrap();
             config.set_default("colors.phases.run", 13).unwrap();
             config.set_default("colors.phases.test", 7).unwrap();
@@ -201,7 +232,12 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 use winapi::um::{combaseapi, knownfolders, shlobj, shtypes, winbase, winnt};
 
                 let mut path_ptr: winnt::PWSTR = ptr::null_mut();
-                let result = shlobj::SHGetKnownFolderPath(&knownfolders::FOLDERID_LocalAppData, 0, ptr::null_mut(), &mut path_ptr);
+                let result = shlobj::SHGetKnownFolderPath(
+                    &knownfolders::FOLDERID_LocalAppData,
+                    0,
+                    ptr::null_mut(),
+                    &mut path_ptr,
+                );
                 if result == winerror::S_OK {
                     let len = winbase::lstrlenW(path_ptr) as usize;
                     let path = slice::from_raw_parts(path_ptr, len);
@@ -229,7 +265,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     if !config.get_bool("dev.panic").unwrap_or(false) {
         std::panic::set_hook(Box::new(panic_hook));
     }
-    
+
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => {
@@ -249,7 +285,12 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     output_stream: Some(output_stream),
                     working_directory: &cwd,
                     script_path: None,
-                    positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
+                    positional_args: options
+                        .values_of("args")
+                        .into_iter()
+                        .flatten()
+                        .map(ToOwned::to_owned)
+                        .collect(),
                     old_format: false,
                 };
 
@@ -263,24 +304,28 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             }
         }
     } else {
-        let runfile = match select_file(&options, &config, &context.current_file, &cwd, &output_stream) {
+        let runfile = match select_file(
+            &options,
+            &config,
+            &context.current_file,
+            &cwd,
+            &output_stream,
+        ) {
             Ok(runfile) => runfile,
             Err(code) => return code,
         };
 
-        match if options.is_present("old-format") || context.old_format { 
-            old_parser::parse_runscript(runfile.clone()).map_err(|e| {
-                parser::RunscriptParseError {
-                    script: e.script,
-                    data: e.data.into(),
-                }
+        match if options.is_present("old-format") || context.old_format {
+            old_parser::parse_runscript(runfile.clone()).map_err(|e| parser::RunscriptParseError {
+                script: e.script,
+                data: e.data.into(),
             })
         } else {
             parser::parse_runscript(runfile.clone())
         } {
             Ok(rf) => {
                 if options.is_present("list") {
-                    let mut longest_target = rf
+                    let longest_target = rf
                         .scripts
                         .targets
                         .keys()
@@ -290,43 +335,10 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         })
                         .max()
                         .unwrap_or(0);
-                    for include in &rf.includes {
-                        longest_target = std::cmp::max(
-                            longest_target,
-                            include
-                                .runscript
-                                .scripts
-                                .targets
-                                .keys()
-                                .map(|s| match s.as_str() {
-                                    "" => "default".len(),
-                                    s => s.len(),
-                                })
-                                .max()
-                                .unwrap_or(0),
-                        );
-                    }
 
                     let mut lock = output_stream.lock();
 
                     list_scripts_for(&mut lock, &config, longest_target, &rf);
-
-                    fn recursive_list_includes(
-                        lock: &mut termcolor::StandardStreamLock,
-                        config: &Config,
-                        name_length: usize,
-                        runscript: &Runscript,
-                    ) {
-                        for include in &runscript.includes {
-                            writeln!(lock).expect("Failed to write");
-                            writeln!(lock, "From {}:", include.runscript.name)
-                                .expect("Failed to write");
-                            list_scripts_for(lock, config, name_length, &include.runscript);
-                            recursive_list_includes(lock, config, name_length, &include.runscript);
-                        }
-                    }
-
-                    recursive_list_includes(&mut lock, &config, longest_target, &rf);
 
                     return exitcode::OK;
                 }
@@ -335,7 +347,12 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     output_stream: Some(output_stream.clone()),
                     working_directory: &runfile.dir,
                     script_path: Some(runfile.path),
-                    positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
+                    positional_args: options
+                        .values_of("args")
+                        .into_iter()
+                        .flatten()
+                        .map(ToOwned::to_owned)
+                        .collect(),
                     old_format: options.is_present("old-format") || context.old_format,
                 };
 
@@ -357,12 +374,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 } {
                     Some((name, scripts)) => {
                         if let Some(script) = scripts.get(phase) {
-                            out::phase_message(
-                                &output_stream,
-                                &config,
-                                phase,
-                                name,
-                            );
+                            out::phase_message(&output_stream, &config, phase, name);
                             exec_script(script, &exec_cfg).unwrap();
                             exitcode::OK
                         } else {
@@ -388,7 +400,13 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     }
 }
 
-fn select_file(options: &ArgMatches, config: &Config, context_file: &Option<PathBuf>, cwd: &Path, output_stream: &StandardStream) -> Result<RunscriptSource, ExitCode> {
+fn select_file(
+    options: &ArgMatches,
+    config: &Config,
+    context_file: &Option<PathBuf>,
+    cwd: &Path,
+    output_stream: &StandardStream,
+) -> Result<RunscriptSource, ExitCode> {
     match options.value_of("file") {
         Some(file) => {
             let path = std::fs::canonicalize(file).map_err(|err| {
@@ -401,37 +419,39 @@ fn select_file(options: &ArgMatches, config: &Config, context_file: &Option<Path
             })?;
             let dir = path.parent().unwrap_or_else(|| Path::new("")).to_owned();
             Ok(RunscriptSource { path, source, dir })
-        },
-        None => {
-            match context_file {
-                Some(file) => {
-                    let source = std::fs::read_to_string(&file).map_err(|err| {
-                        out::file_read_err(output_stream, err);
-                        exitcode::NOINPUT
-                    })?;
-                    let dir = file.parent().unwrap_or_else(|| Path::new("")).to_owned();
-                    Ok(RunscriptSource { path: file.clone(), source, dir })
-                }
-                None => {
-                    let file_names: Vec<String> = config.get("file.names").unwrap();
-                
-                    for path in cwd.ancestors() {
-                        for file in &file_names {
-                            let runfile_path = path.join(file);
-                            if let Ok(s) = std::fs::read_to_string(&runfile_path) {
-                                return Ok(RunscriptSource {
-                                    path: runfile_path,
-                                    source: s,
-                                    dir: path.to_owned(),
-                                });
-                            }
+        }
+        None => match context_file {
+            Some(file) => {
+                let source = std::fs::read_to_string(&file).map_err(|err| {
+                    out::file_read_err(output_stream, err);
+                    exitcode::NOINPUT
+                })?;
+                let dir = file.parent().unwrap_or_else(|| Path::new("")).to_owned();
+                Ok(RunscriptSource {
+                    path: file.clone(),
+                    source,
+                    dir,
+                })
+            }
+            None => {
+                let file_names: Vec<String> = config.get("file.names").unwrap();
+
+                for path in cwd.ancestors() {
+                    for file in &file_names {
+                        let runfile_path = path.join(file);
+                        if let Ok(s) = std::fs::read_to_string(&runfile_path) {
+                            return Ok(RunscriptSource {
+                                path: runfile_path,
+                                source: s,
+                                dir: path.to_owned(),
+                            });
                         }
                     }
-                    out::no_runfile_err(output_stream);
-                    Err(exitcode::NOINPUT)
                 }
+                out::no_runfile_err(output_stream);
+                Err(exitcode::NOINPUT)
             }
-        }
+        },
     }
 }
 
@@ -441,22 +461,21 @@ fn list_scripts_for(
     name_length: usize,
     runscript: &Runscript,
 ) {
-    if let Some(default_script) =
-        runscript.scripts.targets.get("")
-    {
+    if let Some(default_script) = runscript.scripts.targets.get("") {
         print_phase_list(lock, config, "default", name_length, default_script);
     }
 
-    for (target, map) in
-        runscript
-            .scripts
-            .targets
-            .iter()
-            .filter_map(|(target, map)| if target.is_empty() {
+    for (target, map) in runscript
+        .scripts
+        .targets
+        .iter()
+        .filter_map(|(target, map)| {
+            if target.is_empty() {
                 None
             } else {
                 Some((target, map))
-            })
+            }
+        })
     {
         print_phase_list(lock, config, target, name_length, map);
     }
@@ -534,7 +553,7 @@ fn print_phase_list(
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
     }
-    
+
     for phase in target.keys() {
         if phase == "test" || phase == "build" || phase == "run" {
             continue;
@@ -546,12 +565,7 @@ fn print_phase_list(
                 .set_fg(Some(out::phase_color(config, phase))),
         )
         .expect("Failed to set colour");
-        write!(
-            lock,
-            "{}",
-            phase
-        )
-        .expect("Failed to write");
+        write!(lock, "{}", phase).expect("Failed to write");
     }
     lock.reset().expect("Failed to reset colour");
     writeln!(lock).expect("Failed to write");

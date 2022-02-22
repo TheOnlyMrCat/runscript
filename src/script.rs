@@ -12,8 +12,6 @@ pub struct Runscript {
     pub name: String,
     /// The source of the runscript for emitting errors
     pub source: String,
-    /// The runscripts this runscript includes.
-    pub includes: Vec<RunscriptInclude>,
     /// The scripts this runscript declares
     pub scripts: Scripts,
     /// Runtime options to change the behaviour of the interpreter
@@ -44,29 +42,11 @@ pub struct Script {
 }
 
 impl Runscript {
-    pub fn unwind_fileid(&self, id: &[usize]) -> Option<&Runscript> {
-        if id.is_empty() {
-            Some(self)
-        } else {
-            let mut file_ref = self;
-            for index in id {
-                file_ref = &file_ref.includes.get(*index)?.runscript;
-            }
-            Some(file_ref)
-        }
-    }
-
     pub fn get_default_target(&self) -> Option<(&String, &HashMap<String, Script>)> {
-        self
-            .scripts
-            .targets
-            .get_index(0)
+        self.scripts.targets.get_index(0)
     }
 
     pub fn get_target(&self, target: &str) -> Option<(&String, &HashMap<String, Script>)> {
-        self
-            .scripts
-            .targets
-            .get_key_value(target)
+        self.scripts.targets.get_key_value(target)
     }
 }
