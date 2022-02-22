@@ -100,6 +100,7 @@ fn main() {
         old_format: false,
         args: env::args().skip(1).collect::<Vec<String>>(),
         current_file: None,
+        current_target: None,
     };
 
     loop {
@@ -285,6 +286,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     output_stream: Some(output_stream),
                     working_directory: &cwd,
                     script_path: None,
+                    target_name: None,
                     positional_args: options
                         .values_of("args")
                         .into_iter()
@@ -343,19 +345,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     return exitcode::OK;
                 }
 
-                let exec_cfg = ExecConfig {
-                    output_stream: Some(output_stream.clone()),
-                    working_directory: &runfile.dir,
-                    script_path: Some(runfile.path),
-                    positional_args: options
-                        .values_of("args")
-                        .into_iter()
-                        .flatten()
-                        .map(ToOwned::to_owned)
-                        .collect(),
-                    old_format: options.is_present("old-format") || context.old_format,
-                };
-
                 let target = options.value_of("target").unwrap_or("");
                 let (target, phase) = target.split_once(':').unwrap_or_else(|| {
                     if options.is_present("build") {
@@ -368,11 +357,28 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 });
 
                 match if target.is_empty() {
-                    rf.get_default_target()
+                    match context.current_target {
+                        Some(ref target) => rf.get_target(target),
+                        None => rf.get_default_target()
+                    }
                 } else {
                     rf.get_target(target)
                 } {
                     Some((name, scripts)) => {
+                        let exec_cfg = ExecConfig {
+                            output_stream: Some(output_stream.clone()),
+                            working_directory: &runfile.dir,
+                            script_path: Some(runfile.path),
+                            target_name: Some(name),
+                            positional_args: options
+                                .values_of("args")
+                                .into_iter()
+                                .flatten()
+                                .map(ToOwned::to_owned)
+                                .collect(),
+                            old_format: options.is_present("old-format") || context.old_format,
+                        };
+
                         if let Some(script) = scripts.get(phase) {
                             out::phase_message(&output_stream, &config, phase, name);
                             exec_script(script, &exec_cfg).unwrap();
