@@ -265,7 +265,7 @@ pub fn run(args: &[String]) -> ExitCode {
             old_parser::parse_runscript(runfile.clone()).map_err(|e| {
                 parser::RunscriptParseError {
                     script: e.script,
-                    data: parser::RunscriptParseErrorData::OldParseError(e.data),
+                    data: e.data.into(),
                 }
             })
         } else {

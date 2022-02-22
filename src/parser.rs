@@ -67,7 +67,10 @@ pub enum RunscriptParseErrorData {
     IllegalCommandLocation {
         location: RunscriptLocation,
     },
-    OldParseError(crate::old_parser::RunscriptParseErrorData),
+    OldParseError {
+        location: RunscriptLocation,
+        data: String,
+    },
 }
 
 #[derive(Debug)]
