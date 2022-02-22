@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use clap::{arg, ArgMatches, ValueHint};
 use config::Config;
+use exec::BaseExecContext;
 use exitcode::ExitCode;
 
 use parser::RunscriptSource;
@@ -95,16 +96,21 @@ you ran it on.
 }
 
 fn main() {
-    let mut args = env::args().skip(1).collect::<Vec<String>>();
+    let mut context = BaseExecContext {
+        old_format: false,
+        args: env::args().skip(1).collect::<Vec<String>>(),
+        current_file: None,
+    };
+
     loop {
         match std::panic::catch_unwind(|| {
-            let output = run(&args);
+            let output = run(context);
             std::process::exit(output);
         }) {
             Ok(_) => unreachable!(),
-            Err(panic) => match panic.downcast::<Vec<String>>() {
-                Ok(new_args) => {
-                    args = *new_args;
+            Err(panic) => match panic.downcast::<BaseExecContext>() {
+                Ok(new_context) => {
+                    context = *new_context;
                 }
                 Err(payload) => {
                     std::panic::resume_unwind(payload);
@@ -114,7 +120,7 @@ fn main() {
     }
 }
 
-pub fn run(args: &[String]) -> ExitCode {
+pub fn run(context: BaseExecContext) -> ExitCode {
     let mut app = clap::App::new("run")
         .about("Project script manager and executor")
         .version(VERSION)
@@ -139,7 +145,7 @@ pub fn run(args: &[String]) -> ExitCode {
         .arg(arg!(-r --run "Shorthand for `--phase run`").conflicts_with_all(&["test"]))
         .arg(arg!(-t --test "Shorthand for `--phase test`"));
 
-    let options = match app.try_get_matches_from_mut(args) {
+    let options = match app.try_get_matches_from_mut(context.args) {
         Ok(m) => m,
         Err(clap::Error { kind: clap::ErrorKind::DisplayHelp, .. }) => {
             app.print_help().expect("Failed to print clap help");
@@ -242,6 +248,7 @@ pub fn run(args: &[String]) -> ExitCode {
                 let exec_cfg = ExecConfig {
                     output_stream: Some(output_stream),
                     working_directory: &cwd,
+                    script_path: None,
                     positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
                     old_format: false,
                 };
@@ -256,12 +263,12 @@ pub fn run(args: &[String]) -> ExitCode {
             }
         }
     } else {
-        let runfile = match select_file(&options, &config, &cwd, &output_stream) {
+        let runfile = match select_file(&options, &config, &context.current_file, &cwd, &output_stream) {
             Ok(runfile) => runfile,
             Err(code) => return code,
         };
 
-        match if options.is_present("old-format") { 
+        match if options.is_present("old-format") || context.old_format { 
             old_parser::parse_runscript(runfile.clone()).map_err(|e| {
                 parser::RunscriptParseError {
                     script: e.script,
@@ -327,8 +334,9 @@ pub fn run(args: &[String]) -> ExitCode {
                 let exec_cfg = ExecConfig {
                     output_stream: Some(output_stream.clone()),
                     working_directory: &runfile.dir,
+                    script_path: Some(runfile.path),
                     positional_args: options.values_of("args").into_iter().flatten().map(ToOwned::to_owned).collect(),
-                    old_format: options.is_present("old-format"),
+                    old_format: options.is_present("old-format") || context.old_format,
                 };
 
                 let target = options.value_of("target").unwrap_or("");
@@ -380,7 +388,7 @@ pub fn run(args: &[String]) -> ExitCode {
     }
 }
 
-fn select_file(options: &ArgMatches, config: &Config, cwd: &Path, output_stream: &StandardStream) -> Result<RunscriptSource, ExitCode> {
+fn select_file(options: &ArgMatches, config: &Config, context_file: &Option<PathBuf>, cwd: &Path, output_stream: &StandardStream) -> Result<RunscriptSource, ExitCode> {
     match options.value_of("file") {
         Some(file) => {
             let path = std::fs::canonicalize(file).map_err(|err| {
@@ -395,22 +403,34 @@ fn select_file(options: &ArgMatches, config: &Config, cwd: &Path, output_stream:
             Ok(RunscriptSource { path, source, dir })
         },
         None => {
-            let file_names: Vec<String> = config.get("file.names").unwrap();
-        
-            for path in cwd.ancestors() {
-                for file in &file_names {
-                    let runfile_path = path.join(file);
-                    if let Ok(s) = std::fs::read_to_string(&runfile_path) {
-                        return Ok(RunscriptSource {
-                            path: runfile_path,
-                            source: s,
-                            dir: path.to_owned(),
-                        });
+            match context_file {
+                Some(file) => {
+                    let source = std::fs::read_to_string(&file).map_err(|err| {
+                        out::file_read_err(output_stream, err);
+                        exitcode::NOINPUT
+                    })?;
+                    let dir = file.parent().unwrap_or_else(|| Path::new("")).to_owned();
+                    Ok(RunscriptSource { path: file.clone(), source, dir })
+                }
+                None => {
+                    let file_names: Vec<String> = config.get("file.names").unwrap();
+                
+                    for path in cwd.ancestors() {
+                        for file in &file_names {
+                            let runfile_path = path.join(file);
+                            if let Ok(s) = std::fs::read_to_string(&runfile_path) {
+                                return Ok(RunscriptSource {
+                                    path: runfile_path,
+                                    source: s,
+                                    dir: path.to_owned(),
+                                });
+                            }
+                        }
                     }
+                    out::no_runfile_err(output_stream);
+                    Err(exitcode::NOINPUT)
                 }
             }
-            out::no_runfile_err(output_stream);
-            Err(exitcode::NOINPUT)
         }
     }
 }

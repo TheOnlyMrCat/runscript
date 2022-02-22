@@ -32,12 +32,20 @@ pub struct ExecConfig<'a> {
     pub output_stream: Option<Arc<termcolor::StandardStream>>,
     /// The working directory to execute the script's commands in
     pub working_directory: &'a Path,
+    /// The path to the script file being executed
+    pub script_path: Option<PathBuf>,
     /// Positional arguments to pass to the script.
     ///
     ///The first argument replaces `$1`, the second replaces `$2`, etc.
     pub positional_args: Vec<String>,
     /// Pass the -1 flag on to recursive `run` calls
     pub old_format: bool,
+}
+
+pub struct BaseExecContext {
+    pub old_format: bool,
+    pub current_file: Option<PathBuf>,
+    pub args: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -1006,14 +1014,15 @@ impl ShellContext {
                                 std::env::set_var(k, v);
                             }
 
-                            let mut command_words = command_words;
-                            if config.old_format {
-                                command_words[0] = "--old-format".to_owned();
-                            } else {
-                                command_words.remove(0);
-                            }
+                            let mut args = command_words;
+                            args.remove(0);
+                            let recursive_context = BaseExecContext {
+                                args,
+                                current_file: config.script_path.to_owned(),
+                                old_format: config.old_format,
+                            };
                             // resume_unwind so as to not invoke the panic hook.
-                            std::panic::resume_unwind(Box::new(command_words));
+                            std::panic::resume_unwind(Box::new(recursive_context));
                         }
                         Err(e) => Err(CommandExecError::CommandFailed {
                             err: std::io::Error::from_raw_os_error(e as i32),
