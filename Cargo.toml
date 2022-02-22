@@ -1,6 +1,6 @@
 [package]
 name = "runscript"
-version = "2.0.0-beta.1"
+version = "2.0.0-beta.2"
 description = "Project execution script manager"
 license = "MIT"
 readme = "README.md"
