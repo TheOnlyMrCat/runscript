@@ -161,6 +161,7 @@ pub fn command_prompt(
         AtomicTopLevelWord<String>,
         Redirect<AtomicTopLevelWord<String>>,
     >,
+    env_remaps: &[(String, String)],
     redirects: &[Redirect<Vec<String>>],
     evaluated: &[Vec<String>],
 ) {
@@ -176,7 +177,6 @@ pub fn command_prompt(
         .expect("Failed to set colour");
     for (word, evaluated) in words.zip(evaluated.iter()) {
         let word_contents = print_tl_word(&mut lock, word);
-        lock.reset().expect("Failed to reset colour");
         let evaluated_contents = evaluated.join(" ");
         //? Should perhaps compare in the other direction: split the word contents
         if word_contents != evaluated_contents {
@@ -188,25 +188,28 @@ pub fn command_prompt(
             )
             .expect("Failed to set colour");
             write!(lock, "={}", evaluated_contents).expect("Failed to write");
-            lock.reset().expect("Failed to reset colour");
         }
+        lock.reset().expect("Failed to reset colour");
         write!(lock, " ").expect("Failed to write");
     }
-    if !redirects.is_empty() {
+    if !redirects.is_empty() || !env_remaps.is_empty() {
         writeln!(lock).expect("Failed to write");
         write!(lock, "-- ").expect("Failed to write");
+        for (key, value) in env_remaps {
+            write!(lock, "{}={} ", key, value).expect("Failed to write");
+        }
         for redirect in redirects {
             match redirect {
-                Redirect::Read(fd, file) => write!(lock, "{}<{}", fd.unwrap_or(0), file.join(" ")),
-                Redirect::Write(fd, file) => write!(lock, "{}>{}", fd.unwrap_or(1), file.join(" ")),
+                Redirect::Read(fd, file) => write!(lock, "{}<{} ", fd.unwrap_or(0), file.join(" ")),
+                Redirect::Write(fd, file) => write!(lock, "{}>{} ", fd.unwrap_or(1), file.join(" ")),
                 Redirect::ReadWrite(fd, file) => {
-                    write!(lock, "{}<>{}", fd.unwrap_or(0), file.join(" "))
+                    write!(lock, "{}<>{} ", fd.unwrap_or(0), file.join(" "))
                 }
                 Redirect::Append(fd, file) => {
-                    write!(lock, "{}>>{}", fd.unwrap_or(1), file.join(" "))
+                    write!(lock, "{}>>{} ", fd.unwrap_or(1), file.join(" "))
                 }
                 Redirect::Clobber(fd, file) => {
-                    write!(lock, "{}>|{}", fd.unwrap_or(1), file.join(" "))
+                    write!(lock, "{}>|{} ", fd.unwrap_or(1), file.join(" "))
                 }
                 Redirect::Heredoc(fd, _) => {
                     write!(lock, "{}<", fd.unwrap_or(0)).expect("Failed to write");
@@ -216,7 +219,7 @@ pub fn command_prompt(
                             .set_fg(Some(Color::Black)),
                     )
                     .expect("Failed to set colour");
-                    write!(lock, "(heredoc)").expect("Failed to write");
+                    write!(lock, "(heredoc) ").expect("Failed to write");
                     lock.reset()
                 }
                 Redirect::DupRead(_fd, _) => todo!(),
@@ -335,6 +338,13 @@ fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter<String>)
         Parameter::Var(v) => write!(lock, "{}", v).expect("Failed to write"),
     }
     "$\u{0}".to_owned()
+}
+
+pub fn env_remaps(output_stream: &StandardStream, remaps: &[(String, String)]) {
+    let mut lock = output_stream.lock();
+    for (k, v) in remaps {
+        write!(lock, "{k}={v} ").expect("Failed to write");
+    }
 }
 
 fn emit_error(
