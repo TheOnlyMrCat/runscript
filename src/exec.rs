@@ -808,7 +808,7 @@ impl ShellContext {
                 .collect::<Result<Vec<_>, _>>()?;
 
             if let Some(ref output_stream) = config.output_stream {
-                out::command_prompt(output_stream, command, &redirects, &command_words);
+                out::command_prompt(output_stream, command, &env_remaps, &redirects, &command_words);
             }
 
             let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
@@ -1072,10 +1072,15 @@ impl ShellContext {
                 }
             }
         } else {
+            if let Some(ref output_stream) = config.output_stream {
+                out::env_remaps(output_stream, &env_remaps);
+            }
+            
             self.vars.reserve(env_remaps.len());
             for (key, value) in env_remaps {
                 self.vars.insert(key, value);
             }
+
             Ok(WaitableProcess::empty_success())
         }
     }
