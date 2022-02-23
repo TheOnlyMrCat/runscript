@@ -22,6 +22,7 @@ mod old_parser;
 mod out;
 mod parser;
 mod script;
+mod config;
 
 use script::{Runscript, Script};
 
@@ -122,94 +123,7 @@ fn main() {
 }
 
 pub fn run(context: BaseExecContext) -> ExitCode {
-    let mut app = clap::App::new("run")
-        .about("Project script manager and executor")
-        .version(VERSION)
-        .author("TheOnlyMrCat")
-        .setting(clap::AppSettings::NoBinaryName)
-        .setting(clap::AppSettings::TrailingVarArg)
-        .setting(clap::AppSettings::DeriveDisplayOrder)
-        .override_usage("run [OPTIONS] [TARGET:PHASE] [--] [ARGS]")
-        .arg(arg!([target] "Target to run in the script").hide(true))
-        .arg(arg!([args] ... "Arguments to pass to the script").hide(true))
-        .arg(
-            arg!(-c --command <COMMAND> "Execute a command")
-                .required(false)
-                .value_hint(ValueHint::CommandString)
-                .conflicts_with_all(&[
-                    "file",
-                    "old-format",
-                    "list",
-                    "target",
-                    "args",
-                    "build",
-                    "run",
-                    "test",
-                ]),
-        )
-        .arg(
-            arg!(-f --file <FILE> "Explicitly specify a script file to run")
-                .required(false)
-                .value_hint(ValueHint::FilePath),
-        )
-        .arg(arg!(-'1' --"old-format" "Use the old format to parse the script file"))
-        .arg(
-            arg!(-l --list "List targets in the script file")
-                .conflicts_with_all(&["build", "run", "test"]),
-        )
-        .arg(
-            arg!(--color <WHEN>)
-                .possible_values(&["auto", "always", "ansi", "never"])
-                .required(false)
-                .default_value("auto"),
-        )
-        .arg(arg!(-b --build "Shorthand for `--phase build`").conflicts_with_all(&["run", "test"]))
-        .arg(arg!(-r --run "Shorthand for `--phase run`").conflicts_with_all(&["test"]))
-        .arg(arg!(-t --test "Shorthand for `--phase test`"));
-
-    let options = match app.try_get_matches_from_mut(context.args) {
-        Ok(m) => m,
-        Err(clap::Error {
-            kind: clap::ErrorKind::DisplayHelp,
-            ..
-        }) => {
-            app.print_help().expect("Failed to print clap help");
-            return exitcode::OK;
-        }
-        Err(clap::Error {
-            kind: clap::ErrorKind::DisplayVersion,
-            ..
-        }) => {
-            println!("Runscript {}", VERSION);
-            print!("{}", VERSION_TEXT); // VERSION_TEXT contains a newline already
-            return exitcode::OK;
-        }
-        Err(x) => {
-            x.print().expect("Failed to write clap error");
-            return exitcode::USAGE;
-        }
-    };
-
     let config = {
-        let mut config = Config::new();
-        config
-            .set_default("file.names", vec!["run", ".run"])
-            .unwrap();
-        config.set_default("colors.commands.enabled", true).unwrap();
-        config.set_default("colors.phases.enabled", true).unwrap();
-        if std::env::var_os("\x52\x55\x4E\x53\x43\x52\x49\x50\x54\x5F\x54\x52\x41\x4E\x53")
-            .is_some()
-        {
-            config.set_default("colors.phases.build", 6).unwrap();
-            config.set_default("colors.phases.run", 13).unwrap();
-            config.set_default("colors.phases.test", 7).unwrap();
-        } else {
-            config.set_default("colors.phases.build", 1).unwrap();
-            config.set_default("colors.phases.run", 4).unwrap();
-            config.set_default("colors.phases.test", 2).unwrap();
-        }
-        config.set_default("dev.panic", false).unwrap();
-
         // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
         // or $HOME/.config/runscript/config.toml on unix.
         // It is at {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
@@ -253,19 +167,104 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         }
         if let Some(config_dir) = config_dir {
             let config_file = config_dir.join("config.toml");
-            if config_file.exists() {
-                let _ = config.merge(config::File::from(config_dir.join("config.toml")));
+            if let Ok(contents) = std::fs::read_to_string(&config_file) {
+                match toml::from_str(&contents) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        let stderr = StandardStream::stderr(ColorChoice::Auto);
+                        let mut stderr = stderr.lock();
+                        let _ = stderr.set_color(
+                            ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)),
+                        );
+                        let _ = writeln!(
+                            stderr,
+                            "Warning: Failed to parse config file at `{}`",
+                            config_file.display(),
+                        );
+                        let _ = stderr.reset();
+                        let _ = writeln!(stderr, "{}", e);
+                        Config::default()
+                    }
+                }
+            } else {
+                Config::default()
+            }
+        } else {
+            Config::default()
+        }
+    };
+
+    if !config.dev.panic {
+        std::panic::set_hook(Box::new(panic_hook));
+    }
+
+    let mut app = clap::Command::new("run")
+        .about("Project script manager and executor")
+        .version(VERSION)
+        .author("TheOnlyMrCat")
+        .no_binary_name(true)
+        .trailing_var_arg(true)
+        .setting(clap::AppSettings::DeriveDisplayOrder)
+        .override_usage("run [OPTIONS] [TARGET:PHASE] [--] [ARGS]")
+        .arg(arg!([target] "Target to run in the script").hide(true))
+        .arg(arg!([args] ... "Arguments to pass to the script").hide(true))
+        .arg(
+            arg!(-c --command <COMMAND> "Execute a command")
+                .required(false)
+                .value_hint(ValueHint::CommandString)
+                .conflicts_with_all(&[
+                    "file",
+                    "old-format",
+                    "list",
+                    "target",
+                    "args",
+                    "build",
+                    "run",
+                    "test",
+                ]),
+        )
+        .arg(
+            arg!(-f --file <FILE> "Explicitly specify a script file to run")
+                .required(false)
+                .value_hint(ValueHint::FilePath),
+        )
+        .arg(arg!(-'1' --"old-format" "Use the old format to parse the script file"))
+        .arg(
+            arg!(-l --list "List targets in the script file")
+                .conflicts_with_all(&["build", "run", "test"]),
+        )
+        .arg(
+            arg!(--color <WHEN>)
+                .possible_values(&["auto", "always", "ansi", "never"])
+                .required(false)
+                .default_value("auto"),
+        )
+        .arg(arg!(-b --build "Shorthand for `--phase build`").conflicts_with_all(&["run", "test"]))
+        .arg(arg!(-r --run "Shorthand for `--phase run`").conflicts_with_all(&["test"]))
+        .arg(arg!(-t --test "Shorthand for `--phase test`"));
+
+    let options = match app.try_get_matches_from_mut(context.args) {
+        Ok(m) => m,
+        Err(err) => {
+            match err.kind() {
+                clap::ErrorKind::DisplayHelp => {
+                    app.print_help().expect("Failed to print clap help");
+                    return exitcode::OK;
+                }
+                clap::ErrorKind::DisplayVersion => {
+                    println!("Runscript {}", VERSION);
+                    print!("{}", VERSION_TEXT); // VERSION_TEXT contains a newline already
+                    return exitcode::OK;
+                }
+                _ => {
+                    err.print().expect("Failed to write clap error");
+                    return exitcode::USAGE;
+                }
             }
         }
-        let _ = config.merge(config::Environment::with_prefix("RUNSCRIPT").separator("_"));
-        config
     };
 
     let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
-
-    if !config.get_bool("dev.panic").unwrap_or(false) {
-        std::panic::set_hook(Box::new(panic_hook));
-    }
 
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
@@ -440,10 +439,8 @@ fn select_file(
                 })
             }
             None => {
-                let file_names: Vec<String> = config.get("file.names").unwrap();
-
                 for path in cwd.ancestors() {
-                    for file in &file_names {
+                    for file in &config.file.names {
                         let runfile_path = path.join(file);
                         if let Ok(s) = std::fs::read_to_string(&runfile_path) {
                             return Ok(RunscriptSource {
