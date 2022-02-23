@@ -14,7 +14,7 @@ name = "run"
 path = "src/main.rs"
 
 [dependencies]
-clap = "3.0"
+clap = "3.1"
 termcolor = "1.1"
 atty = "0.2"
 conch-parser = "0.1"
@@ -22,8 +22,9 @@ indexmap = "1.7"
 itertools = "0.10.1"
 glob = "0.3.0"
 exitcode = "1.1"
-config = { version = "0.11", features = ["toml"] } # TODO: Implement it myself
 tempfile = "3.3.0"
+serde = { version = "1.0.136", features = ["derive"] }
+toml = "0.5.8"
 
 # Panic handling
 uuid = { version = "0.8", features = ["v4"], default-features = false }

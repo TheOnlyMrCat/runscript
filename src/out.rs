@@ -4,9 +4,9 @@ use conch_parser::ast::{
     AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, Redirect, RedirectOrCmdWord,
     SimpleCommand, SimpleWord, Word,
 };
-use config::Config;
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
+use crate::config::Config;
 use crate::exec::AtomicSimpleWord;
 // use crate::exec::CommandExecError;
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
@@ -119,22 +119,8 @@ pub fn bad_script_phase(output_stream: &StandardStream) {
 }
 
 pub fn phase_color(config: &Config, phase: &str) -> Color {
-    let colours = config.get_table("colors.phases").unwrap();
-    if colours
-        .get("enabled")
-        .and_then(|value| value.clone().into_bool().ok())
-        .unwrap_or(false)
-    {
-        match colours.get(phase) {
-            Some(value) => {
-                if let Ok(i) = value.clone().into_int() {
-                    Color::Ansi256(i as u8)
-                } else {
-                    Color::White
-                }
-            }
-            None => Color::White,
-        }
+    if config.colours.enabled {
+        config.colours.phases.get(phase).copied().unwrap_or(Color::White)
     } else {
         Color::White
     }
