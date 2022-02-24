@@ -2,10 +2,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::str::CharIndices;
 
-use conch_parser::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
-use conch_parser::ast::AtomicTopLevelCommand;
-use conch_parser::lexer::Lexer;
-use conch_parser::parse::{ParseError, Parser};
+use crate::shell::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
+use crate::shell::ast::AtomicTopLevelCommand;
+use crate::shell::lexer::Lexer;
+use crate::shell::parse::{ParseError, Parser, CommandGroupDelimiters};
 use indexmap::IndexMap;
 
 use crate::script::*;
@@ -60,9 +60,7 @@ pub enum RunscriptParseErrorData {
         target_name: String,
     },
     CommandParseError {
-        location: RunscriptLocation,
-        /// Detail of the error
-        error: ParseError<<DefaultBuilder<String> as Builder>::Error>,
+        error: ParseError,
     },
     IllegalCommandLocation {
         location: RunscriptLocation,
@@ -71,6 +69,12 @@ pub enum RunscriptParseErrorData {
         location: RunscriptLocation,
         data: String,
     },
+}
+
+impl From<ParseError> for RunscriptParseErrorData {
+    fn from(error: ParseError) -> Self {
+        RunscriptParseErrorData::CommandParseError { error }
+    }
 }
 
 #[derive(Debug)]
@@ -145,6 +149,12 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
             data,
         }),
     }
+}
+
+pub fn parse_shell(source: RunscriptSource) -> Result<Vec<AtomicTopLevelCommand<String>>, RunscriptParseErrorData> {
+    let lexer = Lexer::new(source.source.chars());
+    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+    Ok(parser.command_group(CommandGroupDelimiters::default()).map(|group| group.commands)?)
 }
 
 fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
@@ -239,7 +249,6 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     let command = parser
                         .complete_command()
                         .map_err(|e| RunscriptParseErrorData::CommandParseError {
-                            location: command_pos,
                             error: e,
                         })?
                         .unwrap(); // The only error that can occur is EOF, but we already skip whitespace
@@ -269,7 +278,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 
 pub fn parse_command(
     command: &str,
-) -> Result<AtomicTopLevelCommand<String>, ParseError<<DefaultBuilder<String> as Builder>::Error>> {
+) -> Result<AtomicTopLevelCommand<String>, ParseError> {
     let lexer = Lexer::new(command.chars());
     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
     parser.complete_command().map(Option::unwrap)

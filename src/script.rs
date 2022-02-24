@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use conch_parser::ast::AtomicTopLevelCommand;
+use crate::shell::ast::AtomicTopLevelCommand;
 use indexmap::IndexMap;
 
 use crate::parser::RunscriptLocation;

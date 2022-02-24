@@ -22,6 +22,7 @@ mod old_parser;
 mod out;
 mod parser;
 mod script;
+mod shell;
 mod config;
 
 use script::{Runscript, Script};
