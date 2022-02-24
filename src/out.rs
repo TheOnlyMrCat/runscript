@@ -7,7 +7,7 @@ use conch_parser::ast::{
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 use crate::config::Config;
-use crate::exec::AtomicSimpleWord;
+use crate::exec::{AtomicSimpleWord, ProcessExit};
 // use crate::exec::CommandExecError;
 use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
 use crate::script::Runscript;
@@ -348,7 +348,7 @@ fn emit_error(
     .expect("Failed to write");
 }
 
-pub fn process_finish(status: &crate::exec::ProcessExit) {
+pub fn process_finish(status: &ProcessExit) {
     extern "C" {
         fn strsignal(sig: std::os::raw::c_int) -> *const std::os::raw::c_char;
     }
@@ -395,26 +395,34 @@ pub fn process_finish(status: &crate::exec::ProcessExit) {
     }
 
     match status {
-        crate::exec::ProcessExit::Bool(b) => {
+        ProcessExit::Bool(b) => {
             if !*b {
                 println!("=> exit 1");
             }
         }
-        crate::exec::ProcessExit::StdStatus(status) => {
+        ProcessExit::StdStatus(status) => {
             if !status.success() {
                 if let Some(c) = status.code() {
                     println!("=> {}", code(c));
                 } else {
-                    use std::os::unix::process::ExitStatusExt;
-
-                    println!(
-                        "=> {}",
-                        signal(status.signal().unwrap(), status.core_dumped())
-                    );
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+    
+                        println!(
+                            "=> {}",
+                            signal(status.signal().unwrap(), status.core_dumped())
+                        );
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        println!("=> exit");
+                    }
                 }
             }
         }
-        crate::exec::ProcessExit::NixStatus(status) => match status {
+        #[cfg(unix)]
+        ProcessExit::NixStatus(status) => match status {
             nix::sys::wait::WaitStatus::Exited(_, c) => {
                 if *c != 0 {
                     println!("=> {}", code(*c));

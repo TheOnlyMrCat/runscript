@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::prelude::{ExitStatusExt, RawFd};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
@@ -13,10 +12,10 @@ use conch_parser::ast::{
     Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
     RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word,
 };
-use glob::{glob_with, MatchOptions, Pattern, PatternError};
 use itertools::Itertools;
 
 use crate::{out, Script};
+use glob::{glob_with, MatchOptions, Pattern, PatternError};
 
 type AtomicParameterSubstitution = ParameterSubstitution<
     Parameter<String>,
@@ -55,6 +54,7 @@ pub struct BaseExecContext {
 pub enum ProcessExit {
     Bool(bool),
     StdStatus(ExitStatus),
+    #[cfg(unix)]
     NixStatus(nix::sys::wait::WaitStatus),
 }
 
@@ -99,6 +99,7 @@ impl ProcessExit {
         match self {
             ProcessExit::Bool(b) => *b,
             ProcessExit::StdStatus(s) => s.success(),
+            #[cfg(unix)]
             ProcessExit::NixStatus(s) => matches!(s, nix::sys::wait::WaitStatus::Exited(_, 0)),
         }
     }
@@ -113,6 +114,8 @@ impl ProcessExit {
             ProcessExit::StdStatus(s) => s.code().unwrap_or_else(|| {
                 #[cfg(unix)]
                 {
+                    use std::os::unix::prelude::ExitStatusExt;
+
                     s.signal().map(|s| 128 + s as i32).unwrap()
                 }
                 #[cfg(not(unix))]
@@ -120,6 +123,7 @@ impl ProcessExit {
                     panic!()
                 }
             }),
+            #[cfg(unix)]
             ProcessExit::NixStatus(s) => match s {
                 nix::sys::wait::WaitStatus::Exited(_, code) => *code,
                 nix::sys::wait::WaitStatus::Signaled(_, sig, _) => 128 + *sig as i32,
@@ -131,11 +135,12 @@ impl ProcessExit {
 
 enum OngoingProcess {
     Concurrent(Child),
+    #[cfg(unix)]
     Reentrant {
         pid: nix::unistd::Pid,
-        stdin: Option<RawFd>,
-        stdout: Option<RawFd>,
-        stderr: Option<RawFd>,
+        stdin: Option<std::os::unix::prelude::RawFd>,
+        stdout: Option<std::os::unix::prelude::RawFd>,
+        stderr: Option<std::os::unix::prelude::RawFd>,
     },
     Finished(FinishedProcess),
 }
@@ -147,6 +152,7 @@ impl OngoingProcess {
                 Some(stdout) => PipeInput::Pipe(stdout.into()),
                 None => PipeInput::None,
             },
+            #[cfg(unix)]
             OngoingProcess::Reentrant { stdout, .. } => match stdout {
                 Some(stdout) => PipeInput::Pipe((*stdout).into()),
                 None => PipeInput::None,
@@ -169,11 +175,12 @@ impl WaitableProcess {
         }
     }
 
+    #[cfg(unix)]
     fn reentrant_nightmare(
         pid: nix::unistd::Pid,
-        stdin: Option<RawFd>,
-        stdout: Option<RawFd>,
-        stderr: Option<RawFd>,
+        stdin: Option<std::os::unix::prelude::RawFd>,
+        stdout: Option<std::os::unix::prelude::RawFd>,
+        stderr: Option<std::os::unix::prelude::RawFd>,
     ) -> WaitableProcess {
         WaitableProcess {
             process: OngoingProcess::Reentrant {
@@ -207,6 +214,7 @@ impl WaitableProcess {
     fn pid(&self) -> i32 {
         match &self.process {
             OngoingProcess::Concurrent(p) => p.id() as i32,
+            #[cfg(unix)]
             OngoingProcess::Reentrant { pid, .. } => pid.as_raw(),
             OngoingProcess::Finished(_) => 0,
         }
@@ -252,9 +260,25 @@ impl WaitableProcess {
         }
     }
 
-    #[cfg(windows)]
+    #[cfg(not(unix))]
     fn hup(mut self) -> FinishedProcess {
-        todo!()
+        for job in self.associated_jobs {
+            job.hup();
+        }
+
+        match self.process {
+            OngoingProcess::Concurrent(process) => {
+                let pid = process.id() as i32;
+                let _ = process.kill();
+                let status = process.wait().unwrap();
+                FinishedProcess {
+                    status: ProcessExit::StdStatus(status),
+                    stdout: vec![],
+                    stderr: vec![],
+                }
+            }
+            OngoingProcess::Finished(proc) => proc,
+        }
     }
 
     fn wait(self) -> FinishedProcess {
@@ -286,6 +310,7 @@ impl WaitableProcess {
                     stderr,
                 }
             }
+            #[cfg(unix)]
             OngoingProcess::Reentrant {
                 pid,
                 stdin,
