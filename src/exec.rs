@@ -6,7 +6,7 @@ use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
 use std::sync::Arc;
 
-use conch_parser::ast::{
+use crate::shell::ast::{
     AndOr, Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
     AtomicTopLevelWord, ComplexWord, CompoundCommandKind, GuardBodyPair, ListableCommand,
     Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
@@ -526,7 +526,7 @@ impl ShellContext {
         commands: &[AtomicTopLevelCommand<String>],
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
-        use conch_parser::ast::Command;
+        use crate::shell::ast::Command;
 
         let mut jobs = vec![];
 

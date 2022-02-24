@@ -1,6 +1,6 @@
 use std::io::Write;
 
-use conch_parser::ast::{
+use crate::shell::ast::{
     AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, Redirect, RedirectOrCmdWord,
     SimpleCommand, SimpleWord, Word,
 };
@@ -39,7 +39,7 @@ pub fn file_parse_err(
         } => {
             emit_error(
                 output_stream,
-                loc,
+                Some(loc),
                 &script,
                 format!(
                     "Invalid identifier; found `{}` but expected `{}`",
@@ -54,21 +54,21 @@ pub fn file_parse_err(
         } => {
             emit_error(
                 output_stream,
-                loc,
+                Some(loc),
                 &script,
                 format!("Multiple definitions of `{t}`"),
             );
             emit_error(
                 output_stream,
-                prev,
+                Some(prev),
                 &script,
                 "Previous definition is here".to_owned(),
             );
         }
-        RunscriptParseErrorData::CommandParseError { location, error } => {
+        RunscriptParseErrorData::CommandParseError { error } => {
             emit_error(
                 output_stream,
-                location,
+                None,
                 &script,
                 format!("Error parsing command: {}", error),
             );
@@ -76,13 +76,13 @@ pub fn file_parse_err(
         RunscriptParseErrorData::IllegalCommandLocation { location } => {
             emit_error(
                 output_stream,
-                location,
+                Some(location),
                 &script,
                 "Illegal command location".to_owned(),
             );
         }
         RunscriptParseErrorData::OldParseError { location, data } => {
-            emit_error(output_stream, location, &script, data.clone())
+            emit_error(output_stream, Some(location), &script, data.clone())
         }
     }
 }
@@ -335,15 +335,21 @@ pub fn env_remaps(output_stream: &StandardStream, remaps: &[(String, String)]) {
 
 fn emit_error(
     output_stream: &StandardStream,
-    location: &RunscriptLocation,
+    location: Option<&RunscriptLocation>,
     script: &Runscript,
     error_msg: String,
 ) {
     let mut lock = output_stream.lock();
     writeln!(
         lock,
-        "{}({}:{}): {}",
-        script.name, location.line, location.column, error_msg
+        "{}{}: {}",
+        script.name,
+        if let Some(location) = location {
+            format!("({},{})", location.line, location.column)
+        } else {
+            "".to_owned()
+        },
+        error_msg
     )
     .expect("Failed to write");
 }

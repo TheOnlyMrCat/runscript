@@ -1,7 +1,7 @@
-use conch_parser::ast::builder::{AtomicDefaultBuilder, Builder, Newline};
-use conch_parser::ast::AtomicTopLevelCommand;
-use conch_parser::lexer::Lexer;
-use conch_parser::parse::{ParseError, Parser};
+use crate::shell::ast::builder::{AtomicDefaultBuilder, Newline};
+use crate::shell::ast::AtomicTopLevelCommand;
+use crate::shell::lexer::Lexer;
+use crate::shell::parse::{ParseError, Parser};
 use indexmap::IndexMap;
 
 use crate::parser::{RunscriptLocation, RunscriptSource};
@@ -56,8 +56,7 @@ pub enum RunscriptParseErrorData {
         msg: String,
     },
     CommandParseError {
-        location: RunscriptLocation,
-        error: ParseError<<AtomicDefaultBuilder<String> as Builder>::Error>,
+        error: ParseError,
     },
 }
 
@@ -100,8 +99,8 @@ impl From<RunscriptParseErrorData> for NewData {
                     data: msg,
                 }
             }
-            RunscriptParseErrorData::CommandParseError { location, error } => {
-                NewData::CommandParseError { location, error }
+            RunscriptParseErrorData::CommandParseError { error } => {
+                NewData::CommandParseError { error }
             }
         }
     }
@@ -314,7 +313,6 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 ) -> Result<Vec<AtomicTopLevelCommand<String>>, RunscriptParseErrorData> {
     let mut cmds = Vec::new();
     let i = context.iterator.peek().unwrap().0;
-    let start_loc = context.get_loc(i);
     let eof_loc = context.get_loc(context.runfile.source.len());
 
     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
@@ -329,7 +327,6 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
             parser
                 .complete_command()
                 .map_err(|e| RunscriptParseErrorData::CommandParseError {
-                    location: start_loc,
                     error: e,
                 })?
                 .ok_or(RunscriptParseErrorData::UnexpectedEOF {
