@@ -517,7 +517,7 @@ struct ShellContext {
     /// PID of most recent job
     pid: i32,
     /// Exit code of most recent top-level command
-    exit_code: i32, //TODO: This will always be 0...
+    exit_code: i32, //TODO: This will always be 0. Perhaps an option to have the script keep going even after errors?
 }
 
 impl ShellContext {
@@ -543,7 +543,9 @@ impl ShellContext {
                     jobs.push(proc);
                 } else {
                     let finished = proc.wait();
-                    self.exit_code = finished.status.code();
+                    if !finished.status.success() {
+                        return Ok(WaitableProcess::finished(finished));
+                    }
                 }
             }
         }
