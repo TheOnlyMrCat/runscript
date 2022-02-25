@@ -19,9 +19,11 @@ FOO='bar' echo ${FOO-No foo}
 FOO='bar' printenv FOO
 FOO='bar'
 echo ${FOO-No foo}
-printenv FOO
+printenv FOO || :
 export FOO
 printenv FOO
+source source.sh
+printenv ENV_VAR
 
 [exit]
 run nonexistent-target 2>/dev/null || :

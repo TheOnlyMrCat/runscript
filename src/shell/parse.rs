@@ -120,8 +120,6 @@ pub enum ParseError {
 }
 
 impl Error for ParseError {
-    // FIXME(breaking): change this to be `source`, breaking because it
-    // would require a new 'static bound on T
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         None
     }
