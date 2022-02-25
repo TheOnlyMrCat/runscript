@@ -6,6 +6,7 @@ use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
 use std::sync::Arc;
 
+use crate::parser::RunscriptSource;
 use crate::shell::ast::{
     AndOr, Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
     AtomicTopLevelWord, ComplexWord, CompoundCommandKind, GuardBodyPair, ListableCommand,
@@ -970,6 +971,17 @@ impl ShellContext {
                         self.env.insert(name.to_string(), self.vars[name].clone());
                         Ok(WaitableProcess::empty_success())
                     }
+                }
+                "source" => {
+                    let file = config.working_directory.join(&command_words[1]);
+                    let source = RunscriptSource {
+                        source: std::fs::read_to_string(&file).map_err(|e| CommandExecError::CommandFailed { err: e })?,
+                        path: file,
+                        dir: config.working_directory.to_owned(),
+                    };
+
+                    let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
+                    self.exec_script_entries(&shell_file, config)
                 }
                 #[cfg(unix)]
                 "run" => {
