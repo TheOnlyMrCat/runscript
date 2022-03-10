@@ -120,7 +120,12 @@ pub fn bad_script_phase(output_stream: &StandardStream) {
 
 pub fn phase_color(config: &Config, phase: &str) -> Color {
     if config.colours.enabled {
-        config.colours.phases.get(phase).copied().unwrap_or(Color::White)
+        config
+            .colours
+            .phases
+            .get(phase)
+            .copied()
+            .unwrap_or(Color::White)
     } else {
         Color::White
     }
@@ -187,7 +192,9 @@ pub fn command_prompt(
         for redirect in redirects {
             match redirect {
                 Redirect::Read(fd, file) => write!(lock, "{}<{} ", fd.unwrap_or(0), file.join(" ")),
-                Redirect::Write(fd, file) => write!(lock, "{}>{} ", fd.unwrap_or(1), file.join(" ")),
+                Redirect::Write(fd, file) => {
+                    write!(lock, "{}>{} ", fd.unwrap_or(1), file.join(" "))
+                }
                 Redirect::ReadWrite(fd, file) => {
                     write!(lock, "{}<>{} ", fd.unwrap_or(0), file.join(" "))
                 }
@@ -414,7 +421,7 @@ pub fn process_finish(status: &ProcessExit) {
                     #[cfg(unix)]
                     {
                         use std::os::unix::process::ExitStatusExt;
-    
+
                         println!(
                             "=> {}",
                             signal(status.signal().unwrap(), status.core_dumped())

@@ -326,9 +326,7 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
         cmds.push(
             parser
                 .complete_command()
-                .map_err(|e| RunscriptParseErrorData::CommandParseError {
-                    error: e,
-                })?
+                .map_err(|e| RunscriptParseErrorData::CommandParseError { error: e })?
                 .ok_or(RunscriptParseErrorData::UnexpectedEOF {
                     location: eof_loc,
                     expected: "#/".to_owned(),

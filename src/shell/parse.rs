@@ -1936,9 +1936,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `for` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `for` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn for_command(
-        &mut self,
-    ) -> ParseResult<builder::ForFragments<B::Word, B::Command>> {
+    pub fn for_command(&mut self) -> ParseResult<builder::ForFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[FOR])
             .map_err(|_| self.make_unexpected_err())?;
@@ -2032,9 +2030,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `case` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `case` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn case_command(
-        &mut self,
-    ) -> ParseResult<builder::CaseFragments<B::Word, B::Command>> {
+    pub fn case_command(&mut self) -> ParseResult<builder::CaseFragments<B::Word, B::Command>> {
         let start_pos = self.iter.pos();
 
         macro_rules! missing_in {
@@ -2158,9 +2154,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses a single function declaration if present. If no function is present,
     /// nothing is consumed from the token stream.
-    pub fn maybe_function_declaration(
-        &mut self,
-    ) -> ParseResult<Option<B::PipeableCommand>> {
+    pub fn maybe_function_declaration(&mut self) -> ParseResult<Option<B::PipeableCommand>> {
         if self.peek_reserved_word(&[FUNCTION]).is_some() {
             return self.function_declaration().map(Some);
         }
