@@ -5,7 +5,7 @@ use std::str::CharIndices;
 use crate::shell::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
 use crate::shell::ast::AtomicTopLevelCommand;
 use crate::shell::lexer::Lexer;
-use crate::shell::parse::{ParseError, Parser, CommandGroupDelimiters};
+use crate::shell::parse::{CommandGroupDelimiters, ParseError, Parser};
 use indexmap::IndexMap;
 
 use crate::script::*;
@@ -151,10 +151,14 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
     }
 }
 
-pub fn parse_shell(source: RunscriptSource) -> Result<Vec<AtomicTopLevelCommand<String>>, RunscriptParseErrorData> {
+pub fn parse_shell(
+    source: RunscriptSource,
+) -> Result<Vec<AtomicTopLevelCommand<String>>, RunscriptParseErrorData> {
     let lexer = Lexer::new(source.source.chars());
     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
-    Ok(parser.command_group(CommandGroupDelimiters::default()).map(|group| group.commands)?)
+    Ok(parser
+        .command_group(CommandGroupDelimiters::default())
+        .map(|group| group.commands)?)
 }
 
 fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
@@ -248,9 +252,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
                     let command = parser
                         .complete_command()
-                        .map_err(|e| RunscriptParseErrorData::CommandParseError {
-                            error: e,
-                        })?
+                        .map_err(|e| RunscriptParseErrorData::CommandParseError { error: e })?
                         .unwrap(); // The only error that can occur is EOF, but we already skip whitespace
 
                     current_script.script.commands.push(command);
@@ -276,9 +278,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     Ok(())
 }
 
-pub fn parse_command(
-    command: &str,
-) -> Result<AtomicTopLevelCommand<String>, ParseError> {
+pub fn parse_command(command: &str) -> Result<AtomicTopLevelCommand<String>, ParseError> {
     let lexer = Lexer::new(command.chars());
     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
     parser.complete_command().map(Option::unwrap)

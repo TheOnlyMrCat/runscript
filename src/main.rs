@@ -17,13 +17,13 @@ use exitcode::ExitCode;
 use parser::RunscriptSource;
 use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
+mod config;
 mod exec;
 mod old_parser;
 mod out;
 mod parser;
 mod script;
 mod shell;
-mod config;
 
 use script::{Runscript, Script};
 
@@ -177,9 +177,8 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     Err(e) => {
                         let stderr = StandardStream::stderr(ColorChoice::Auto);
                         let mut stderr = stderr.lock();
-                        let _ = stderr.set_color(
-                            ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)),
-                        );
+                        let _ = stderr
+                            .set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)));
                         let _ = writeln!(
                             stderr,
                             "Warning: Failed to parse config file at `{}`",
@@ -362,7 +361,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 match if target.is_empty() {
                     match context.current_target {
                         Some(ref target) => rf.get_target(target),
-                        None => rf.get_default_target()
+                        None => rf.get_default_target(),
                     }
                 } else {
                     rf.get_target(target)

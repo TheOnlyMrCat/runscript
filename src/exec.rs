@@ -561,7 +561,7 @@ impl ShellContext {
                     last_proc.associated_jobs = jobs;
                     last_proc.associated_jobs.push(proc);
                     Ok(last_proc)
-                },
+                }
                 Command::List(list) => {
                     let mut last_proc = self.exec_andor_list(list, config, false)?;
                     last_proc.associated_jobs = jobs;
@@ -850,7 +850,13 @@ impl ShellContext {
                 .collect::<Result<Vec<_>, _>>()?;
 
             if let Some(ref output_stream) = config.output_stream {
-                out::command_prompt(output_stream, command, &env_remaps, &redirects, &command_words);
+                out::command_prompt(
+                    output_stream,
+                    command,
+                    &env_remaps,
+                    &redirects,
+                    &command_words,
+                );
             }
 
             let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
@@ -986,7 +992,8 @@ impl ShellContext {
                 "source" => {
                     let file = config.working_directory.join(&command_words[1]);
                     let source = RunscriptSource {
-                        source: std::fs::read_to_string(&file).map_err(|e| CommandExecError::CommandFailed { err: e })?,
+                        source: std::fs::read_to_string(&file)
+                            .map_err(|e| CommandExecError::CommandFailed { err: e })?,
                         path: file,
                         dir: config.working_directory.to_owned(),
                     };
@@ -1129,7 +1136,7 @@ impl ShellContext {
             if let Some(ref output_stream) = config.output_stream {
                 out::env_remaps(output_stream, &env_remaps);
             }
-            
+
             self.vars.reserve(env_remaps.len());
             for (key, value) in env_remaps {
                 self.vars.insert(key, value);
@@ -1153,9 +1160,7 @@ impl ShellContext {
                 let is_glob = words.iter().any(|w| !matches!(w, GlobPart::Words(_)));
                 if is_glob {
                     let working_dir_path = {
-                        let mut path = Pattern::escape(
-                            &config.working_directory.to_string_lossy(),
-                        );
+                        let mut path = Pattern::escape(&config.working_directory.to_string_lossy());
                         path.push('/');
                         path
                     };
@@ -1197,7 +1202,10 @@ impl ShellContext {
                         Ok(matches)
                     }
                 } else {
-                    Ok(vec![words.into_iter().flat_map(GlobPart::into_string).join("")])
+                    Ok(vec![words
+                        .into_iter()
+                        .flat_map(GlobPart::into_string)
+                        .join("")])
                 }
             }
             ComplexWord::Single(word) => {

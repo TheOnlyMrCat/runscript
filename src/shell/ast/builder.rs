@@ -9,7 +9,9 @@
 //! the `Builder` trait for your AST. Otherwise you can provide the `DefaultBuilder`
 //! struct to the parser if you wish to use the default AST implementation.
 
-use crate::shell::ast::{AndOr, DefaultArithmetic, DefaultParameter, RedirectOrCmdWord, RedirectOrEnvVar};
+use crate::shell::ast::{
+    AndOr, DefaultArithmetic, DefaultParameter, RedirectOrCmdWord, RedirectOrEnvVar,
+};
 
 mod default_builder;
 
@@ -559,17 +561,11 @@ macro_rules! impl_builder_body {
             (**self).comments(comments)
         }
 
-        fn word(
-            &mut self,
-            kind: ComplexWordKind<Self::Command>,
-        ) -> Self::Word {
+        fn word(&mut self, kind: ComplexWordKind<Self::Command>) -> Self::Word {
             (**self).word(kind)
         }
 
-        fn redirect(
-            &mut self,
-            kind: RedirectKind<Self::Word>,
-        ) -> Self::Redirect {
+        fn redirect(&mut self, kind: RedirectKind<Self::Word>) -> Self::Redirect {
             (**self).redirect(kind)
         }
     };

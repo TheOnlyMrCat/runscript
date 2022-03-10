@@ -654,26 +654,19 @@ where
             }
         };
 
-        let mut map_word = |kind| {
-            match kind {
-                WordKind::Simple(s) => Word::Simple(map_simple(s)),
-                WordKind::SingleQuoted(s) => Word::SingleQuoted(s.into()),
-                WordKind::DoubleQuoted(v) => Word::DoubleQuoted(
-                    v.into_iter()
-                        .map(&mut map_simple)
-                        .collect::<Vec<_>>(),
-                ),
+        let mut map_word = |kind| match kind {
+            WordKind::Simple(s) => Word::Simple(map_simple(s)),
+            WordKind::SingleQuoted(s) => Word::SingleQuoted(s.into()),
+            WordKind::DoubleQuoted(v) => {
+                Word::DoubleQuoted(v.into_iter().map(&mut map_simple).collect::<Vec<_>>())
             }
         };
 
         let word = match compress(kind) {
             ComplexWordKind::Single(s) => ComplexWord::Single(map_word(s)),
-            ComplexWordKind::Concat(words) => ComplexWord::Concat(
-                words
-                    .into_iter()
-                    .map(map_word)
-                    .collect::<Vec<_>>(),
-            ),
+            ComplexWordKind::Concat(words) => {
+                ComplexWord::Concat(words.into_iter().map(map_word).collect::<Vec<_>>())
+            }
         };
 
         word.into()
