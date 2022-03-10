@@ -29,7 +29,7 @@ printenv ENV_VAR
 run nonexistent-target 2>/dev/null || :
 
 [recursive]
-run ':alt'
+run :alt
 
 [recursive:alt]
 echo 'Hello from :alt'
