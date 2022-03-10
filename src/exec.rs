@@ -496,7 +496,7 @@ pub fn exec_script(
     script: &Script,
     config: &ExecConfig,
 ) -> Result<FinishedProcess, CommandExecError> {
-    Ok(ShellContext {
+    let proc = ShellContext {
         working_directory: config.working_directory.to_owned(),
         vars: HashMap::new(),
         env: HashMap::new(),
@@ -504,7 +504,9 @@ pub fn exec_script(
         exit_code: 0,
     }
     .exec_script_entries(&script.commands, config)?
-    .wait())
+    .wait();
+    out::process_finish(&proc.status);
+    Ok(proc)
 }
 
 #[derive(Debug, Clone)]
@@ -551,15 +553,24 @@ impl ShellContext {
             }
         }
 
-        // ? Should it instead keep track of the last non-job process and return that?
-        let mut last_proc = match &commands.last().unwrap().0 {
-            Command::Job(list) => self.exec_andor_list(list, config, true)?,
-            Command::List(list) => self.exec_andor_list(list, config, false)?,
-        };
-
-        last_proc.associated_jobs = jobs;
-
-        Ok(last_proc)
+        if !commands.is_empty() {
+            match &commands.last().unwrap().0 {
+                Command::Job(list) => {
+                    let proc = self.exec_andor_list(list, config, true)?;
+                    let mut last_proc = WaitableProcess::empty_success();
+                    last_proc.associated_jobs = jobs;
+                    last_proc.associated_jobs.push(proc);
+                    Ok(last_proc)
+                },
+                Command::List(list) => {
+                    let mut last_proc = self.exec_andor_list(list, config, false)?;
+                    last_proc.associated_jobs = jobs;
+                    Ok(last_proc)
+                }
+            }
+        } else {
+            Ok(WaitableProcess::empty_success())
+        }
     }
 
     fn exec_andor_list(
