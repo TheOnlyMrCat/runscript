@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "runscript"
-version = "2.0.0-beta.2"
+version = "2.0.0-beta.3"
 dependencies = [
  "atty",
  "clap",
