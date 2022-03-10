@@ -999,6 +999,9 @@ impl ShellContext {
                     };
 
                     let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
+                    if let Some(ref output_stream) = config.output_stream {
+                        writeln!(output_stream.lock()).unwrap();
+                    }
                     self.exec_script_entries(&shell_file, config)
                 }
                 #[cfg(unix)]
