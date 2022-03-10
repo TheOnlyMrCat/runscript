@@ -18,12 +18,6 @@ For an example of a useful runscript, see [the runfile for this repository](run)
 - `source`ing external script files (such as `.env` files)
 - A number of more advanced shell features
 
-### To be fixed
-
-- Arguments with `:` colons in them do not expand properly
-- The `=> exit <code>` text does not get printed if the failure of that command stops execution
-- `export FOO=bar` does not export `FOO` correctly
-
 ## How to install
 
 Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Alternatively, you can use cargo to

@@ -1150,11 +1150,11 @@ impl ShellContext {
                     .iter()
                     .map(|w| self.evaluate_word(w, config))
                     .collect::<Result<Vec<_>, _>>()?;
-                let is_glob = !words.iter().all(|w| matches!(w, GlobPart::Words(_)));
+                let is_glob = words.iter().any(|w| !matches!(w, GlobPart::Words(_)));
                 if is_glob {
                     let working_dir_path = {
                         let mut path = Pattern::escape(
-                            &config.working_directory.to_string_lossy().into_owned(),
+                            &config.working_directory.to_string_lossy(),
                         );
                         path.push('/');
                         path
@@ -1197,7 +1197,7 @@ impl ShellContext {
                         Ok(matches)
                     }
                 } else {
-                    Ok(words.into_iter().flat_map(GlobPart::into_string).collect())
+                    Ok(vec![words.into_iter().flat_map(GlobPart::into_string).join("")])
                 }
             }
             ComplexWord::Single(word) => {
