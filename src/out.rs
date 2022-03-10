@@ -422,7 +422,7 @@ pub fn process_finish(status: &ProcessExit) {
                     }
                     #[cfg(not(unix))]
                     {
-                        println!("=> exit");
+                        println!("=> exit ?");
                     }
                 }
             }
