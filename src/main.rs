@@ -127,20 +127,22 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     let config = {
         // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
         // or $HOME/.config/runscript/config.toml on unix.
-        // It is at {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
+        // It is at $RUNSCRIPT_CONFIG_DIR\config.toml or {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
         let config_dir: Option<PathBuf>;
         if let Some(dir) = env::var_os("RUNSCRIPT_CONFIG_DIR") {
-            config_dir = Some(dir.into());
-        } else if let Some(mut dir) = env::var_os("XDG_CONFIG_HOME") {
-            dir.push("/runscript");
-            config_dir = Some(dir.into());
-        } else if let Some(mut dir) = env::var_os("HOME") {
-            dir.push("/.config/runscript");
             config_dir = Some(dir.into());
         } else {
             #[cfg(unix)]
             {
-                config_dir = None;
+                if let Some(mut dir) = env::var_os("XDG_CONFIG_HOME") {
+                    dir.push("/runscript");
+                    config_dir = Some(dir.into());
+                } else if let Some(mut dir) = env::var_os("HOME") {
+                    dir.push("/.config/runscript");
+                    config_dir = Some(dir.into());
+                } else {
+                    config_dir = None;
+                }
             }
             #[cfg(windows)]
             unsafe {
@@ -162,13 +164,14 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     let path = std::slice::from_raw_parts(path_ptr, len);
                     let ostr: OsString = OsStringExt::from_wide(path);
                     combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
-                    config_dir = Some(PathBuf::from(ostr));
+                    config_dir = Some(Path::new(&ostr).join("runscript"));
                 } else {
                     combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
                     config_dir = None;
                 }
             }
         }
+
         if let Some(config_dir) = config_dir {
             let config_file = config_dir.join("config.toml");
             if let Ok(contents) = std::fs::read_to_string(&config_file) {
@@ -256,9 +259,9 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 .required(false)
                 .default_value("auto"),
         )
-        .arg(arg!(-b --build "Shorthand for `--phase build`").conflicts_with_all(&["run", "test"]))
-        .arg(arg!(-r --run "Shorthand for `--phase run`").conflicts_with_all(&["test"]))
-        .arg(arg!(-t --test "Shorthand for `--phase test`"));
+        .arg(arg!(-b --build "Shorthand for `:build`").conflicts_with_all(&["run", "test"]))
+        .arg(arg!(-r --run "Shorthand for `:run`").conflicts_with_all(&["test"]))
+        .arg(arg!(-t --test "Shorthand for `:test`"));
 
     let options = match app.try_get_matches_from_mut(context.args) {
         Ok(m) => m,
@@ -281,7 +284,13 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         }
     };
 
-    let output_stream = Arc::new(StandardStream::stderr(ColorChoice::Auto));
+    let output_stream = Arc::new(StandardStream::stderr(match options.value_of("color") {
+        Some("always") => ColorChoice::Always,
+        Some("never") => ColorChoice::Never,
+        Some("ansi") => ColorChoice::AlwaysAnsi,
+        Some("auto") => ColorChoice::Auto,
+        _ => unreachable!(),
+    }));
 
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
