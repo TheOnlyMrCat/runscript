@@ -216,18 +216,32 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 .required(false)
                 .value_hint(ValueHint::CommandString)
                 .conflicts_with_all(&[
+                    "script",
                     "file",
                     "old-format",
                     "list",
                     "target",
-                    "args",
                     "build",
                     "run",
                     "test",
                 ]),
         )
         .arg(
-            arg!(-f --file <FILE> "Explicitly specify a script file to run")
+            arg!(-s --script <FILE> "Run a shell script")
+                .required(false)
+                .value_hint(ValueHint::FilePath)
+                .conflicts_with_all(&[
+                    "file",
+                    "old-format",
+                    "list",
+                    "target",
+                    "build",
+                    "command",
+                    "test",
+                ]),
+        )
+        .arg(
+            arg!(-f --file <FILE> "Run a runscript file")
                 .required(false)
                 .value_hint(ValueHint::FilePath),
         )
@@ -298,7 +312,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     old_format: false,
                 };
 
-                exec_script(&script, &exec_cfg).unwrap();
+                exec_script(&script.commands, &exec_cfg).unwrap();
                 exitcode::OK
             }
             Err(e) => {
@@ -307,6 +321,45 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 exitcode::DATAERR
             }
         }
+    } else if let Some(script) = options.value_of("script") {
+        let script_path = PathBuf::from(script);
+
+        let script_source = match std::fs::read_to_string(&script_path) {
+            Ok(script_source) => script_source,
+            Err(e) => {
+                out::file_read_err(&output_stream, e);
+                return exitcode::NOINPUT;
+            }
+        };
+
+        let script = match parser::parse_shell(RunscriptSource {
+            dir: script_path.parent().unwrap_or(&cwd).to_path_buf(),
+            path: script_path.clone(),
+            source: script_source,
+        }) {
+            Ok(script) => script,
+            Err(e) => {
+                todo!();
+                // return exitcode::DATAERR;
+            }
+        };
+
+        let exec_cfg = ExecConfig {
+            output_stream: Some(output_stream),
+            working_directory: &cwd,
+            script_path: Some(script_path),
+            target_name: options.value_of("target"),
+            positional_args: options
+                .values_of("args")
+                .into_iter()
+                .flatten()
+                .map(ToOwned::to_owned)
+                .collect(),
+            old_format: false,
+        };
+
+        exec_script(&script, &exec_cfg).unwrap();
+        exitcode::OK
     } else {
         let runfile = match select_file(
             &options,
@@ -383,7 +436,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
 
                         if let Some(script) = scripts.get(phase) {
                             out::phase_message(&output_stream, &config, phase, name);
-                            exec_script(script, &exec_cfg).unwrap();
+                            exec_script(&script.commands, &exec_cfg).unwrap();
                             exitcode::OK
                         } else {
                             out::bad_script_phase(&output_stream);
