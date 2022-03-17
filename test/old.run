@@ -1,7 +1,7 @@
 #-
 run -b args
-run -b params
-run chain
+run -b chain
+run params
 run exit
 run redir
 #/
