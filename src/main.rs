@@ -301,7 +301,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             Ok(command) => {
                 let script = Script {
                     commands: vec![command],
-                    location: parser::RunscriptLocation { line: 0, column: 0 },
+                    line: 1,
                 };
                 let exec_cfg = ExecConfig {
                     output_stream: Some(output_stream),
@@ -420,7 +420,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         .targets
                         .keys()
                         .map(|s| match s.as_str() {
-                            "" => "default".len(),
+                            "" => "(blank)".len(),
                             s => s.len(),
                         })
                         .max()
@@ -553,22 +553,13 @@ fn list_scripts_for(
     name_length: usize,
     runscript: &Runscript,
 ) {
-    if let Some(default_script) = runscript.scripts.targets.get("") {
-        print_phase_list(lock, config, "default", name_length, default_script);
-    }
-
-    for (target, map) in runscript
-        .scripts
-        .targets
-        .iter()
-        .filter_map(|(target, map)| {
-            if target.is_empty() {
-                None
-            } else {
-                Some((target, map))
-            }
-        })
-    {
+    for (target, map) in runscript.scripts.targets.iter().map(|(target, map)| {
+        if target.is_empty() {
+            ("(blank)", map)
+        } else {
+            (target.as_ref(), map)
+        }
+    }) {
         print_phase_list(lock, config, target, name_length, map);
     }
 }
@@ -657,7 +648,7 @@ fn print_phase_list(
                 .set_fg(Some(out::phase_color(config, phase))),
         )
         .expect("Failed to set colour");
-        write!(lock, "{}", phase).expect("Failed to write");
+        write!(lock, " {}", phase).expect("Failed to write");
     }
     lock.reset().expect("Failed to reset colour");
     writeln!(lock).expect("Failed to write");

@@ -9,80 +9,57 @@ use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor
 use crate::config::Config;
 use crate::exec::{AtomicSimpleWord, ProcessExit};
 // use crate::exec::CommandExecError;
-use crate::parser::{RunscriptLocation, RunscriptParseError, RunscriptParseErrorData};
+use crate::parser::RunscriptParseError;
 use crate::script::Runscript;
 
 pub fn no_runfile_err(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "Could not find runfile to execute").expect("Failed to write");
+    writeln!(lock, "run: Could not find runfile to execute").expect("Failed to write");
 }
 
 pub fn dir_read_err(output_stream: &StandardStream, err: std::io::Error) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "Failed to access working directory: {}", err).expect("Failed to write");
+    writeln!(lock, "run: Failed to access working directory: {}", err).expect("Failed to write");
 }
 
 pub fn file_read_err(output_stream: &StandardStream, err: std::io::Error) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "Failed to read script: {}", err).expect("Failed to write");
+    writeln!(lock, "run: Failed to read script: {}", err).expect("Failed to write");
 }
 
-pub fn file_parse_err(
-    output_stream: &StandardStream,
-    RunscriptParseError { script, data }: RunscriptParseError,
-) {
-    match &data {
-        RunscriptParseErrorData::InvalidValue {
-            location: loc,
+pub fn file_parse_err(output_stream: &StandardStream, error: RunscriptParseError) {
+    let mut lock = output_stream.lock();
+    match &error {
+        RunscriptParseError::InvalidValue {
+            line,
             found,
             expected,
         } => {
-            emit_error(
-                output_stream,
-                Some(loc),
-                &script,
-                format!(
-                    "Invalid identifier; found `{}` but expected `{}`",
-                    found, expected
-                ),
-            );
+            writeln!(
+                lock,
+                "run({line}): Invalid value: {found} (expected {expected})"
+            )
+            .unwrap();
         }
-        RunscriptParseErrorData::DuplicateScript {
-            new_location: loc,
-            previous_location: prev,
+        RunscriptParseError::DuplicateScript {
+            new_line: line,
+            prev_line: prev,
             target_name: t,
         } => {
-            emit_error(
-                output_stream,
-                Some(loc),
-                &script,
-                format!("Multiple definitions of `{t}`"),
-            );
-            emit_error(
-                output_stream,
-                Some(prev),
-                &script,
-                "Previous definition is here".to_owned(),
-            );
+            writeln!(
+                lock,
+                "run({line}): Duplicate script: {t} (previously defined at {prev})"
+            )
+            .unwrap();
         }
-        RunscriptParseErrorData::CommandParseError { error } => {
-            emit_error(
-                output_stream,
-                None,
-                &script,
-                format!("Error parsing command: {}", error),
-            );
+        RunscriptParseError::CommandParseError { line, error } => {
+            writeln!(lock, "run({line}): {error}").unwrap();
         }
-        RunscriptParseErrorData::IllegalCommandLocation { location } => {
-            emit_error(
-                output_stream,
-                Some(location),
-                &script,
-                "Illegal command location".to_owned(),
-            );
+        RunscriptParseError::IllegalCommandLocation { line } => {
+            writeln!(lock, "run({line}): Illegal command location").unwrap();
         }
-        RunscriptParseErrorData::OldParseError { location, data } => {
-            emit_error(output_stream, Some(location), &script, data.clone())
+        RunscriptParseError::OldParseError { line, data } => {
+            writeln!(lock, "run({line}): {data}").unwrap();
         }
     }
 }
@@ -105,17 +82,17 @@ pub fn file_parse_err(
 
 pub fn bad_target(output_stream: &StandardStream, target: &str) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "No target with name {}", target).expect("Failed to write");
+    writeln!(lock, "run: No target with name {target}").expect("Failed to write");
 }
 
 pub fn bad_default(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "No default target").expect("Failed to write");
+    writeln!(lock, "run: No default target").expect("Failed to write");
 }
 
 pub fn bad_script_phase(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "No scripts to execute for specified phase").expect("Failed to write");
+    writeln!(lock, "run: No scripts to execute for specified phase").expect("Failed to write");
 }
 
 pub fn phase_color(config: &Config, phase: &str) -> Color {
@@ -338,27 +315,6 @@ pub fn env_remaps(output_stream: &StandardStream, remaps: &[(String, String)]) {
     for (k, v) in remaps {
         write!(lock, "{k}={v} ").expect("Failed to write");
     }
-}
-
-fn emit_error(
-    output_stream: &StandardStream,
-    location: Option<&RunscriptLocation>,
-    script: &Runscript,
-    error_msg: String,
-) {
-    let mut lock = output_stream.lock();
-    writeln!(
-        lock,
-        "{}{}: {}",
-        script.name,
-        if let Some(location) = location {
-            format!("({},{})", location.line, location.column)
-        } else {
-            "".to_owned()
-        },
-        error_msg
-    )
-    .expect("Failed to write");
 }
 
 pub fn process_finish(status: &ProcessExit) {
