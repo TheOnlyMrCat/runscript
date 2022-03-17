@@ -1,11 +1,11 @@
 [runscript:build]
-cargo build
+cargo build --all-features
 
 [runscript:run]
-cargo run -- -t -f test/run
+cargo run --all-features -- -t -f test/run
 
 [args]
-cargo run -- $@
+cargo run --all-features -- $@
 
 [no_exec]
 __run_panic
