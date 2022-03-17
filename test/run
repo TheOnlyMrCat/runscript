@@ -30,6 +30,7 @@ run nonexistent-target 2>/dev/null || :
 
 [recursive]
 run :alt
+run -s source.sh
 
 [recursive:alt]
 echo 'Hello from :alt'

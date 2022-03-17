@@ -9,8 +9,8 @@ use std::sync::Arc;
 use crate::parser::RunscriptSource;
 use crate::shell::ast::{
     AndOr, Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
-    AtomicTopLevelWord, ComplexWord, CompoundCommandKind, GuardBodyPair, ListableCommand,
-    Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
+    AtomicTopLevelWord, ComplexWord, CompoundCommand, CompoundCommandKind, GuardBodyPair,
+    ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
     RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word,
 };
 use itertools::Itertools;
@@ -25,6 +25,10 @@ type AtomicParameterSubstitution = ParameterSubstitution<
     Arithmetic<String>,
 >;
 pub type AtomicSimpleWord = SimpleWord<String, Parameter<String>, Box<AtomicParameterSubstitution>>;
+pub type AtomicCompoundCommand = CompoundCommand<
+    CompoundCommandKind<String, AtomicTopLevelWord<String>, AtomicTopLevelCommand<String>>,
+    Redirect<AtomicTopLevelWord<String>>,
+>;
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
@@ -493,17 +497,18 @@ impl From<Output> for FinishedProcess {
 }
 
 pub fn exec_script(
-    script: &Script,
+    script: &[AtomicTopLevelCommand<String>],
     config: &ExecConfig,
 ) -> Result<FinishedProcess, CommandExecError> {
     let proc = ShellContext {
         working_directory: config.working_directory.to_owned(),
         vars: HashMap::new(),
         env: HashMap::new(),
+        functions: HashMap::new(),
         pid: -1,
         exit_code: 0,
     }
-    .exec_script_entries(&script.commands, config)?
+    .exec_script_entries(script, config)?
     .wait();
     out::process_finish(&proc.status);
     Ok(proc)
@@ -517,6 +522,8 @@ struct ShellContext {
     vars: HashMap<String, String>,
     /// Exported varables
     env: HashMap<String, String>,
+    /// Function definitions
+    functions: HashMap<String, Arc<AtomicCompoundCommand>>,
     /// PID of most recent job
     pid: i32,
     /// Exit code of most recent top-level command
@@ -778,10 +785,9 @@ impl ShellContext {
                     Ok(last_proc)
                 }
             },
-            PipeableCommand::FunctionDef(_name, _body) => {
-                todo!() //TODO: What to do here?? Store it in a hashmap?
-                        // Should I even support functions at all?
-                        // Probably not, since that's kinda what I'm doing anyway.
+            PipeableCommand::FunctionDef(name, body) => {
+                self.functions.insert(name.clone(), body.clone());
+                Ok(WaitableProcess::empty_success())
             }
         }
     }
