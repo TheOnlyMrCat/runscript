@@ -103,6 +103,7 @@ fn main() {
         args: env::args().skip(1).collect::<Vec<String>>(),
         current_file: None,
         current_target: None,
+        colour_choice: ColorChoice::Auto,
     };
 
     loop {
@@ -284,13 +285,14 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         }
     };
 
-    let output_stream = Arc::new(StandardStream::stderr(match options.value_of("color") {
+    let colour_choice = match options.value_of("color") {
         Some("always") => ColorChoice::Always,
         Some("never") => ColorChoice::Never,
         Some("ansi") => ColorChoice::AlwaysAnsi,
-        Some("auto") => ColorChoice::Auto,
+        Some("auto") => context.colour_choice,
         _ => unreachable!(),
-    }));
+    };
+    let output_stream = Arc::new(StandardStream::stderr(colour_choice));
 
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
@@ -309,6 +311,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 };
                 let exec_cfg = ExecConfig {
                     output_stream: Some(output_stream),
+                    colour_choice,
                     working_directory: &cwd,
                     script_path: None,
                     target_name: None,
@@ -355,6 +358,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
 
         let exec_cfg = ExecConfig {
             output_stream: Some(output_stream),
+            colour_choice,
             working_directory: &cwd,
             script_path: Some(script_path),
             target_name: options.value_of("target"),
@@ -431,6 +435,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     Some((name, scripts)) => {
                         let exec_cfg = ExecConfig {
                             output_stream: Some(output_stream.clone()),
+                            colour_choice,
                             working_directory: &runfile.dir,
                             script_path: Some(runfile.path),
                             target_name: Some(name),

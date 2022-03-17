@@ -34,6 +34,8 @@ pub type AtomicCompoundCommand = CompoundCommand<
 pub struct ExecConfig<'a> {
     /// The output stream to output to, or `None` to produce no output
     pub output_stream: Option<Arc<termcolor::StandardStream>>,
+    /// The colour choice for the output stream
+    pub colour_choice: termcolor::ColorChoice,
     /// The working directory to execute the script's commands in
     pub working_directory: &'a Path,
     /// The path to the script file being executed
@@ -53,6 +55,7 @@ pub struct BaseExecContext {
     pub current_file: Option<PathBuf>,
     pub current_target: Option<String>,
     pub args: Vec<String>,
+    pub colour_choice: termcolor::ColorChoice,
 }
 
 #[derive(Debug)]
@@ -1107,6 +1110,7 @@ impl ShellContext {
                                 current_file: config.script_path.to_owned(),
                                 current_target: config.target_name.map(ToOwned::to_owned),
                                 old_format: config.old_format,
+                                colour_choice: config.colour_choice,
                             };
                             // resume_unwind so as to not invoke the panic hook.
                             std::panic::resume_unwind(Box::new(recursive_context));
