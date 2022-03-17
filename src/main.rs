@@ -4,7 +4,6 @@ extern crate trace;
 
 use std::collections::HashMap;
 use std::env;
-use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -36,6 +35,7 @@ Source code available at https://github.com/TheOnlyMrCat/runscript
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+#[cfg(not(feature = "dev-panic"))]
 fn panic_hook(info: &std::panic::PanicInfo) {
     let mut tries = 0;
     let report_file = loop {
@@ -201,6 +201,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         }
     };
 
+    #[cfg(not(feature = "dev-panic"))]
     if !config.dev.panic {
         std::panic::set_hook(Box::new(panic_hook));
     }
@@ -249,7 +250,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 .required(false)
                 .value_hint(ValueHint::FilePath),
         )
-        .arg(arg!(-'1' --"old-format" "Use the old format to parse the script file"))
+        .arg(arg!(-'1' --"old-format" "[old-parser] Use the old format to parse the script file"))
         .arg(
             arg!(-l --list "List targets in the script file")
                 .conflicts_with_all(&["build", "run", "test"]),
@@ -273,7 +274,17 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     return exitcode::OK;
                 }
                 clap::ErrorKind::DisplayVersion => {
-                    println!("Runscript {}", VERSION);
+                    print!("Runscript {}", VERSION);
+                    for feature in [
+                        (cfg!(feature = "old-parser"), "old-parser"),
+                        (cfg!(feature = "dev-panic"), "dev-panic"),
+                    ]
+                    .into_iter()
+                    .filter_map(|(enabled, feature)| enabled.then(|| feature))
+                    {
+                        print!(" +{}", feature);
+                    }
+                    println!();
                     print!("{}", VERSION_TEXT); // VERSION_TEXT contains a newline already
                     return exitcode::OK;
                 }
@@ -385,13 +396,24 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             Err(code) => return code,
         };
 
-        match if options.is_present("old-format") || context.old_format {
-            old_parser::parse_runscript(runfile.clone()).map_err(|e| parser::RunscriptParseError {
-                script: e.script,
-                data: e.data.into(),
-            })
-        } else {
-            parser::parse_runscript(runfile.clone())
+        match {
+            #[cfg(feature = "old-parser")]
+            {
+                if options.is_present("old-format") || context.old_format {
+                    old_parser::parse_runscript(runfile.clone()).map_err(|e| {
+                        parser::RunscriptParseError {
+                            script: e.script,
+                            data: e.data.into(),
+                        }
+                    })
+                } else {
+                    parser::parse_runscript(runfile.clone())
+                }
+            }
+            #[cfg(not(feature = "old-parser"))]
+            {
+                parser::parse_runscript(runfile.clone())
+            }
         } {
             Ok(rf) => {
                 if options.is_present("list") {

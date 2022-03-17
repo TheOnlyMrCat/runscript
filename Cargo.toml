@@ -7,11 +7,15 @@ readme = "README.md"
 categories = ["command-line-utilities", "development-tools::build-utils"]
 repository = "https://github.com/TheOnlyMrCat/runscript"
 authors = ["TheOnlyMrCat <skylifegame@gmail.com>"]
-edition = "2018"
+edition = "2021"
 
 [[bin]]
 name = "run"
 path = "src/main.rs"
+
+[features]
+old-parser = []
+dev-panic = []
 
 [dependencies]
 atty = "0.2"
