@@ -46,12 +46,9 @@ pub struct ExecConfig<'a> {
     ///
     ///The first argument replaces `$1`, the second replaces `$2`, etc.
     pub positional_args: Vec<String>,
-    /// Pass the -1 flag on to recursive `run` calls
-    pub old_format: bool,
 }
 
 pub struct BaseExecContext {
-    pub old_format: bool,
     pub current_file: Option<PathBuf>,
     pub current_target: Option<String>,
     pub args: Vec<String>,
@@ -1109,7 +1106,6 @@ impl ShellContext {
                                 args,
                                 current_file: config.script_path.to_owned(),
                                 current_target: config.target_name.map(ToOwned::to_owned),
-                                old_format: config.old_format,
                                 colour_choice: config.colour_choice,
                             };
                             // resume_unwind so as to not invoke the panic hook.

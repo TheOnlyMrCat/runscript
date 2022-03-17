@@ -18,6 +18,7 @@ use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod config;
 mod exec;
+#[cfg(feature = "old-parser")]
 mod old_parser;
 mod out;
 mod parser;
@@ -99,7 +100,6 @@ you ran it on.
 
 fn main() {
     let mut context = BaseExecContext {
-        old_format: false,
         args: env::args().skip(1).collect::<Vec<String>>(),
         current_file: None,
         current_target: None,
@@ -183,12 +183,13 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         let mut stderr = stderr.lock();
                         let _ = stderr
                             .set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)));
+                        let _ = write!(stderr, "Warning:");
+                        let _ = stderr.reset();
                         let _ = writeln!(
                             stderr,
-                            "Warning: Failed to parse config file at `{}`",
+                            " Failed to parse config file at `{}`",
                             config_file.display(),
                         );
-                        let _ = stderr.reset();
                         let _ = writeln!(stderr, "{}", e);
                         Config::default()
                     }
@@ -220,37 +221,19 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             arg!(-c --command <COMMAND> "Execute a command")
                 .required(false)
                 .value_hint(ValueHint::CommandString)
-                .conflicts_with_all(&[
-                    "script",
-                    "file",
-                    "old-format",
-                    "list",
-                    "target",
-                    "build",
-                    "run",
-                    "test",
-                ]),
+                .conflicts_with_all(&["script", "file", "list", "target", "build", "run", "test"]),
         )
         .arg(
             arg!(-s --script <FILE> "Run a shell script")
                 .required(false)
                 .value_hint(ValueHint::FilePath)
-                .conflicts_with_all(&[
-                    "file",
-                    "old-format",
-                    "list",
-                    "target",
-                    "build",
-                    "command",
-                    "test",
-                ]),
+                .conflicts_with_all(&["file", "list", "target", "build", "command", "test"]),
         )
         .arg(
             arg!(-f --file <FILE> "Run a runscript file")
                 .required(false)
                 .value_hint(ValueHint::FilePath),
         )
-        .arg(arg!(-'1' --"old-format" "[old-parser] Use the old format to parse the script file"))
         .arg(
             arg!(-l --list "List targets in the script file")
                 .conflicts_with_all(&["build", "run", "test"]),
@@ -332,7 +315,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         .flatten()
                         .map(ToOwned::to_owned)
                         .collect(),
-                    old_format: false,
                 };
 
                 exec_script(&script.commands, &exec_cfg).unwrap();
@@ -379,7 +361,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 .flatten()
                 .map(ToOwned::to_owned)
                 .collect(),
-            old_format: false,
         };
 
         exec_script(&script, &exec_cfg).unwrap();
@@ -399,15 +380,32 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         match {
             #[cfg(feature = "old-parser")]
             {
-                if options.is_present("old-format") || context.old_format {
-                    old_parser::parse_runscript(runfile.clone()).map_err(|e| {
-                        parser::RunscriptParseError {
-                            script: e.script,
-                            data: e.data.into(),
-                        }
-                    })
-                } else {
-                    parser::parse_runscript(runfile.clone())
+                match parser::parse_runscript(runfile.clone()) {
+                    Ok(rf) => Ok(rf),
+                    Err(e) => old_parser::parse_runscript(runfile.clone())
+                        .map(|rf| {
+                            let mut lock = output_stream.lock();
+                            lock.set_color(
+                                ColorSpec::new()
+                                    .set_fg(Some(termcolor::Color::Yellow))
+                                    .set_bold(true),
+                            )
+                            .unwrap();
+                            write!(lock, "Warning:").unwrap();
+                            lock.reset().unwrap();
+                            writeln!(
+                                lock,
+                                " Using old parser to parse `{}`",
+                                runfile
+                                    .path
+                                    .strip_prefix(&cwd)
+                                    .unwrap_or(runfile.path.as_ref())
+                                    .display()
+                            )
+                            .unwrap();
+                            rf
+                        })
+                        .map_err(|_| e),
                 }
             }
             #[cfg(not(feature = "old-parser"))]
@@ -467,7 +465,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 .flatten()
                                 .map(ToOwned::to_owned)
                                 .collect(),
-                            old_format: options.is_present("old-format") || context.old_format,
                         };
 
                         if let Some(script) = scripts.get(phase) {
