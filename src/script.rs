@@ -3,8 +3,6 @@ use std::collections::HashMap;
 use crate::shell::ast::AtomicTopLevelCommand;
 use indexmap::IndexMap;
 
-use crate::parser::RunscriptLocation;
-
 /// A parsed runscript
 #[derive(Clone, Debug)]
 pub struct Runscript {
@@ -16,14 +14,6 @@ pub struct Runscript {
     pub scripts: Scripts,
     /// Runtime options to change the behaviour of the interpreter
     pub options: Vec<String>,
-}
-
-/// The script and source location of an included runscript
-#[derive(Clone, Debug)]
-pub struct RunscriptInclude {
-    pub runscript: Runscript,
-    /// Where the include statement is in the runscript which is including the other
-    pub location: RunscriptLocation,
 }
 
 /// The exectable scripts defined by a [`Runscript`](struct.Runscript.html)
@@ -38,7 +28,7 @@ pub struct Scripts {
 #[derive(Clone, Debug)]
 pub struct Script {
     pub commands: Vec<AtomicTopLevelCommand<String>>,
-    pub location: RunscriptLocation,
+    pub line: usize,
 }
 
 impl Runscript {

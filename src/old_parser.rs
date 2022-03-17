@@ -4,26 +4,16 @@ use crate::shell::lexer::Lexer;
 use crate::shell::parse::{ParseError, Parser};
 use indexmap::IndexMap;
 
-use crate::parser::{RunscriptLocation, RunscriptSource};
+use crate::parser::RunscriptSource;
 use crate::script::*;
-
-/// An error which occurred during parsing of a runscript
-#[derive(Debug)]
-#[non_exhaustive]
-pub struct RunscriptParseError {
-    /// The semi-complete runscript which failed to parse
-    pub script: Runscript,
-    /// The type of error and data related to that type of error
-    pub data: RunscriptParseErrorData,
-}
 
 /// Data related to a `RunscriptParseError`
 #[derive(Debug)]
 #[non_exhaustive]
-pub enum RunscriptParseErrorData {
+pub enum OldParseError {
     /// End-of-file in an unexpected location
     UnexpectedEOF {
-        location: RunscriptLocation,
+        line: usize,
         /// The token or token type which was expected to come before an end-of-file.
         ///
         /// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
@@ -31,7 +21,7 @@ pub enum RunscriptParseErrorData {
     },
     /// Found a token in a place which does not match the context
     UnexpectedToken {
-        location: RunscriptLocation,
+        line: usize,
         /// The text of the token which triggered the error
         found: String,
         /// The token or token type which was expected to come before or instead of the `found` token.
@@ -41,66 +31,62 @@ pub enum RunscriptParseErrorData {
     },
     /// Found a name of a script which contains characters outside of `[A-Za-z_-]`
     InvalidID {
-        location: RunscriptLocation,
+        line: usize,
         /// The text of the identifier that triggered the error
         found: String,
     },
     /// Attempted to define the same script twice
     MultipleDefinition {
-        previous_location: RunscriptLocation,
-        new_location: RunscriptLocation,
+        prev_line: usize,
+        new_line: usize,
         target_name: String,
     },
     UnsupportedFeature {
-        location: RunscriptLocation,
+        line: usize,
         msg: String,
     },
     CommandParseError {
+        line: usize,
         error: ParseError,
     },
 }
 
-type NewData = crate::parser::RunscriptParseErrorData;
+type NewData = crate::parser::RunscriptParseError;
 
-impl From<RunscriptParseErrorData> for NewData {
-    fn from(err: RunscriptParseErrorData) -> Self {
+impl From<OldParseError> for NewData {
+    fn from(err: OldParseError) -> Self {
         match err {
-            RunscriptParseErrorData::UnexpectedEOF { location, expected } => {
-                NewData::OldParseError {
-                    location,
-                    data: format!("Unexpected EOF, expected `{expected}`"),
-                }
-            }
-            RunscriptParseErrorData::UnexpectedToken {
-                location,
+            OldParseError::UnexpectedEOF { line, expected } => NewData::OldParseError {
+                line,
+                data: format!("Unexpected EOF, expected `{expected}`"),
+            },
+            OldParseError::UnexpectedToken {
+                line,
                 found,
                 expected,
             } => NewData::OldParseError {
-                location,
+                line,
                 data: format!("Unexpected token `{found}`, expected `{expected}`"),
             },
-            RunscriptParseErrorData::InvalidID { location, found } => NewData::InvalidValue {
-                location,
+            OldParseError::InvalidID { line, found } => NewData::InvalidValue {
+                line,
                 expected: "alphanumeric".to_owned(),
                 found,
             },
-            RunscriptParseErrorData::MultipleDefinition {
-                previous_location,
-                new_location,
+            OldParseError::MultipleDefinition {
+                prev_line,
+                new_line,
                 target_name,
             } => NewData::DuplicateScript {
-                previous_location,
-                new_location,
+                prev_line,
+                new_line,
                 target_name,
             },
-            RunscriptParseErrorData::UnsupportedFeature { location, msg } => {
-                NewData::OldParseError {
-                    location,
-                    data: msg,
-                }
+            OldParseError::UnsupportedFeature { line, msg } => {
+                NewData::OldParseError { line, data: msg }
             }
-            RunscriptParseErrorData::CommandParseError { error } => {
-                NewData::CommandParseError { error }
+            OldParseError::CommandParseError { line, error } => {
+                NewData::CommandParseError { line, error }
             }
         }
     }
@@ -115,38 +101,24 @@ struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
 
 impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<T> {
     #[cfg_attr(feature = "trace", trace)]
-    fn get_loc(&self, index: usize) -> RunscriptLocation {
-        let (line, column) = self
-            .line_indices
+    fn get_line(&self, index: usize) -> usize {
+        self.line_indices
             .iter()
             .enumerate()
-            .find_map(|(line, &end)| {
-                if end > index {
-                    Some((
-                        line + 1,
-                        index
-                            - if line == 0 {
-                                0
-                            } else {
-                                self.line_indices[line - 1]
-                            },
-                    ))
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_else(|| {
-                (
-                    self.line_indices.len(),
-                    index - self.line_indices.last().copied().unwrap_or(0),
-                )
-            });
-        RunscriptLocation { line, column }
+            .find_map(
+                |(line, &end)| {
+                    if end > index {
+                        Some(line + 1)
+                    } else {
+                        None
+                    }
+                },
+            )
+            .unwrap_or_else(|| self.line_indices.len())
     }
 }
 
-#[cfg_attr(feature = "trace", trace)]
-pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptParseError> {
+pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, OldParseError> {
     let mut context = ParsingContext {
         iterator: source.source.char_indices().peekable(),
         line_indices: source
@@ -169,17 +141,13 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
     };
     match parse_root(&mut context) {
         Ok(()) => Ok(context.runfile),
-        Err(data) => Err(RunscriptParseError {
-            script: context.runfile,
-            data,
-        }),
+        Err(data) => Err(data),
     }
 }
 
-#[cfg_attr(feature = "trace", trace)]
 fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<(), RunscriptParseErrorData> {
+) -> Result<(), OldParseError> {
     while let Some(tk) = context.iterator.next() {
         match tk {
             // Comment
@@ -191,16 +159,16 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                 let (special, bk) = consume_word(&mut context.iterator);
 
                 if matches!(bk, BreakCondition::Eof) {
-                    return Err(RunscriptParseErrorData::UnexpectedEOF {
-                        location: context.get_loc(i + 1),
+                    return Err(OldParseError::UnexpectedEOF {
+                        line: context.get_line(i + 1),
                         expected: "include".to_owned(),
                     });
                 }
 
                 match &*special {
                     "include" => {
-                        return Err(RunscriptParseErrorData::UnsupportedFeature {
-                            location: context.get_loc(i + 1),
+                        return Err(OldParseError::UnsupportedFeature {
+                            line: context.get_line(i + 1),
                             msg: "Includes are not supported".to_owned(),
                         });
                     }
@@ -211,8 +179,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                             .push(consume_line(&mut context.iterator).0);
                     }
                     _ => {
-                        return Err(RunscriptParseErrorData::UnexpectedToken {
-                            location: context.get_loc(i + 1),
+                        return Err(OldParseError::UnexpectedToken {
+                            line: context.get_line(i + 1),
                             found: special,
                             expected: "include` or `opt".to_owned(),
                         })
@@ -248,9 +216,9 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     consume_line(&mut context.iterator);
                 }
 
-                let location = context.get_loc(i);
+                let line = context.get_line(i);
                 let script = Script {
-                    location,
+                    line,
                     commands: parse_commands(context)?,
                 };
 
@@ -263,15 +231,15 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .or_default()
                         .insert(phase.to_owned(), script)
                     {
-                        return Err(RunscriptParseErrorData::MultipleDefinition {
-                            previous_location: prev_script.location,
-                            new_location: location,
+                        return Err(OldParseError::MultipleDefinition {
+                            prev_line: prev_script.line,
+                            new_line: line,
                             target_name: name,
                         });
                     }
                 } else if name == "#" || name == "<" {
-                    return Err(RunscriptParseErrorData::UnsupportedFeature {
-                        location: script.location,
+                    return Err(OldParseError::UnsupportedFeature {
+                        line: script.line,
                         msg: "Global scripts are not supported".to_owned(),
                     });
                 } else {
@@ -279,8 +247,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .chars()
                         .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
                     {
-                        return Err(RunscriptParseErrorData::InvalidID {
-                            location: context.get_loc(i + 1),
+                        return Err(OldParseError::InvalidID {
+                            line: context.get_line(i + 1),
                             found: name,
                         });
                     }
@@ -291,9 +259,9 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .entry(name.clone())
                         .or_default();
                     if let Some(prev_script) = target.insert(phase.to_owned(), script) {
-                        return Err(RunscriptParseErrorData::MultipleDefinition {
-                            previous_location: prev_script.location,
-                            new_location: location,
+                        return Err(OldParseError::MultipleDefinition {
+                            prev_line: prev_script.line,
+                            new_line: line,
                             target_name: name,
                         });
                     }
@@ -307,13 +275,12 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     Ok(())
 }
 
-#[cfg_attr(feature = "trace", trace)]
 fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<Vec<AtomicTopLevelCommand<String>>, RunscriptParseErrorData> {
+) -> Result<Vec<AtomicTopLevelCommand<String>>, OldParseError> {
     let mut cmds = Vec::new();
     let i = context.iterator.peek().unwrap().0;
-    let eof_loc = context.get_loc(context.runfile.source.len());
+    let eof_loc = context.get_line(context.runfile.source.len());
 
     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
     let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
@@ -326,9 +293,9 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
         cmds.push(
             parser
                 .complete_command()
-                .map_err(|e| RunscriptParseErrorData::CommandParseError { error: e })?
-                .ok_or(RunscriptParseErrorData::UnexpectedEOF {
-                    location: eof_loc,
+                .map_err(|e| OldParseError::CommandParseError { line: 0, error: e })?
+                .ok_or(OldParseError::UnexpectedEOF {
+                    line: eof_loc,
                     expected: "#/".to_owned(),
                 })?,
         );
