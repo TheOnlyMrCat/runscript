@@ -2670,13 +2670,10 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
         let num = if let Some(&Literal(ref s)) = self.iter.peek() {
             if s.starts_with("0x") || s.starts_with("0X") {
-                // from_str_radix does not like it when 0x is present
-                // in the string to parse, thus we should strip it off.
-                // Also, if the string is empty from_str_radix will return
-                // an error; shells like bash and zsh treat `0x` as `0x0`
-                // so we will do the same.
                 let num = &s[2..];
                 if num.is_empty() {
+                    // Shells like bash and zsh treat `0x` as `0x0`
+                    // so we will do the same.
                     Some(0)
                 } else {
                     isize::from_str_radix(&s[2..], 16).ok()
@@ -2684,7 +2681,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             } else if s.starts_with('0') {
                 isize::from_str_radix(s, 8).ok()
             } else {
-                isize::from_str_radix(s, 10).ok()
+                s.parse::<isize>().ok()
             }
         } else {
             None
@@ -2750,109 +2747,6 @@ fn concat_tokens(tokens: &[Token]) -> String {
     let mut s = String::with_capacity(len);
     s.extend(tokens.iter().map(Token::as_str));
     s
-}
-
-#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
-struct Coalesce<I: Iterator, F> {
-    iter: I,
-    cur: Option<I::Item>,
-    func: F,
-}
-
-impl<I: Iterator, F> Coalesce<I, F> {
-    fn new<T>(iter: T, func: F) -> Self
-    where
-        T: IntoIterator<IntoIter = I, Item = I::Item>,
-    {
-        Coalesce {
-            iter: iter.into_iter(),
-            cur: None,
-            func,
-        }
-    }
-}
-
-type CoalesceResult<T> = Result<T, (T, T)>;
-
-impl<I, F> Iterator for Coalesce<I, F>
-where
-    I: Iterator,
-    F: FnMut(I::Item, I::Item) -> CoalesceResult<I::Item>,
-{
-    type Item = I::Item;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        let cur = self.cur.take().or_else(|| self.iter.next());
-        let (mut left, mut right) = match (cur, self.iter.next()) {
-            (Some(l), Some(r)) => (l, r),
-            (Some(l), None) | (None, Some(l)) => return Some(l),
-            (None, None) => return None,
-        };
-
-        loop {
-            match (self.func)(left, right) {
-                Ok(combined) => match self.iter.next() {
-                    Some(next) => {
-                        left = combined;
-                        right = next;
-                    }
-                    None => return Some(combined),
-                },
-
-                Err((left, right)) => {
-                    debug_assert!(self.cur.is_none());
-                    self.cur = Some(right);
-                    return Some(left);
-                }
-            }
-        }
-    }
-}
-
-fn compress<C>(word: ast::ComplexWord) -> ast::ComplexWord {
-    fn coalesce_simple(a: ast::SimpleWord, b: ast::SimpleWord) -> CoalesceResult<ast::SimpleWord> {
-        match (a, b) {
-            (ast::SimpleWord::Literal(mut a), ast::SimpleWord::Literal(b)) => {
-                a.push_str(&b);
-                Ok(ast::SimpleWord::Literal(a))
-            }
-            (a, b) => Err((a, b)),
-        }
-    }
-
-    fn coalesce_word(a: ast::Word, b: ast::Word) -> CoalesceResult<ast::Word> {
-        match (a, b) {
-            (ast::Word::Simple(a), ast::Word::Simple(b)) => coalesce_simple(a, b)
-                .map(ast::Word::Simple)
-                .map_err(|(a, b)| (ast::Word::Simple(a), ast::Word::Simple(b))),
-            (ast::Word::SingleQuoted(mut a), ast::Word::SingleQuoted(b)) => {
-                a.push_str(&b);
-                Ok(ast::Word::SingleQuoted(a))
-            }
-            (ast::Word::DoubleQuoted(a), ast::Word::DoubleQuoted(b)) => {
-                let quoted = Coalesce::new(a.into_iter().chain(b), coalesce_simple).collect();
-                Ok(ast::Word::DoubleQuoted(quoted))
-            }
-            (a, b) => Err((a, b)),
-        }
-    }
-
-    match word {
-        ast::ComplexWord::Single(s) => ast::ComplexWord::Single(match s {
-            s @ ast::Word::Simple(_) | s @ ast::Word::SingleQuoted(_) => s,
-            ast::Word::DoubleQuoted(v) => {
-                ast::Word::DoubleQuoted(Coalesce::new(v, coalesce_simple).collect())
-            }
-        }),
-        ast::ComplexWord::Concat(v) => {
-            let mut body: Vec<_> = Coalesce::new(v.into_iter(), coalesce_word).collect();
-            if body.len() == 1 {
-                ast::ComplexWord::Single(body.pop().unwrap())
-            } else {
-                ast::ComplexWord::Concat(body)
-            }
-        }
-    }
 }
 
 #[cfg(test)]
