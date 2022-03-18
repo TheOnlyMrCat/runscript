@@ -42,30 +42,30 @@ pub enum ParameterSubstitution {
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, Parameter, Option<AtomicTopLevelWord>),
+    Default(bool, Parameter, Option<Box<AtomicTopLevelWord>>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, Parameter, Option<AtomicTopLevelWord>),
+    Assign(bool, Parameter, Option<Box<AtomicTopLevelWord>>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, Parameter, Option<AtomicTopLevelWord>),
+    Error(bool, Parameter, Option<Box<AtomicTopLevelWord>>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, Parameter, Option<AtomicTopLevelWord>),
+    Alternative(bool, Parameter, Option<Box<AtomicTopLevelWord>>),
     /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(Parameter, Option<AtomicTopLevelWord>),
+    RemoveSmallestSuffix(Parameter, Option<Box<AtomicTopLevelWord>>),
     /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(Parameter, Option<AtomicTopLevelWord>),
+    RemoveLargestSuffix(Parameter, Option<Box<AtomicTopLevelWord>>),
     /// Remove smallest prefix pattern from a parameter's value, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(Parameter, Option<AtomicTopLevelWord>),
+    RemoveSmallestPrefix(Parameter, Option<Box<AtomicTopLevelWord>>),
     /// Remove largest prefix pattern from a parameter's value, e.g. `${param##pattern}`
-    RemoveLargestPrefix(Parameter, Option<AtomicTopLevelWord>),
+    RemoveLargestPrefix(Parameter, Option<Box<AtomicTopLevelWord>>),
 }
 
 /// Represents whitespace delimited text.
@@ -85,7 +85,7 @@ pub enum ComplexWord {
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum Word {
     /// A regular word.
-    Simple(Box<SimpleWord>),
+    Simple(SimpleWord),
     /// List of words concatenated within double quotes.
     DoubleQuoted(Vec<SimpleWord>),
     /// List of words concatenated within single quotes. Virtually

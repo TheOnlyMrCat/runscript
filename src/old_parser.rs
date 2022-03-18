@@ -284,10 +284,8 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
     let mut parser = Parser::<_>::new(lexer);
     loop {
-        if let Some(Newline(Some(comment))) = parser.newline() {
-            if comment == "#/" {
-                break;
-            }
+        if parser.peek_end_delimiter() {
+            break;
         }
         cmds.push(
             parser
