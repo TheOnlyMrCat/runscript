@@ -101,6 +101,11 @@ you ran it on.
 }
 
 fn main() {
+    #[cfg(not(feature = "dev-panic"))]
+    {
+        std::panic::set_hook(Box::new(panic_hook));
+    }
+
     let mut context = BaseExecContext {
         args: env::args().skip(1).collect::<Vec<String>>(),
         current_file: None,
@@ -127,88 +132,6 @@ fn main() {
 }
 
 pub fn run(context: BaseExecContext) -> ExitCode {
-    let config = {
-        // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
-        // or $HOME/.config/runscript/config.toml on unix.
-        // It is at $RUNSCRIPT_CONFIG_DIR\config.toml or {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
-        let config_dir: Option<PathBuf>;
-        if let Some(dir) = env::var_os("RUNSCRIPT_CONFIG_DIR") {
-            config_dir = Some(dir.into());
-        } else {
-            #[cfg(unix)]
-            {
-                if let Some(mut dir) = env::var_os("XDG_CONFIG_HOME") {
-                    dir.push("/runscript");
-                    config_dir = Some(dir.into());
-                } else if let Some(mut dir) = env::var_os("HOME") {
-                    dir.push("/.config/runscript");
-                    config_dir = Some(dir.into());
-                } else {
-                    config_dir = None;
-                }
-            }
-            #[cfg(windows)]
-            unsafe {
-                use std::ffi::OsString;
-                use std::os::windows::ffi::OsStringExt;
-
-                use winapi::shared::winerror;
-                use winapi::um::{combaseapi, knownfolders, shlobj, shtypes, winbase, winnt};
-
-                let mut path_ptr: winnt::PWSTR = std::ptr::null_mut();
-                let result = shlobj::SHGetKnownFolderPath(
-                    &knownfolders::FOLDERID_LocalAppData,
-                    0,
-                    std::ptr::null_mut(),
-                    &mut path_ptr,
-                );
-                if result == winerror::S_OK {
-                    let len = winbase::lstrlenW(path_ptr) as usize;
-                    let path = std::slice::from_raw_parts(path_ptr, len);
-                    let ostr: OsString = OsStringExt::from_wide(path);
-                    combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
-                    config_dir = Some(Path::new(&ostr).join("runscript"));
-                } else {
-                    combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
-                    config_dir = None;
-                }
-            }
-        }
-
-        if let Some(config_dir) = config_dir {
-            let config_file = config_dir.join("config.toml");
-            if let Ok(contents) = std::fs::read_to_string(&config_file) {
-                match toml::from_str(&contents) {
-                    Ok(config) => config,
-                    Err(e) => {
-                        let stderr = StandardStream::stderr(ColorChoice::Auto);
-                        let mut stderr = stderr.lock();
-                        let _ = stderr
-                            .set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)));
-                        let _ = write!(stderr, "Warning:");
-                        let _ = stderr.reset();
-                        let _ = writeln!(
-                            stderr,
-                            " Failed to parse config file at `{}`",
-                            config_file.display(),
-                        );
-                        let _ = writeln!(stderr, "{}", e);
-                        Config::default()
-                    }
-                }
-            } else {
-                Config::default()
-            }
-        } else {
-            Config::default()
-        }
-    };
-
-    #[cfg(not(feature = "dev-panic"))]
-    if !config.dev.panic {
-        std::panic::set_hook(Box::new(panic_hook));
-    }
-
     let mut app = clap::Command::new("run")
         .about("Project script manager and executor")
         .version(VERSION)
@@ -289,6 +212,87 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         _ => unreachable!(),
     };
     let output_stream = Arc::new(StandardStream::stderr(colour_choice));
+
+    let config = {
+        // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
+        // or $HOME/.config/runscript/config.toml on unix.
+        // It is at $RUNSCRIPT_CONFIG_DIR\config.toml or {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
+        let config_dir: Option<PathBuf>;
+        if let Some(dir) = env::var_os("RUNSCRIPT_CONFIG_DIR") {
+            config_dir = Some(dir.into());
+        } else {
+            #[cfg(unix)]
+            {
+                if let Some(mut dir) = env::var_os("XDG_CONFIG_HOME") {
+                    dir.push("/runscript");
+                    config_dir = Some(dir.into());
+                } else if let Some(mut dir) = env::var_os("HOME") {
+                    dir.push("/.config/runscript");
+                    config_dir = Some(dir.into());
+                } else {
+                    config_dir = None;
+                }
+            }
+            #[cfg(windows)]
+            unsafe {
+                use std::ffi::OsString;
+                use std::os::windows::ffi::OsStringExt;
+
+                use winapi::shared::winerror;
+                use winapi::um::{combaseapi, knownfolders, shlobj, shtypes, winbase, winnt};
+
+                let mut path_ptr: winnt::PWSTR = std::ptr::null_mut();
+                let result = shlobj::SHGetKnownFolderPath(
+                    &knownfolders::FOLDERID_LocalAppData,
+                    0,
+                    std::ptr::null_mut(),
+                    &mut path_ptr,
+                );
+                if result == winerror::S_OK {
+                    let len = winbase::lstrlenW(path_ptr) as usize;
+                    let path = std::slice::from_raw_parts(path_ptr, len);
+                    let ostr: OsString = OsStringExt::from_wide(path);
+                    combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
+                    config_dir = Some(Path::new(&ostr).join("runscript"));
+                } else {
+                    combaseapi::CoTaskMemFree(path_ptr as *mut winapi::ctypes::c_void);
+                    config_dir = None;
+                }
+            }
+        }
+
+        if let Some(config_dir) = config_dir {
+            let config_file = config_dir.join("config.toml");
+            if let Ok(contents) = std::fs::read_to_string(&config_file) {
+                match toml::from_str(&contents) {
+                    Ok(config) => config,
+                    Err(e) => {
+                        let mut lock = output_stream.lock();
+                        let _ =
+                            lock.set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)));
+                        let _ = write!(lock, "Warning:");
+                        let _ = lock.reset();
+                        let _ = writeln!(
+                            lock,
+                            " Failed to parse config file at `{}`",
+                            config_file.display(),
+                        );
+                        let _ = writeln!(lock, "{}", e);
+                        Config::default()
+                    }
+                }
+            } else {
+                Config::default()
+            }
+        } else {
+            Config::default()
+        }
+    };
+
+    #[cfg(not(feature = "dev-panic"))]
+    if config.dev.panic {
+        std::panic::take_hook();
+    }
 
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
