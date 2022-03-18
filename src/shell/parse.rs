@@ -32,17 +32,12 @@ const THEN: &str = "then";
 const UNTIL: &str = "until";
 const WHILE: &str = "while";
 
-/// A specialized `Result` type for parsing shell commands.
 pub type ParseResult<T> = Result<T, ParseError>;
 
-/// Indicates a character/token position in the original source.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub struct SourcePos {
-    /// The byte offset since the start of parsing.
     pub byte: usize,
-    /// The line offset since the start of parsing, useful for error messages.
     pub line: usize,
-    /// The column offset since the start of parsing, useful for error messages.
     pub col: usize,
 }
 
@@ -53,7 +48,6 @@ impl Default for SourcePos {
 }
 
 impl SourcePos {
-    /// Constructs a new, starting, source position
     pub fn new() -> SourcePos {
         SourcePos {
             byte: 0,
@@ -62,7 +56,6 @@ impl SourcePos {
         }
     }
 
-    /// Increments self using the length of the provided token.
     pub fn advance(&mut self, next: &Token) {
         let newlines = match *next {
             // Most of these should not have any newlines
@@ -89,7 +82,6 @@ impl SourcePos {
     }
 }
 
-/// The error type which is returned from parsing shell commands.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// Encountered a word that could not be interpreted as a valid file descriptor.
@@ -162,7 +154,6 @@ impl fmt::Display for SourcePos {
     }
 }
 
-/// Used to indicate what kind of compound command could be parsed next.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 enum CompoundCmdKeyword {
     For,
@@ -174,7 +165,6 @@ enum CompoundCmdKeyword {
     Subshell,
 }
 
-/// Used to configure when `Parser::command_group` stops parsing commands.
 #[derive(Debug, Default, PartialEq, Eq, Clone)]
 pub struct CommandGroupDelimiters<'a, 'b, 'c> {
     /// Any token which appears after a complete command separator (e.g. `;`, `&`, or a
@@ -187,131 +177,44 @@ pub struct CommandGroupDelimiters<'a, 'b, 'c> {
     pub exact_tokens: &'c [Token],
 }
 
-/// An indicator to the builder of how complete commands are separated.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
 pub enum SeparatorKind {
-    /// A semicolon appears between commands, normally indicating a sequence.
     Semi,
-    /// An ampersand appears between commands, normally indicating an asyncronous job.
     Amp,
-    /// A newline (and possibly a comment) appears at the end of a command before the next.
     Newline,
-    /// The command was delimited by a token (e.g. a compound command delimiter) or
-    /// the end of input, but is *not* followed by another sequential command.
     Other,
 }
 
-/// An indicator to the builder whether a `while` or `until` command was parsed.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
 pub enum LoopKind {
-    /// A `while` command was parsed, normally indicating the loop's body should be run
-    /// while the guard's exit status is successful.
     While,
-    /// An `until` command was parsed, normally indicating the loop's body should be run
-    /// until the guard's exit status becomes successful.
     Until,
 }
 
-/// A grouping of a list of commands and any comments trailing after the commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct CommandGroup<C> {
-    /// The sequential list of commands.
     pub commands: Vec<C>,
 }
 
-/// Parsed fragments relating to a shell `if` command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct IfFragments<C> {
-    /// A list of conditionals branches.
     pub conditionals: Vec<ast::GuardBodyPair>,
-    /// The `else` branch, if any,
     pub else_branch: Option<CommandGroup<C>>,
 }
 
-/// Parsed fragments relating to a shell `for` command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct ForFragments<W, C> {
-    /// The name of the variable to which each of the words will be bound.
     pub var: String,
-    /// Any comments after the variable declaration, a group of words to
-    /// iterator over, and comment defined on the same line as the words.
     pub words: Option<Vec<W>>,
-    /// The body to be invoked for every iteration.
     pub body: CommandGroup<C>,
 }
 
-/// Parsed fragments relating to a shell `case` command.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct CaseFragments<W> {
-    /// The word to be matched against.
     pub word: W,
-    /// All the possible branches of the `case` command.
     pub arms: Vec<ast::PatternBodyPair>,
 }
 
-/// A parser for the shell language. It will parse shell commands from a
-/// stream of shell `Token`s, and pass them to an AST builder.
-///
-/// The parser implements the `IntoIterator` trait so that it can behave like
-/// a stream of parsed shell commands. Converting the parser into an `Iterator`
-/// and calling `next()` on the result will yield a complete shell command, or
-/// an error should one arise.
-///
-/// # Building
-///
-/// To construct a parser you need a stream of `Token`s and a `Builder`
-/// which will receive data from the parser and assemble an AST. This
-/// library provides both a default `Token` lexer, as well as an AST `Builder`.
-///
-/// ```
-/// use conch_parser::ast::builder::{Builder, RcBuilder};
-/// use conch_parser::lexer::Lexer;
-/// use conch_parser::parse::Parser;
-///
-/// let source = "echo hello world";
-/// let lexer = Lexer::new(source.chars());
-/// let mut parser = Parser::with_builder(lexer, RcBuilder::new());
-/// assert!(parser.complete_command().unwrap().is_some());
-/// ```
-///
-/// If you want to use a parser with the default AST builder implementation
-/// you can also use the `DefaultParser` type alias for a simpler setup.
-///
-/// ```
-/// use conch_parser::lexer::Lexer;
-/// use conch_parser::parse::DefaultParser;
-///
-/// let source = "echo hello world";
-/// let lexer = Lexer::new(source.chars());
-/// let mut parser = DefaultParser::new(lexer);
-/// assert!(parser.complete_command().unwrap().is_some());
-/// ```
-///
-/// # Token lexing
-///
-/// Lexer implementations are free to yield tokens in whatever manner they wish,
-/// however, there are a few considerations the lexer should take.
-///
-/// First, the lexer should consolidate consecutive tokens such as `Token::Name`,
-/// `Token::Literal`, and `Token::Whitespace` as densely as possible, e.g.
-/// `Literal(foobar)` is preferred over `[Literal(foo), Literal(bar)]`. Although
-/// such splitting of tokens will not cause problems while parsing most shell
-/// commands, certain situations require the parser to look-ahead some fixed
-/// number of tokens so it can avoid backtracking. When the tokens are consolidated
-/// the parser can look-ahead deterministically. If a lexer implementation chooses
-/// not to use this strategy, the parser may unsuccessfully parse certain inputs
-/// normally considered valid.
-///
-/// Second, the lexer can influence how token escaping is handled by the parser.
-/// The backslash token, `\` is used to escape, or make literal, any token which
-/// may or may not have a special meaning. Since the parser operates on tokens and
-/// not characters, the escaping of multi-character tokens is affected by how the
-/// lexer yields them. For example, the source `\<<` is normally considered by shells
-/// as `[Literal(<), Less]`. If this behavior is desired, the lexer should yield
-/// the tokens `[Backslash, Less, Less]` for that source. Otherwise if the lexer
-/// yields the tokens `[Backslash, DLess]`, the parser will treat the source as if
-/// it were `[Literal(<<)]`. The lexer's behavior need not be consistent between different
-/// multi-char tokens, as long as it is aware of the implications.
 #[derive(Debug)]
 pub struct Parser<I> {
     iter: TokenIterWrapper<I>,
@@ -764,23 +667,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// delimeter is unquoted, the heredoc's body will be expanded for
     /// parameters and other special words. Otherwise, there heredoc's body
     /// will be treated as a literal.
-    ///
-    /// The heredoc delimeter need not be a valid word (e.g. parameter subsitution
-    /// rules within ${ } need not apply), although it is expected to be balanced
-    /// like a regular word. In other words, all single/double quotes, backticks,
-    /// `${ }`, `$( )`, and `( )` must be balanced.
-    ///
-    /// Note: if the delimeter is quoted, this method will look for an UNQUOTED
-    /// version in the body. For example `<<"EOF"` will cause the parser to look
-    /// until `\nEOF` is found. This it is possible to create a heredoc that can
-    /// only be delimited by the end of the stream, e.g. if a newline is embedded
-    /// within the delimeter. Any backticks that appear in the delimeter are
-    /// expected to appear at the end of the delimeter of the heredoc body, as
-    /// well as any embedded backslashes (unless the backslashes are followed by
-    /// a \, $, or `).
-    ///
-    /// Note: this method expects that the caller provide a potential file
-    /// descriptor for redirection.
     pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<ast::Redirect> {
         macro_rules! try_map {
             ($result:expr) => {
@@ -1061,15 +947,11 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         Ok(ret)
     }
 
-    /// Identical to `Parser::word_preserve_trailing_whitespace()` but does
-    /// not pass the result to the AST builder.
     fn word_preserve_trailing_whitespace(&mut self) -> ParseResult<Option<ast::ComplexWord>> {
-        self.word_preserve_trailing_whitespace_raw_with_delim(None)
+        self.word_preserve_trailing_whitespace_with_delim(None)
     }
 
-    /// Identical to `Parser::word_preserve_trailing_whitespace()` but
-    /// allows for specifying an arbitrary token as a word delimiter.
-    fn word_preserve_trailing_whitespace_raw_with_delim(
+    fn word_preserve_trailing_whitespace_with_delim(
         &mut self,
         delim: Option<Token>,
     ) -> ParseResult<Option<ast::ComplexWord>> {
@@ -1305,7 +1187,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
 
         mem::swap(&mut self.iter, &mut tok_backup);
-        let cmd_subst = self.command_group_internal(CommandGroupDelimiters::default());
+        let cmd_subst = self.command_group(CommandGroupDelimiters::default());
         let _ = mem::replace(&mut self.iter, tok_backup);
 
         Ok(ast::SimpleWord::Subst(ast::ParameterSubstitution::Command(
@@ -1438,7 +1320,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 }
             }
 
-            match self.word_preserve_trailing_whitespace_raw_with_delim(Some(CurlyClose))? {
+            match self.word_preserve_trailing_whitespace_with_delim(Some(CurlyClose))? {
                 Some(ast::ComplexWord::Single(w)) => words.push(w),
                 Some(ast::ComplexWord::Concat(ws)) => words.extend(ws),
                 None => break 'capture_words,
@@ -1683,7 +1565,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         eat!(self, { ParenOpen => {} });
 
         // Parens are always special tokens
-        let body = self.command_group_internal(CommandGroupDelimiters {
+        let body = self.command_group(CommandGroupDelimiters {
             exact_tokens: &[ParenClose],
             ..Default::default()
         })?;
@@ -2123,7 +2005,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             }
 
             let pattern_comment = self.newline();
-            let body = self.command_group_internal(CommandGroupDelimiters {
+            let body = self.command_group(CommandGroupDelimiters {
                 reserved_words: &[ESAC],
                 reserved_tokens: &[],
                 exact_tokens: &[DSemi],
@@ -2285,13 +2167,13 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         }
     }
 
-    /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
+    /// Parses zero or more `Token::Newline`s, skipping whitespace.
     #[inline]
     pub fn linebreak(&mut self) {
         while self.newline() {}
     }
 
-    /// Tries to parse a `Token::Newline` (or a comment) after skipping whitespace.
+    /// Tries to parse a `Token::Newline` after skipping whitespace.
     pub fn newline(&mut self) -> bool {
         self.skip_whitespace();
 
@@ -2310,16 +2192,14 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         }
     }
 
+    /// Checks if the next tokens are `#/`. Nothing is consumed from the token stream.
     #[cfg(feature = "old-parser")]
     pub fn peek_end_delimiter(&mut self) -> bool {
         self.skip_whitespace();
 
         let mut peeked = self.iter.multipeek();
         match peeked.peek_next() {
-            Some(&Pound) => match peeked.peek_next() {
-                Some(&Slash) => true,
-                _ => false,
-            },
+            Some(&Pound) => matches!(peeked.peek_next(), Some(&Slash)),
             _ => false,
         }
     }
@@ -2336,13 +2216,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             return None;
         }
 
-        let care_about_whitespace = tokens.iter().any(|tok| {
-            if let Whitespace(_) = *tok {
-                true
-            } else {
-                false
-            }
-        });
+        let care_about_whitespace = tokens.iter().any(|tok| matches!(*tok, Whitespace(_)));
 
         // If the caller cares about whitespace as a reserved word we should
         // do a reserved word check without skipping any leading whitespace.
@@ -2452,19 +2326,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
     /// Parses commands until a configured delimeter (or EOF)
     /// is reached, without consuming the token or reserved word.
-    ///
-    /// Any reserved word/token **must** appear after a complete command
-    /// separator (e.g. `;`, `&`, or a newline), otherwise it will be
-    /// parsed as part of the command.
     pub fn command_group(
-        &mut self,
-        cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> ParseResult<CommandGroup<ast::Command>> {
-        self.command_group_internal(cfg)
-    }
-
-    /// Like `compound_list`, but allows for the list of commands to be empty.
-    fn command_group_internal(
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
     ) -> ParseResult<CommandGroup<ast::Command>> {
