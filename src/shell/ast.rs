@@ -1,18 +1,11 @@
 //! Defines abstract representations of the shell source.
-use std::rc::Rc;
 use std::sync::Arc;
-use std::{fmt, ops};
-
-pub mod builder;
-
-/// Type alias for the default `Parameter` representation.
-pub type DefaultParameter = Parameter<String>;
 
 /// Represents reading a parameter (or variable) value, e.g. `$foo`.
 ///
 /// Generic over the representation of variable names.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Parameter<T> {
+pub enum Parameter {
     /// $@
     At,
     /// $*
@@ -30,116 +23,90 @@ pub enum Parameter<T> {
     /// $0, $1, ..., $9, ${100}
     Positional(u32),
     /// $foo
-    Var(T),
+    Var(String),
 }
-
-/// Type alias for the default `ParameterSubstitution` representation.
-pub type DefaultParameterSubstitution = ParameterSubstitution<
-    DefaultParameter,
-    TopLevelWord<String>,
-    TopLevelCommand<String>,
-    DefaultArithmetic,
->;
 
 /// A parameter substitution, e.g. `${param-word}`.
 ///
 /// Generic over the representations of parameters, shell words and
 /// commands, and arithmetic expansions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ParameterSubstitution<P, W, C, A> {
+pub enum ParameterSubstitution {
     /// Returns the standard output of running a command, e.g. `$(cmd)`
-    Command(Vec<C>),
+    Command(Vec<AtomicTopLevelCommand>),
     /// Returns the length of the value of a parameter, e.g. `${#param}`
-    Len(P),
+    Len(Parameter),
     /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
-    Arith(Option<A>),
+    Arith(Option<Arithmetic>),
     /// Use a provided value if the parameter is null or unset, e.g.
     /// `${param:-[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Default(bool, P, Option<W>),
+    Default(bool, Parameter, Option<AtomicTopLevelWord>),
     /// Assign a provided value to the parameter if it is null or unset,
     /// e.g. `${param:=[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Assign(bool, P, Option<W>),
+    Assign(bool, Parameter, Option<AtomicTopLevelWord>),
     /// If the parameter is null or unset, an error should result with the provided
     /// message, e.g. `${param:?[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Error(bool, P, Option<W>),
+    Error(bool, Parameter, Option<AtomicTopLevelWord>),
     /// If the parameter is NOT null or unset, a provided word will be used,
     /// e.g. `${param:+[word]}`.
     /// The boolean indicates the presence of a `:`, and that if the parameter has
     /// a null value, that situation should be treated as if the parameter is unset.
-    Alternative(bool, P, Option<W>),
+    Alternative(bool, Parameter, Option<AtomicTopLevelWord>),
     /// Remove smallest suffix pattern from a parameter's value, e.g. `${param%pattern}`
-    RemoveSmallestSuffix(P, Option<W>),
+    RemoveSmallestSuffix(Parameter, Option<AtomicTopLevelWord>),
     /// Remove largest suffix pattern from a parameter's value, e.g. `${param%%pattern}`
-    RemoveLargestSuffix(P, Option<W>),
+    RemoveLargestSuffix(Parameter, Option<AtomicTopLevelWord>),
     /// Remove smallest prefix pattern from a parameter's value, e.g. `${param#pattern}`
-    RemoveSmallestPrefix(P, Option<W>),
+    RemoveSmallestPrefix(Parameter, Option<AtomicTopLevelWord>),
     /// Remove largest prefix pattern from a parameter's value, e.g. `${param##pattern}`
-    RemoveLargestPrefix(P, Option<W>),
+    RemoveLargestPrefix(Parameter, Option<AtomicTopLevelWord>),
 }
-
-/// A type alias for the default hiearchy for representing shell words.
-pub type ShellWord<T, W, C> = ComplexWord<
-    Word<
-        T,
-        SimpleWord<T, Parameter<T>, Box<ParameterSubstitution<Parameter<T>, W, C, Arithmetic<T>>>>,
-    >,
->;
-
-/// Type alias for the default `ComplexWord` representation.
-pub type DefaultComplexWord = ComplexWord<DefaultWord>;
 
 /// Represents whitespace delimited text.
 ///
 /// Generic over the representation of a whitespace delimited word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ComplexWord<W> {
+pub enum ComplexWord {
     /// Several distinct words concatenated together.
-    Concat(Vec<W>),
+    Concat(Vec<Word>),
     /// A regular word.
-    Single(W),
+    Single(Word),
 }
-
-/// Type alias for the default `Word` representation.
-pub type DefaultWord = Word<String, DefaultSimpleWord>;
 
 /// Represents whitespace delimited single, double, or non quoted text.
 ///
 /// Generic over the representation of single-quoted literals, and non-quoted words.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Word<L, W> {
+pub enum Word {
     /// A regular word.
-    Simple(W),
+    Simple(Box<SimpleWord>),
     /// List of words concatenated within double quotes.
-    DoubleQuoted(Vec<W>),
+    DoubleQuoted(Vec<SimpleWord>),
     /// List of words concatenated within single quotes. Virtually
     /// identical as a literal, but makes a distinction between the two.
-    SingleQuoted(L),
+    SingleQuoted(String),
 }
-
-/// Type alias for the default `SimpleWord` representation.
-pub type DefaultSimpleWord =
-    SimpleWord<String, DefaultParameter, Box<DefaultParameterSubstitution>>;
 
 /// Represents the smallest fragment of any text.
 ///
 /// Generic over the representation of a literals, parameters, and substitutions.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum SimpleWord<L, P, S> {
+pub enum SimpleWord {
     /// A non-special literal word.
-    Literal(L),
+    Literal(String),
     /// A token which normally has a special meaning is treated as a literal
     /// because it was escaped, typically with a backslash, e.g. `\"`.
-    Escaped(L),
+    Escaped(String),
     /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
-    Param(P),
+    Param(Parameter),
     /// A parameter substitution, e.g. `${param-word}`.
-    Subst(S),
+    Subst(ParameterSubstitution),
     /// Represents `*`, useful for handling pattern expansions.
     Star,
     /// Represents `?`, useful for handling pattern expansions.
@@ -154,94 +121,57 @@ pub enum SimpleWord<L, P, S> {
     Colon,
 }
 
-/// Type alias for the default `Redirect` representation.
-pub type DefaultRedirect = Redirect<TopLevelWord<String>>;
-
 /// Represents redirecting a command's file descriptors.
 ///
 /// Generic over the representation of a shell word.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Redirect<W> {
+pub enum Redirect {
     /// Open a file for reading, e.g. `[n]< file`.
-    Read(Option<u16>, W),
+    Read(Option<u16>, AtomicTopLevelWord),
     /// Open a file for writing after truncating, e.g. `[n]> file`.
-    Write(Option<u16>, W),
+    Write(Option<u16>, AtomicTopLevelWord),
     /// Open a file for reading and writing, e.g. `[n]<> file`.
-    ReadWrite(Option<u16>, W),
+    ReadWrite(Option<u16>, AtomicTopLevelWord),
     /// Open a file for writing, appending to the end, e.g. `[n]>> file`.
-    Append(Option<u16>, W),
+    Append(Option<u16>, AtomicTopLevelWord),
     /// Open a file for writing, failing if the `noclobber` shell option is set, e.g. `[n]>| file`.
-    Clobber(Option<u16>, W),
+    Clobber(Option<u16>, AtomicTopLevelWord),
     /// Lines contained in the source that should be provided by as input to a file descriptor.
-    Heredoc(Option<u16>, W),
+    Heredoc(Option<u16>, AtomicTopLevelWord),
     /// Duplicate a file descriptor for reading, e.g. `[n]<& [n|-]`.
-    DupRead(Option<u16>, W),
+    DupRead(Option<u16>, AtomicTopLevelWord),
     /// Duplicate a file descriptor for writing, e.g. `[n]>& [n|-]`.
-    DupWrite(Option<u16>, W),
+    DupWrite(Option<u16>, AtomicTopLevelWord),
 }
 
 /// A grouping of guard and body commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct GuardBodyPair<C> {
+pub struct GuardBodyPair {
     /// The guard commands, which if successful, should lead to the
     /// execution of the body commands.
-    pub guard: Vec<C>,
+    pub guard: Vec<AtomicTopLevelCommand>,
     /// The body commands to execute if the guard is successful.
-    pub body: Vec<C>,
+    pub body: Vec<AtomicTopLevelCommand>,
 }
 
 /// A grouping of patterns and body commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct PatternBodyPair<W, C> {
+pub struct PatternBodyPair {
     /// Pattern alternatives to match against.
-    pub patterns: Vec<W>,
+    pub patterns: Vec<AtomicTopLevelWord>,
     /// The body commands to execute if the pattern matches.
-    pub body: Vec<C>,
+    pub body: Vec<AtomicTopLevelCommand>,
 }
-
-/// Type alias for the default `Command` representation.
-pub type DefaultCommand = Command<DefaultAndOrList>;
 
 /// Represents any valid shell command.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Command<T> {
+pub enum Command {
     /// A command that runs asynchronously, that is, the shell will not wait
     /// for it to exit before running the next command, e.g. `foo &`.
-    Job(T),
+    Job(AndOrList),
     /// A list of and/or commands, e.g. `foo && bar || baz`.
-    List(T),
+    List(AndOrList),
 }
-
-/// A type alias over an and/or list of conventional shell commands.
-///
-/// Generic over the representation of literals, shell words, commands, and redirects.
-/// Uses `Rc` wrappers around function declarations.
-pub type CommandList<T, W, C> = AndOrList<ListableCommand<ShellPipeableCommand<T, W, C>>>;
-
-/// A type alias over an and/or list of conventional shell commands.
-///
-/// Generic over the representation of literals, shell words, commands, and redirects.
-/// Uses `Arc` wrappers around function declarations.
-pub type AtomicCommandList<T, W, C> =
-    AndOrList<ListableCommand<AtomicShellPipeableCommand<T, W, C>>>;
-
-/// A type alias for the default hiearchy to represent pipeable commands,
-/// using `Rc` wrappers around function declarations.
-pub type ShellPipeableCommand<T, W, C> = PipeableCommand<
-    T,
-    Box<SimpleCommand<T, W, Redirect<W>>>,
-    Box<ShellCompoundCommand<T, W, C>>,
-    Rc<ShellCompoundCommand<T, W, C>>,
->;
-
-/// A type alias for the default hiearchy to represent pipeable commands,
-/// using `Arc` wrappers around function declarations.
-pub type AtomicShellPipeableCommand<T, W, C> = PipeableCommand<
-    T,
-    Box<SimpleCommand<T, W, Redirect<W>>>,
-    Box<ShellCompoundCommand<T, W, C>>,
-    Arc<ShellCompoundCommand<T, W, C>>,
->;
 
 /// A command which conditionally runs based on the exit status of the previous command.
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -252,117 +182,96 @@ pub enum AndOr<T> {
     Or(T),
 }
 
-/// Type alias for the default `AndOrList` representation.
-pub type DefaultAndOrList = AndOrList<DefaultListableCommand>;
-
 /// A nonempty list of `AndOr` commands, e.g. `foo && bar || baz`.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct AndOrList<T> {
+pub struct AndOrList {
     /// The first command that always runs.
-    pub first: T,
+    pub first: ListableCommand,
     /// The remainder of the conditional commands which may or may not run.
-    pub rest: Vec<AndOr<T>>,
+    pub rest: Vec<AndOr<ListableCommand>>,
 }
-
-/// Type alias for the default `ListableCommand` representation.
-pub type DefaultListableCommand = ListableCommand<DefaultPipeableCommand>;
 
 /// Commands that can be used within an and/or list.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum ListableCommand<T> {
+pub enum ListableCommand {
     /// A chain of concurrent commands where the standard output of the
     /// previous becomes the standard input of the next, e.g.
     /// `[!] foo | bar | baz`.
     ///
     /// The bool indicates if a logical negation of the last command's status
     /// should be returned.
-    Pipe(bool, Vec<T>),
+    Pipe(bool, Vec<PipeableCommand>),
     /// A single command not part of a pipeline.
-    Single(T),
+    Single(PipeableCommand),
 }
-
-/// Type alias for the default `PipeableCommand` representation.
-pub type DefaultPipeableCommand =
-    ShellPipeableCommand<String, TopLevelWord<String>, TopLevelCommand<String>>;
 
 /// Commands that can be used within a pipeline.
 ///
 /// Generic over the representations of function names, simple commands,
 /// compound commands, and function bodies.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum PipeableCommand<N, S, C, F> {
+pub enum PipeableCommand {
     /// The simplest possible command: an executable with arguments,
     /// environment variable assignments, and redirections.
-    Simple(S),
+    Simple(Box<SimpleCommand>),
     /// A class of commands where redirection is applied to a command group.
-    Compound(C),
+    Compound(Box<CompoundCommand>),
     /// A function definition, associating a name with a group of commands,
     /// e.g. `function foo() { echo foo function; }`.
-    FunctionDef(N, F),
+    FunctionDef(String, Arc<CompoundCommand>),
 }
-
-/// A type alias for the default hiearchy for representing compound shell commands.
-pub type ShellCompoundCommand<T, W, C> = CompoundCommand<CompoundCommandKind<T, W, C>, Redirect<W>>;
-
-/// Type alias for the default `CompoundCommandKind` representation.
-pub type DefaultCompoundCommand =
-    ShellCompoundCommand<String, TopLevelWord<String>, TopLevelCommand<String>>;
 
 /// A class of commands where redirection is applied to a command group.
 ///
 /// Generic over the representation of a type of compound command, and the
 /// representation of a redirect.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct CompoundCommand<T, R> {
+pub struct CompoundCommand {
     /// The specific kind of compound command.
-    pub kind: T,
+    pub kind: CompoundCommandKind,
     /// Any redirections to be applied to the entire compound command
-    pub io: Vec<R>,
+    pub io: Vec<Redirect>,
 }
-
-/// Type alias for the default `CompoundCommandKind` representation.
-pub type DefaultCompoundCommandKind =
-    CompoundCommandKind<String, TopLevelWord<String>, TopLevelCommand<String>>;
 
 /// A specific kind of a `CompoundCommand`.
 ///
 /// Generic over the representation of shell words and commands.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum CompoundCommandKind<V, W, C> {
+pub enum CompoundCommandKind {
     /// A group of commands that should be executed in the current environment.
-    Brace(Vec<C>),
+    Brace(Vec<AtomicTopLevelCommand>),
     /// A group of commands that should be executed in a subshell environment.
-    Subshell(Vec<C>),
+    Subshell(Vec<AtomicTopLevelCommand>),
     /// A command that executes its body as long as its guard exits successfully.
-    While(GuardBodyPair<C>),
+    While(GuardBodyPair),
     /// A command that executes its body as until as its guard exits unsuccessfully.
-    Until(GuardBodyPair<C>),
+    Until(GuardBodyPair),
     /// A conditional command that runs the respective command branch when a
     /// certain of the first condition that exits successfully.
     If {
         /// A list of conditional branch-body pairs.
-        conditionals: Vec<GuardBodyPair<C>>,
+        conditionals: Vec<GuardBodyPair>,
         /// An else part to run if no other conditional was taken.
-        else_branch: Option<Vec<C>>,
+        else_branch: Option<Vec<AtomicTopLevelCommand>>,
     },
     /// A command that binds a variable to a number of provided words and runs
     /// its body once for each binding.
     For {
         /// The variable to bind to each of the specified words.
-        var: V,
+        var: String,
         /// The words to bind to the specified variable one by one.
-        words: Option<Vec<W>>,
+        words: Option<Vec<AtomicTopLevelWord>>,
         /// The body to run with the variable binding.
-        body: Vec<C>,
+        body: Vec<AtomicTopLevelCommand>,
     },
     /// A command that behaves much like a `match` statment in Rust, running
     /// a branch of commands if a specified word matches another literal or
     /// glob pattern.
     Case {
         /// The word on which to check for pattern matches.
-        word: W,
+        word: AtomicTopLevelWord,
         /// The arms to match against.
-        arms: Vec<PatternBodyPair<W, C>>,
+        arms: Vec<PatternBodyPair>,
     },
 }
 
@@ -374,11 +283,11 @@ pub enum CompoundCommandKind<V, W, C> {
 /// Thus we need a wrapper like this to disambiguate what was encountered in
 /// the source program.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum RedirectOrEnvVar<R, V, W> {
+pub enum RedirectOrEnvVar {
     /// A parsed redirect before a command was encountered.
-    Redirect(R),
+    Redirect(Redirect),
     /// A parsed environment variable, e.g. `foo=[bar]`.
-    EnvVar(V, Option<W>),
+    EnvVar(String, Option<AtomicTopLevelWord>),
 }
 
 /// Represents a parsed redirect or a defined command or command argument.
@@ -388,239 +297,99 @@ pub enum RedirectOrEnvVar<R, V, W> {
 /// Thus we need a wrapper like this to disambiguate what was encountered in
 /// the source program.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum RedirectOrCmdWord<R, W> {
+pub enum RedirectOrCmdWord {
     /// A parsed redirect after a command was encountered.
-    Redirect(R),
+    Redirect(Redirect),
     /// A parsed command name or argument.
-    CmdWord(W),
+    CmdWord(AtomicTopLevelWord),
 }
-
-/// Type alias for the default `SimpleCommand` representation.
-pub type DefaultSimpleCommand =
-    SimpleCommand<String, TopLevelWord<String>, Redirect<TopLevelWord<String>>>;
 
 /// The simplest possible command: an executable with arguments,
 /// environment variable assignments, and redirections.
 ///
 /// Generic over representations of variable names, shell words, and redirects.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub struct SimpleCommand<V, W, R> {
+pub struct SimpleCommand {
     /// Redirections or environment variables that occur before any command
     /// in the order they were parsed.
-    pub redirects_or_env_vars: Vec<RedirectOrEnvVar<R, V, W>>,
+    pub redirects_or_env_vars: Vec<RedirectOrEnvVar>,
     /// Redirections or command name/argumetns in the order they were parsed.
-    pub redirects_or_cmd_words: Vec<RedirectOrCmdWord<R, W>>,
+    pub redirects_or_cmd_words: Vec<RedirectOrCmdWord>,
 }
-
-/// Type alias for the default `Arithmetic` representation.
-pub type DefaultArithmetic = Arithmetic<String>;
 
 /// Represents an expression within an arithmetic subsitution.
 ///
 /// Generic over the representation of a variable name.
 #[derive(Debug, PartialEq, Eq, Clone)]
-pub enum Arithmetic<T> {
+pub enum Arithmetic {
     /// The value of a variable, e.g. `$var` or `var`.
-    Var(T),
+    Var(String),
     /// A numeric literal such as `42` or `0xdeadbeef`.
     Literal(isize),
     /// `left ** right`.
-    Pow(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Pow(Box<Arithmetic>, Box<Arithmetic>),
     /// Returns the current value of a variable,
     /// and then increments its value immediately after, e.g. `var++`
-    PostIncr(T),
+    PostIncr(String),
     /// Returns the current value of a variable,
     /// and then decrements its value immediately after, e.g. `var--`
-    PostDecr(T),
+    PostDecr(String),
     /// Increments the value of a variable and returns the new value, e.g. `++var`.
-    PreIncr(T),
+    PreIncr(String),
     /// Decrements the value of a variable and returns the new value, e.g. `--var`.
-    PreDecr(T),
+    PreDecr(String),
     /// Ensures the sign of the underlying result is positive, e.g. `+(1-2)`.
-    UnaryPlus(Box<Arithmetic<T>>),
+    UnaryPlus(Box<Arithmetic>),
     /// Ensures the sign of the underlying result is negative, e.g. `-(1+2)`.
-    UnaryMinus(Box<Arithmetic<T>>),
+    UnaryMinus(Box<Arithmetic>),
     /// Returns one if the underlying result is zero, or zero otherwise, e.g. `!expr`.
-    LogicalNot(Box<Arithmetic<T>>),
+    LogicalNot(Box<Arithmetic>),
     /// Flips all bits from the underlying result, e.g. `~expr`.
-    BitwiseNot(Box<Arithmetic<T>>),
+    BitwiseNot(Box<Arithmetic>),
     /// `left * right`
-    Mult(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Mult(Box<Arithmetic>, Box<Arithmetic>),
     /// `left / right`
-    Div(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Div(Box<Arithmetic>, Box<Arithmetic>),
     /// `left % right`
-    Modulo(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Modulo(Box<Arithmetic>, Box<Arithmetic>),
     /// `left + right`
-    Add(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Add(Box<Arithmetic>, Box<Arithmetic>),
     /// `left - right`
-    Sub(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Sub(Box<Arithmetic>, Box<Arithmetic>),
     /// `left << right`
-    ShiftLeft(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    ShiftLeft(Box<Arithmetic>, Box<Arithmetic>),
     /// `left >> right`
-    ShiftRight(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    ShiftRight(Box<Arithmetic>, Box<Arithmetic>),
     /// `left < right`
-    Less(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Less(Box<Arithmetic>, Box<Arithmetic>),
     /// `left <= right`
-    LessEq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    LessEq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left > right`
-    Great(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Great(Box<Arithmetic>, Box<Arithmetic>),
     /// `left >= right`
-    GreatEq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    GreatEq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left == right`
-    Eq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Eq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left != right`
-    NotEq(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    NotEq(Box<Arithmetic>, Box<Arithmetic>),
     /// `left & right`
-    BitwiseAnd(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    BitwiseAnd(Box<Arithmetic>, Box<Arithmetic>),
     /// `left ^ right`
-    BitwiseXor(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    BitwiseXor(Box<Arithmetic>, Box<Arithmetic>),
     /// `left | right`
-    BitwiseOr(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    BitwiseOr(Box<Arithmetic>, Box<Arithmetic>),
     /// `left && right`
-    LogicalAnd(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    LogicalAnd(Box<Arithmetic>, Box<Arithmetic>),
     /// `left || right`
-    LogicalOr(Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    LogicalOr(Box<Arithmetic>, Box<Arithmetic>),
     /// `first ? second : third`
-    Ternary(Box<Arithmetic<T>>, Box<Arithmetic<T>>, Box<Arithmetic<T>>),
+    Ternary(Box<Arithmetic>, Box<Arithmetic>, Box<Arithmetic>),
     /// Assigns the value of an underlying expression to a
     /// variable and returns the value, e.g. `x = 5`, or `x += 2`.
-    Assign(T, Box<Arithmetic<T>>),
+    Assign(String, Box<Arithmetic>),
     /// `expr[, expr[, ...]]`
-    Sequence(Vec<Arithmetic<T>>),
+    Sequence(Vec<Arithmetic>),
 }
 
-macro_rules! impl_top_level_cmd {
-    ($(#[$attr:meta])* pub struct $Cmd:ident, $CmdList:ident, $Word:ident) => {
-        $(#[$attr])*
-        #[derive(Debug, PartialEq, Eq, Clone)]
-        pub struct $Cmd<T>(pub Command<$CmdList<T, $Word<T>, $Cmd<T>>>);
-
-        impl<T> ops::Deref for $Cmd<T> {
-            type Target = Command<$CmdList<T, $Word<T>, $Cmd<T>>>;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl<T> ops::DerefMut for $Cmd<T> {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
-            }
-        }
-
-        impl<T> PartialEq<Command<$CmdList<T, $Word<T>, $Cmd<T>>>> for $Cmd<T> where T: PartialEq<T>
-        {
-            fn eq(&self, other: &Command<$CmdList<T, $Word<T>, $Cmd<T>>>) -> bool {
-                &self.0 == other
-            }
-        }
-
-        impl<T> From<Command<$CmdList<T, $Word<T>, $Cmd<T>>>> for $Cmd<T> {
-            fn from(inner: Command<$CmdList<T, $Word<T>, $Cmd<T>>>) -> Self {
-                $Cmd(inner)
-            }
-        }
-    };
-}
-
-impl_top_level_cmd! {
-    /// A top-level representation of a shell command. Uses `Rc` wrappers for function declarations.
-    ///
-    /// This wrapper unifies the provided top-level word representation,
-    /// `ComplexWord`, and the top-level command representation, `Command`,
-    /// while allowing them to be generic on their own.
-    pub struct TopLevelCommand,
-    CommandList,
-    TopLevelWord
-}
-
-impl_top_level_cmd! {
-    /// A top-level representation of a shell command. Uses `Arc` wrappers for function declarations.
-    ///
-    /// This wrapper unifies the provided top-level word representation,
-    /// `ComplexWord`, and the top-level command representation, `Command`,
-    /// while allowing them to be generic on their own.
-    pub struct AtomicTopLevelCommand,
-    AtomicCommandList,
-    AtomicTopLevelWord
-}
-
-macro_rules! impl_top_level_word {
-    ($(#[$attr:meta])* pub struct $Word:ident, $Cmd:ident) => {
-        $(#[$attr])*
-        #[derive(Debug, PartialEq, Eq, Clone)]
-        pub struct $Word<T>(pub ShellWord<T, $Word<T>, $Cmd<T>>);
-
-        impl<T> ops::Deref for $Word<T> {
-            type Target = ShellWord<T, $Word<T>, $Cmd<T>>;
-
-            fn deref(&self) -> &Self::Target {
-                &self.0
-            }
-        }
-
-        impl<T> ops::DerefMut for $Word<T> {
-            fn deref_mut(&mut self) -> &mut Self::Target {
-                &mut self.0
-            }
-        }
-
-        impl<T> PartialEq<ShellWord<T, $Word<T>, $Cmd<T>>> for $Word<T> where T: PartialEq<T> {
-            fn eq(&self, other: &ShellWord<T, $Word<T>, $Cmd<T>>) -> bool {
-                &self.0 == other
-            }
-        }
-
-        impl<T> From<ShellWord<T, $Word<T>, $Cmd<T>>> for $Word<T> {
-            fn from(inner: ShellWord<T, $Word<T>, $Cmd<T>>) -> Self {
-                $Word(inner)
-            }
-        }
-    };
-}
-
-impl_top_level_word! {
-    /// A top-level representation of a shell word. Uses `Rc` wrappers for function declarations.
-    ///
-    /// This wrapper unifies the provided top-level word representation,
-    /// `ComplexWord`, and the top-level command representation, `Command`,
-    /// while allowing them to be generic on their own.
-    pub struct TopLevelWord,
-    TopLevelCommand
-}
-
-impl_top_level_word! {
-    /// A top-level representation of a shell word. Uses `Arc` wrappers for function declarations.
-    ///
-    /// This wrapper unifies the provided top-level word representation,
-    /// `ComplexWord`, and the top-level command representation, `Command`,
-    /// while allowing them to be generic on their own.
-    pub struct AtomicTopLevelWord,
-    AtomicTopLevelCommand
-}
-
-impl<T: fmt::Display> fmt::Display for Parameter<T> {
-    fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
-        use self::Parameter::*;
-
-        match *self {
-            At => fmt.write_str("$@"),
-            Star => fmt.write_str("$*"),
-            Pound => fmt.write_str("$#"),
-            Question => fmt.write_str("$?"),
-            Dash => fmt.write_str("$-"),
-            Dollar => fmt.write_str("$$"),
-            Bang => fmt.write_str("$!"),
-
-            Var(ref p) => write!(fmt, "${{{}}}", p),
-            Positional(p) => {
-                if p <= 9 {
-                    write!(fmt, "${}", p)
-                } else {
-                    write!(fmt, "${{{}}}", p)
-                }
-            }
-        }
-    }
-}
+pub type AtomicTopLevelCommand = Command;
+pub type AtomicTopLevelWord = ComplexWord;

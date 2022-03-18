@@ -8,12 +8,10 @@ use std::fmt;
 use std::iter::empty as empty_iter;
 use std::mem;
 use std::str::FromStr;
+use std::sync::Arc;
 
 use self::iter::{PeekableIterator, PositionIterator, TokenIter, TokenIterWrapper, TokenIterator};
-use crate::shell::ast::builder::ComplexWordKind::{self, Concat, Single};
-use crate::shell::ast::builder::WordKind::{self, DoubleQuoted, Simple, SingleQuoted};
-use crate::shell::ast::builder::{self, Builder, SimpleWordKind};
-use crate::shell::ast::{self, DefaultArithmetic, DefaultParameter};
+use crate::shell::ast::{self, Arithmetic, Parameter};
 use crate::shell::token::Token;
 use crate::shell::token::Token::*;
 
@@ -33,10 +31,6 @@ const IN: &str = "in";
 const THEN: &str = "then";
 const UNTIL: &str = "until";
 const WHILE: &str = "while";
-
-/// A parser which will use a default AST builder implementation,
-/// yielding results in terms of types defined in the `ast` module.
-pub type DefaultParser<I> = Parser<I, builder::StringBuilder>;
 
 /// A specialized `Result` type for parsing shell commands.
 pub type ParseResult<T> = Result<T, ParseError>;
@@ -203,75 +197,183 @@ impl Default for CommandGroupDelimiters<'static, 'static, 'static> {
     }
 }
 
-/// An `Iterator` adapter around a `Parser`.
+/// An indicator to the builder of how complete commands are separated.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum SeparatorKind {
+    /// A semicolon appears between commands, normally indicating a sequence.
+    Semi,
+    /// An ampersand appears between commands, normally indicating an asyncronous job.
+    Amp,
+    /// A newline (and possibly a comment) appears at the end of a command before the next.
+    Newline,
+    /// The command was delimited by a token (e.g. a compound command delimiter) or
+    /// the end of input, but is *not* followed by another sequential command.
+    Other,
+}
+
+/// An indicator to the builder whether a `while` or `until` command was parsed.
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
+pub enum LoopKind {
+    /// A `while` command was parsed, normally indicating the loop's body should be run
+    /// while the guard's exit status is successful.
+    While,
+    /// An `until` command was parsed, normally indicating the loop's body should be run
+    /// until the guard's exit status becomes successful.
+    Until,
+}
+
+/// A grouping of a list of commands and any comments trailing after the commands.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CommandGroup<C> {
+    /// The sequential list of commands.
+    pub commands: Vec<C>,
+}
+
+/// A grouping of guard and body commands, and any comments they may have.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct GuardBodyPairGroup<C> {
+    /// The guard commands, which if successful, should lead to the
+    /// execution of the body commands.
+    pub guard: CommandGroup<C>,
+    /// The body commands to execute if the guard is successful.
+    pub body: CommandGroup<C>,
+}
+
+/// Parsed fragments relating to a shell `if` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct IfFragments<C> {
+    /// A list of conditionals branches.
+    pub conditionals: Vec<GuardBodyPairGroup<C>>,
+    /// The `else` branch, if any,
+    pub else_branch: Option<CommandGroup<C>>,
+}
+
+/// Parsed fragments relating to a shell `for` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct ForFragments<W, C> {
+    /// The name of the variable to which each of the words will be bound.
+    pub var: String,
+    /// Any comments after the variable declaration, a group of words to
+    /// iterator over, and comment defined on the same line as the words.
+    pub words: Option<Vec<W>>,
+    /// The body to be invoked for every iteration.
+    pub body: CommandGroup<C>,
+}
+
+/// Parsed fragments relating to a shell `case` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CaseFragments<W, C> {
+    /// The word to be matched against.
+    pub word: W,
+    /// All the possible branches of the `case` command.
+    pub arms: Vec<CaseArm<W, C>>,
+}
+
+/// An individual "unit of execution" within a `case` command.
 ///
-/// This iterator is `fused`, that is, if the underlying parser either yields
-/// no command, or an error, no further commands (or errors) will be yielded.
-///
-/// This is because the parser does not do any error handling or backtracking
-/// on errors, thus trying to parse another command after an error is not
-/// well defined, and will either fail as well, or will produce an incorrect
-/// result.
-#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
-#[derive(Debug)]
-pub struct ParserIterator<I, B> {
-    /// The underlying parser to poll for complete commands.
-    /// A `None` value indicates the stream has been exhausted.
-    parser: Option<Parser<I, B>>,
+/// Each arm has a number of pattern alternatives, and a body
+/// of commands to run if any pattern matches.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CaseArm<W, C> {
+    /// The patterns which correspond to this case arm.
+    pub patterns: CasePatternFragments<W>,
+    /// The body of commands to run if any pattern matches.
+    pub body: CommandGroup<C>,
 }
 
-impl<I, B> ParserIterator<I, B> {
-    /// Construct a new adapter with a given parser.
-    fn new(parser: Parser<I, B>) -> Self {
-        ParserIterator {
-            parser: Some(parser),
-        }
-    }
+/// Parsed fragments relating to patterns in a shell `case` command.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub struct CasePatternFragments<W> {
+    /// Pattern alternatives which all correspond to the same case arm.
+    pub pattern_alternatives: Vec<W>,
 }
 
-impl<I, B> std::iter::FusedIterator for ParserIterator<I, B>
-where
-    I: Iterator<Item = Token>,
-    B: Builder,
-{
+/// An indicator to the builder what kind of complex word was parsed.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ComplexWordKind<C> {
+    /// Several distinct words concatenated together.
+    Concat(Vec<WordKind<C>>),
+    /// A regular word.
+    Single(WordKind<C>),
 }
 
-impl<I, B> Iterator for ParserIterator<I, B>
-where
-    I: Iterator<Item = Token>,
-    B: Builder,
-{
-    type Item = ParseResult<B::Command>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.parser.as_mut().map(Parser::complete_command) {
-            None => None,
-            Some(ret) => match ret {
-                Ok(Some(c)) => Some(Ok(c)),
-                Ok(None) => {
-                    let _ = self.parser.take();
-                    None
-                }
-                Err(e) => {
-                    let _ = self.parser.take();
-                    Some(Err(e))
-                }
-            },
-        }
-    }
+/// An indicator to the builder what kind of word was parsed.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum WordKind<C> {
+    /// A regular word.
+    Simple(SimpleWordKind<C>),
+    /// List of words concatenated within double quotes.
+    DoubleQuoted(Vec<SimpleWordKind<C>>),
+    /// List of words concatenated within single quotes. Virtually
+    /// identical as a literal, but makes a distinction between the two.
+    SingleQuoted(String),
 }
 
-impl<I, B> IntoIterator for Parser<I, B>
-where
-    I: Iterator<Item = Token>,
-    B: Builder,
-{
-    type IntoIter = ParserIterator<I, B>;
-    type Item = <Self::IntoIter as Iterator>::Item;
+/// An indicator to the builder what kind of simple word was parsed.
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum SimpleWordKind<C> {
+    /// A non-special literal word.
+    Literal(String),
+    /// Access of a value inside a parameter, e.g. `$foo` or `$$`.
+    Param(Parameter),
+    /// A parameter substitution, e.g. `${param-word}`.
+    Subst(Box<ParameterSubstitutionKind<ComplexWordKind<C>, C>>),
+    /// Represents the standard output of some command, e.g. \`echo foo\`.
+    CommandSubst(CommandGroup<C>),
+    /// A token which normally has a special meaning is treated as a literal
+    /// because it was escaped, typically with a backslash, e.g. `\"`.
+    Escaped(String),
+    /// Represents `*`, useful for handling pattern expansions.
+    Star,
+    /// Represents `?`, useful for handling pattern expansions.
+    Question,
+    /// Represents `[`, useful for handling pattern expansions.
+    SquareOpen,
+    /// Represents `]`, useful for handling pattern expansions.
+    SquareClose,
+    /// Represents `~`, useful for handling tilde expansions.
+    Tilde,
+    /// Represents `:`, useful for handling tilde expansions.
+    Colon,
+}
 
-    fn into_iter(self) -> Self::IntoIter {
-        ParserIterator::new(self)
-    }
+/// Represents the type of parameter that was parsed
+#[derive(Debug, PartialEq, Eq, Clone)]
+pub enum ParameterSubstitutionKind<W, C> {
+    /// Returns the standard output of running a command, e.g. `$(cmd)`
+    Command(CommandGroup<C>),
+    /// Returns the length of the value of a parameter, e.g. ${#param}
+    Len(Parameter),
+    /// Returns the resulting value of an arithmetic subsitution, e.g. `$(( x++ ))`
+    Arith(Option<Arithmetic>),
+    /// Use a provided value if the parameter is null or unset, e.g.
+    /// `${param:-[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Default(bool, Parameter, Option<W>),
+    /// Assign a provided value to the parameter if it is null or unset,
+    /// e.g. `${param:=[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Assign(bool, Parameter, Option<W>),
+    /// If the parameter is null or unset, an error should result with the provided
+    /// message, e.g. `${param:?[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Error(bool, Parameter, Option<W>),
+    /// If the parameter is NOT null or unset, a provided word will be used,
+    /// e.g. `${param:+[word]}`.
+    /// The boolean indicates the presence of a `:`, and that if the parameter has
+    /// a null value, that situation should be treated as if the parameter is unset.
+    Alternative(bool, Parameter, Option<W>),
+    /// Remove smallest suffix pattern, e.g. `${param%pattern}`
+    RemoveSmallestSuffix(Parameter, Option<W>),
+    /// Remove largest suffix pattern, e.g. `${param%%pattern}`
+    RemoveLargestSuffix(Parameter, Option<W>),
+    /// Remove smallest prefix pattern, e.g. `${param#pattern}`
+    RemoveSmallestPrefix(Parameter, Option<W>),
+    /// Remove largest prefix pattern, e.g. `${param##pattern}`
+    RemoveLargestPrefix(Parameter, Option<W>),
 }
 
 /// A parser for the shell language. It will parse shell commands from a
@@ -338,18 +440,19 @@ where
 /// it were `[Literal(<<)]`. The lexer's behavior need not be consistent between different
 /// multi-char tokens, as long as it is aware of the implications.
 #[derive(Debug)]
-pub struct Parser<I, B> {
+pub struct Parser<I> {
     iter: TokenIterWrapper<I>,
-    builder: B,
 }
 
-impl<I: Iterator<Item = Token>, B: Builder + Default> Parser<I, B> {
+impl<I: Iterator<Item = Token>> Parser<I> {
     /// Creates a new Parser from a Token iterator or collection.
-    pub fn new<T>(iter: T) -> Parser<I, B>
+    pub fn new<T>(iter: T) -> Parser<I>
     where
         T: IntoIterator<Item = Token, IntoIter = I>,
     {
-        Parser::with_builder(iter.into_iter(), Default::default())
+        Parser {
+            iter: TokenIterWrapper::Regular(TokenIter::new(iter.into_iter())),
+        }
     }
 }
 
@@ -399,7 +502,7 @@ macro_rules! arith_parse {
     ($(#[$fn_attr:meta])* fn $fn_name:ident, $next_expr:ident, $($tok:pat => $constructor:path),+) => {
         $(#[$fn_attr])*
         #[inline]
-        fn $fn_name(&mut self) -> ParseResult<DefaultArithmetic> {
+        fn $fn_name(&mut self) -> ParseResult<Arithmetic> {
             let mut expr = self.$next_expr()?;
             loop {
                 self.skip_whitespace();
@@ -416,7 +519,7 @@ macro_rules! arith_parse {
     }
 }
 
-impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
+impl<I: Iterator<Item = Token>> Parser<I> {
     /// Construct an `Unexpected` error using the given token. If `None` specified, the next
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
     #[inline]
@@ -425,14 +528,6 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         self.iter.next().map_or(ParseError::UnexpectedEOF, |t| {
             ParseError::Unexpected(t, pos)
         })
-    }
-
-    /// Creates a new Parser from a Token iterator and provided AST builder.
-    pub fn with_builder(iter: I, builder: B) -> Self {
-        Parser {
-            iter: TokenIterWrapper::Regular(TokenIter::new(iter)),
-            builder,
-        }
     }
 
     /// Returns the parser's current position in the source.
@@ -444,52 +539,38 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// For example, `foo && bar; baz` will yield two complete
     /// commands: `And(foo, bar)`, and `Simple(baz)`.
-    pub fn complete_command(&mut self) -> ParseResult<Option<B::Command>> {
+    pub fn complete_command(&mut self) -> ParseResult<Option<ast::AtomicTopLevelCommand>> {
         let pre_cmd_comments = self.linebreak();
 
         if self.iter.peek().is_some() {
-            Ok(Some(self.complete_command_with_leading_comments(
-                pre_cmd_comments,
-            )?))
+            let cmd = self.and_or_list()?;
+
+            let (sep, cmd_comment) = eat_maybe!(self, {
+                Semi => { (SeparatorKind::Semi, self.newline()) },
+                Amp  => { (SeparatorKind::Amp , self.newline()) };
+                _ => {
+                    match self.newline() {
+                        true => (SeparatorKind::Newline, true),
+                        false => (SeparatorKind::Other, false),
+                    }
+                }
+            });
+
+            Ok(Some(if matches!(sep, SeparatorKind::Amp) {
+                ast::Command::Job(cmd)
+            } else {
+                ast::Command::List(cmd)
+            }))
         } else {
-            if !pre_cmd_comments.is_empty() {
-                self.builder.comments(pre_cmd_comments);
-            }
             Ok(None)
         }
-    }
-
-    /// Parses a single complete command, but expects caller to parse any leading comments.
-    ///
-    /// It is considered an error there is not a valid complete command to be parsed, thus
-    /// the caller should perform any EOF checks.
-    fn complete_command_with_leading_comments(
-        &mut self,
-        pre_cmd_comments: Vec<builder::Newline>,
-    ) -> ParseResult<B::Command> {
-        let cmd = self.and_or_list()?;
-
-        let (sep, cmd_comment) = eat_maybe!(self, {
-            Semi => { (builder::SeparatorKind::Semi, self.newline()) },
-            Amp  => { (builder::SeparatorKind::Amp , self.newline()) };
-            _ => {
-                match self.newline() {
-                    n@Some(_) => (builder::SeparatorKind::Newline, n),
-                    None => (builder::SeparatorKind::Other, None),
-                }
-            }
-        });
-
-        Ok(self
-            .builder
-            .complete_command(pre_cmd_comments, cmd, sep, cmd_comment))
     }
 
     /// Parses compound AND/OR commands.
     ///
     /// Commands are left associative. For example `foo || bar && baz`
     /// parses to `And(Or(foo, bar), baz)`.
-    pub fn and_or_list(&mut self) -> ParseResult<B::CommandList> {
+    pub fn and_or_list(&mut self) -> ParseResult<ast::AndOrList> {
         let first = self.pipeline()?;
         let mut rest = Vec::new();
 
@@ -510,16 +591,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 ast::AndOr::Or(next)
             };
 
-            rest.push((post_sep_comments, next));
+            rest.push(next);
         }
 
-        Ok(self.builder.and_or_list(first, rest))
+        Ok(ast::AndOrList { first, rest })
     }
 
     /// Parses either a single command or a pipeline of commands.
     ///
     /// For example `[!] foo | bar`.
-    pub fn pipeline(&mut self) -> ParseResult<B::ListableCommand> {
+    pub fn pipeline(&mut self) -> ParseResult<ast::ListableCommand> {
         self.skip_whitespace();
         let bang = eat_maybe!(self, {
             Bang => { true };
@@ -537,22 +618,27 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             let cmd = self.command()?;
 
             eat_maybe!(self, {
-                Pipe => { cmds.push((self.linebreak(), cmd)) };
+                Pipe => { self.linebreak(); cmds.push(cmd) };
                 _ => {
-                    cmds.push((Vec::new(), cmd));
+                    cmds.push(cmd);
                     break;
                 },
             });
         }
 
-        Ok(self.builder.pipeline(bang, cmds))
+        if bang || cmds.len() > 1 {
+            cmds.shrink_to_fit();
+            Ok(ast::ListableCommand::Pipe(bang, cmds))
+        } else {
+            Ok(ast::ListableCommand::Single(cmds.pop().unwrap()))
+        }
     }
 
     /// Parses any compound or individual command.
-    pub fn command(&mut self) -> ParseResult<B::PipeableCommand> {
+    pub fn command(&mut self) -> ParseResult<ast::PipeableCommand> {
         if let Some(kw) = self.next_compound_command_type() {
             let compound = self.compound_command_internal(Some(kw))?;
-            Ok(self.builder.compound_command_into_pipeable(compound))
+            Ok(ast::PipeableCommand::Compound(Box::new(compound)))
         } else if let Some(fn_def) = self.maybe_function_declaration()? {
             Ok(fn_def)
         } else {
@@ -564,7 +650,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
-    pub fn simple_command(&mut self) -> ParseResult<B::PipeableCommand> {
+    pub fn simple_command(&mut self) -> ParseResult<ast::PipeableCommand> {
         use crate::shell::ast::{RedirectOrCmdWord, RedirectOrEnvVar};
 
         let mut vars = Vec::new();
@@ -635,14 +721,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         if vars.is_empty() && cmd_args.is_empty() {
             Err(self.make_unexpected_err())
         } else {
-            Ok(self.builder.simple_command(vars, cmd_args))
+            Ok(ast::PipeableCommand::Simple(Box::new(ast::SimpleCommand {
+                redirects_or_env_vars: vars,
+                redirects_or_cmd_words: cmd_args,
+            })))
         }
     }
 
     /// Parses a continuous list of redirections and will error if any words
     /// that are not valid file descriptors are found. Essentially used for
     /// parsing redirection lists after a compound command like `while` or `if`.
-    pub fn redirect_list(&mut self) -> ParseResult<Vec<B::Redirect>> {
+    pub fn redirect_list(&mut self) -> ParseResult<Vec<ast::Redirect>> {
         let mut list = Vec::new();
         loop {
             self.skip_whitespace();
@@ -669,7 +758,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// redirect or word if either is found. In other words, `Ok(Some(Ok(redirect)))`
     /// will result if a redirect is found, `Ok(Some(Err(word)))` if a word is found,
     /// or `Ok(None)` if neither is found.
-    pub fn redirect(&mut self) -> ParseResult<Option<Result<B::Redirect, B::Word>>> {
+    pub fn redirect(&mut self) -> ParseResult<Option<Result<ast::Redirect, ast::ComplexWord>>> {
         fn could_be_numeric<C>(word: &WordKind<C>) -> bool {
             let simple_could_be_numeric = |word: &SimpleWordKind<C>| match *word {
                 SimpleWordKind::Star
@@ -692,20 +781,24 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             };
 
             match *word {
-                Simple(ref s) => simple_could_be_numeric(s),
-                SingleQuoted(ref s) => s.chars().all(|c| c.is_digit(10)),
-                DoubleQuoted(ref fragments) => fragments.iter().all(simple_could_be_numeric),
+                WordKind::Simple(ref s) => simple_could_be_numeric(s),
+                WordKind::SingleQuoted(ref s) => s.chars().all(|c| c.is_digit(10)),
+                WordKind::DoubleQuoted(ref fragments) => {
+                    fragments.iter().all(simple_could_be_numeric)
+                }
             }
         }
 
         fn as_num<C>(word: &ComplexWordKind<C>) -> Option<u16> {
             match *word {
-                Single(Simple(SimpleWordKind::Literal(ref s))) => u16::from_str_radix(s, 10).ok(),
-                Single(_) => None,
-                Concat(ref fragments) => {
+                ComplexWordKind::Single(WordKind::Simple(SimpleWordKind::Literal(ref s))) => {
+                    u16::from_str_radix(s, 10).ok()
+                }
+                ComplexWordKind::Single(_) => None,
+                ComplexWordKind::Concat(ref fragments) => {
                     let mut buf = String::new();
                     for w in fragments {
-                        if let Simple(SimpleWordKind::Literal(ref s)) = *w {
+                        if let WordKind::Simple(SimpleWordKind::Literal(ref s)) = *w {
                             buf.push_str(s);
                         } else {
                             return None;
@@ -721,7 +814,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             None => (None, None),
             Some(w) => match as_num(&w) {
                 Some(num) => (Some(num), Some(w)),
-                None => return Ok(Some(Err(self.builder.word(w)))),
+                None => return Ok(Some(Err(build_word(w)))),
             },
         };
 
@@ -732,7 +825,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             Some(&DLess) | Some(&DLessDash) => return Ok(Some(Ok(self.redirect_heredoc(src_fd)?))),
 
             _ => match src_fd_as_word {
-                Some(w) => return Ok(Some(Err(self.builder.word(w)))),
+                Some(w) => return Ok(Some(Err(build_word(w)))),
                 None => return Ok(None),
             },
         };
@@ -742,7 +835,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         macro_rules! get_path {
             ($parser:expr) => {
                 match $parser.word_preserve_trailing_whitespace_raw()? {
-                    Some(p) => $parser.builder.word(p),
+                    Some(p) => build_word(p),
                     None => return Err(self.make_unexpected_err()),
                 }
             };
@@ -752,7 +845,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             ($parser:expr) => {{
                 let path = if $parser.peek_reserved_token(&[Dash]).is_some() {
                     let dash = $parser.reserved_token(&[Dash])?;
-                    Single(Simple(SimpleWordKind::Literal(dash.to_string())))
+                    ComplexWordKind::Single(WordKind::Simple(SimpleWordKind::Literal(
+                        dash.to_string(),
+                    )))
                 } else {
                     let path_start_pos = $parser.iter.pos();
                     let path = if let Some(p) = $parser.word_preserve_trailing_whitespace_raw()? {
@@ -761,8 +856,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         return Err($parser.make_unexpected_err());
                     };
                     let is_numeric = match path {
-                        Single(ref p) => could_be_numeric(&p),
-                        Concat(ref v) => v.iter().all(could_be_numeric),
+                        ComplexWordKind::Single(ref p) => could_be_numeric(&p),
+                        ComplexWordKind::Concat(ref v) => v.iter().all(could_be_numeric),
                     };
                     if is_numeric {
                         path
@@ -770,24 +865,24 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         return Err(ParseError::BadFd(path_start_pos, self.iter.pos()));
                     }
                 };
-                $parser.builder.word(path)
+                build_word(path)
             }};
         }
 
         let redirect = match redir_tok {
-            Less => builder::RedirectKind::Read(src_fd, get_path!(self)),
-            Great => builder::RedirectKind::Write(src_fd, get_path!(self)),
-            DGreat => builder::RedirectKind::Append(src_fd, get_path!(self)),
-            Clobber => builder::RedirectKind::Clobber(src_fd, get_path!(self)),
-            LessGreat => builder::RedirectKind::ReadWrite(src_fd, get_path!(self)),
+            Less => ast::Redirect::Read(src_fd, get_path!(self)),
+            Great => ast::Redirect::Write(src_fd, get_path!(self)),
+            DGreat => ast::Redirect::Append(src_fd, get_path!(self)),
+            Clobber => ast::Redirect::Clobber(src_fd, get_path!(self)),
+            LessGreat => ast::Redirect::ReadWrite(src_fd, get_path!(self)),
 
-            LessAnd => builder::RedirectKind::DupRead(src_fd, get_dup_path!(self)),
-            GreatAnd => builder::RedirectKind::DupWrite(src_fd, get_dup_path!(self)),
+            LessAnd => ast::Redirect::DupRead(src_fd, get_dup_path!(self)),
+            GreatAnd => ast::Redirect::DupWrite(src_fd, get_dup_path!(self)),
 
             _ => unreachable!(),
         };
 
-        Ok(Some(Ok(self.builder.redirect(redirect))))
+        Ok(Some(Ok(redirect)))
     }
 
     /// Parses a heredoc redirection and the heredoc's body.
@@ -815,9 +910,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Note: this method expects that the caller provide a potential file
     /// descriptor for redirection.
-    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<B::Redirect> {
-        use std::iter::FromIterator;
-
+    pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<ast::Redirect> {
         macro_rules! try_map {
             ($result:expr) => {
                 $result.map_err(|e: iter::UnmatchedError| ParseError::Unmatched(e.0, e.1))?
@@ -1053,7 +1146,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
         let body = if quoted {
             let body = heredoc.into_iter().flat_map(|(t, _)| t).collect::<Vec<_>>();
-            Single(Simple(SimpleWordKind::Literal(concat_tokens(&body))))
+            ComplexWordKind::Single(WordKind::Simple(SimpleWordKind::Literal(concat_tokens(
+                &body,
+            ))))
         } else {
             let mut tok_iter = TokenIter::with_position(empty_iter(), heredoc_start_pos);
             while let Some((line, pos)) = heredoc.pop() {
@@ -1066,19 +1161,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             let _ = mem::replace(&mut self.iter, tok_backup);
 
             if body.len() > 1 {
-                Concat(body.into_iter().map(Simple).collect())
+                ComplexWordKind::Concat(body.into_iter().map(WordKind::Simple).collect())
             } else {
                 let body = body
                     .pop()
                     .unwrap_or_else(|| SimpleWordKind::Literal(String::new()));
-                Single(Simple(body))
+                ComplexWordKind::Single(WordKind::Simple(body))
             }
         };
 
-        let word = self.builder.word(body);
-        Ok(self
-            .builder
-            .redirect(builder::RedirectKind::Heredoc(src_fd, word)))
+        let word = build_word(body);
+        Ok(ast::Redirect::Heredoc(src_fd, word))
     }
 
     /// Parses a whitespace delimited chunk of text, honoring space quoting rules,
@@ -1091,16 +1184,16 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     ///
     /// Note that an error can still arise if partial tokens are present
     /// (e.g. malformed parameter).
-    pub fn word(&mut self) -> ParseResult<Option<B::Word>> {
+    pub fn word(&mut self) -> ParseResult<Option<ast::ComplexWord>> {
         let ret = self.word_preserve_trailing_whitespace()?;
         self.skip_whitespace();
         Ok(ret)
     }
 
     /// Identical to `Parser::word()` but preserves trailing whitespace after the word.
-    pub fn word_preserve_trailing_whitespace(&mut self) -> ParseResult<Option<B::Word>> {
+    pub fn word_preserve_trailing_whitespace(&mut self) -> ParseResult<Option<ast::ComplexWord>> {
         let w = match self.word_preserve_trailing_whitespace_raw()? {
-            Some(w) => Some(self.builder.word(w)),
+            Some(w) => Some(build_word(w)),
             None => None,
         };
         Ok(w)
@@ -1110,7 +1203,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// not pass the result to the AST builder.
     fn word_preserve_trailing_whitespace_raw(
         &mut self,
-    ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
+    ) -> ParseResult<Option<ComplexWordKind<ast::Command>>> {
         self.word_preserve_trailing_whitespace_raw_with_delim(None)
     }
 
@@ -1119,7 +1212,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn word_preserve_trailing_whitespace_raw_with_delim(
         &mut self,
         delim: Option<Token>,
-    ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
+    ) -> ParseResult<Option<ComplexWordKind<ast::Command>>> {
         self.skip_whitespace();
 
         // Make sure we don't consume comments,
@@ -1143,12 +1236,12 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 | Some(&Literal(_)) => {}
 
                 Some(&Backtick) => {
-                    words.push(Simple(self.backticked_raw()?));
+                    words.push(WordKind::Simple(self.backticked_raw()?));
                     continue;
                 }
 
                 Some(&Dollar) | Some(&ParamPositional(_)) => {
-                    words.push(Simple(self.parameter_raw()?));
+                    words.push(WordKind::Simple(self.parameter_raw()?));
                     continue;
                 }
 
@@ -1177,22 +1270,22 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 | tok @ Slash
                 | tok @ Comma
                 | tok @ CurlyOpen
-                | tok @ CurlyClose => Simple(SimpleWordKind::Literal(tok.to_string())),
+                | tok @ CurlyClose => WordKind::Simple(SimpleWordKind::Literal(tok.to_string())),
 
-                Name(s) | Literal(s) => Simple(SimpleWordKind::Literal(s)),
+                Name(s) | Literal(s) => WordKind::Simple(SimpleWordKind::Literal(s)),
 
-                Star => Simple(SimpleWordKind::Star),
-                Question => Simple(SimpleWordKind::Question),
-                Tilde => Simple(SimpleWordKind::Tilde),
-                SquareOpen => Simple(SimpleWordKind::SquareOpen),
-                SquareClose => Simple(SimpleWordKind::SquareClose),
-                Colon => Simple(SimpleWordKind::Colon),
+                Star => WordKind::Simple(SimpleWordKind::Star),
+                Question => WordKind::Simple(SimpleWordKind::Question),
+                Tilde => WordKind::Simple(SimpleWordKind::Tilde),
+                SquareOpen => WordKind::Simple(SimpleWordKind::SquareOpen),
+                SquareClose => WordKind::Simple(SimpleWordKind::SquareClose),
+                Colon => WordKind::Simple(SimpleWordKind::Colon),
 
                 Backslash => match self.iter.next() {
                     // Escaped newlines become whitespace and a delimiter.
                     // Alternatively, can't escape EOF, just ignore the slash
                     Some(Newline) | None => break,
-                    Some(t) => Simple(SimpleWordKind::Escaped(t.to_string())),
+                    Some(t) => WordKind::Simple(SimpleWordKind::Escaped(t.to_string())),
                 },
 
                 SingleQuote => {
@@ -1201,10 +1294,10 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         buf.push_str(t.map_err(|e| ParseError::Unmatched(e.0, e.1))?.as_str())
                     }
 
-                    SingleQuoted(buf)
+                    WordKind::SingleQuoted(buf)
                 }
 
-                DoubleQuote => DoubleQuoted(
+                DoubleQuote => WordKind::DoubleQuoted(
                     self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos)?,
                 ),
 
@@ -1225,9 +1318,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         let ret = if words.is_empty() {
             None
         } else if words.len() == 1 {
-            Some(Single(words.pop().unwrap()))
+            Some(ComplexWordKind::Single(words.pop().unwrap()))
         } else {
-            Some(Concat(words))
+            Some(ComplexWordKind::Concat(words))
         };
 
         Ok(ret)
@@ -1251,7 +1344,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         &mut self,
         delim: Option<(Token, Token)>,
         start_pos: SourcePos,
-    ) -> ParseResult<Vec<SimpleWordKind<B::Command>>> {
+    ) -> ParseResult<Vec<SimpleWordKind<ast::Command>>> {
         let (delim_open, delim_close) = match delim {
             Some((o, c)) => (Some(o), Some(c)),
             None => (None, None),
@@ -1332,14 +1425,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Any backslashes that are immediately followed by \, $, or ` are removed
     /// before the contents inside the original backticks are recursively parsed
     /// as a command.
-    pub fn backticked_command_substitution(&mut self) -> ParseResult<B::Word> {
+    pub fn backticked_command_substitution(&mut self) -> ParseResult<ast::ComplexWord> {
         let word = self.backticked_raw()?;
-        Ok(self.builder.word(Single(Simple(word))))
+        Ok(build_word(ComplexWordKind::Single(WordKind::Simple(word))))
     }
 
     /// Identical to `Parser::backticked_command_substitution`, except but does not pass the
     /// result to the AST builder.
-    fn backticked_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
+    fn backticked_raw(&mut self) -> ParseResult<SimpleWordKind<ast::Command>> {
         let backtick_pos = self.iter.pos();
         eat!(self, { Backtick => {} });
 
@@ -1369,15 +1462,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// parameter, the `$` should be treated as a literal. Thus this method
     /// returns an `Word`, which will capture both cases where a literal or
     /// parameter is parsed.
-    pub fn parameter(&mut self) -> ParseResult<B::Word> {
+    pub fn parameter(&mut self) -> ParseResult<ast::ComplexWord> {
         let param = self.parameter_raw()?;
-        Ok(self.builder.word(Single(Simple(param))))
+        Ok(build_word(ComplexWordKind::Single(WordKind::Simple(param))))
     }
 
     /// Identical to `Parser::parameter()` but does not pass the result to the AST builder.
-    fn parameter_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
-        use crate::shell::ast::Parameter;
-
+    fn parameter_raw(&mut self) -> ParseResult<SimpleWordKind<ast::Command>> {
         let start_pos = self.iter.pos();
         match self.iter.next() {
             Some(ParamPositional(p)) => Ok(SimpleWordKind::Param(Parameter::Positional(p as u32))),
@@ -1406,7 +1497,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn parameter_substitution_word_raw(
         &mut self,
         curly_open_pos: SourcePos,
-    ) -> ParseResult<Option<ComplexWordKind<B::Command>>> {
+    ) -> ParseResult<Option<ComplexWordKind<ast::Command>>> {
         let mut words = Vec::new();
         'capture_words: loop {
             'capture_literals: loop {
@@ -1437,7 +1528,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     | Some(t @ &LessGreat)
                     | Some(t @ &Whitespace(_))
                     | Some(t @ &Newline) => {
-                        words.push(Simple(SimpleWordKind::Literal(t.as_str().to_owned())));
+                        words.push(WordKind::Simple(SimpleWordKind::Literal(
+                            t.as_str().to_owned(),
+                        )));
                         false
                     }
 
@@ -1474,7 +1567,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     let mut peek = self.iter.multipeek();
                     peek.peek_next(); // Skip past the Backslash
                     if let Some(t @ &Newline) = peek.peek_next() {
-                        words.push(Simple(SimpleWordKind::Escaped(t.as_str().to_owned())));
+                        words.push(WordKind::Simple(SimpleWordKind::Escaped(
+                            t.as_str().to_owned(),
+                        )));
                         true
                     } else {
                         // Backslash is escaping something other than newline,
@@ -1492,8 +1587,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
 
             match self.word_preserve_trailing_whitespace_raw_with_delim(Some(CurlyClose))? {
-                Some(Single(w)) => words.push(w),
-                Some(Concat(ws)) => words.extend(ws),
+                Some(ComplexWordKind::Single(w)) => words.push(w),
+                Some(ComplexWordKind::Concat(ws)) => words.extend(ws),
                 None => break 'capture_words,
             }
         }
@@ -1506,9 +1601,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         if words.is_empty() {
             Ok(None)
         } else if words.len() == 1 {
-            Ok(Some(Single(words.pop().unwrap())))
+            Ok(Some(ComplexWordKind::Single(words.pop().unwrap())))
         } else {
-            Ok(Some(Concat(words)))
+            Ok(Some(ComplexWordKind::Concat(words)))
         }
     }
 
@@ -1520,12 +1615,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Nothing is passed to the builder.
     fn parameter_substitution_body_raw(
         &mut self,
-        param: DefaultParameter,
+        param: Parameter,
         curly_open_pos: SourcePos,
-    ) -> ParseResult<SimpleWordKind<B::Command>> {
-        use crate::shell::ast::builder::ParameterSubstitutionKind::*;
-        use crate::shell::ast::Parameter;
-
+    ) -> ParseResult<SimpleWordKind<ast::Command>> {
         let has_colon = eat_maybe!(self, {
             Colon => { true };
             _ => { false },
@@ -1547,15 +1639,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // We must carefully check if we get ${#-} or ${#?}, in which case
         // we have parsed a Len substitution and not something else
         let ret = if maybe_len && op == Dash {
-            Len(Parameter::Dash)
+            ParameterSubstitutionKind::Len(Parameter::Dash)
         } else if maybe_len && op == Question {
-            Len(Parameter::Question)
+            ParameterSubstitutionKind::Len(Parameter::Question)
         } else {
             match op {
-                Dash => Default(has_colon, param, word),
-                Equals => Assign(has_colon, param, word),
-                Question => Error(has_colon, param, word),
-                Plus => Alternative(has_colon, param, word),
+                Dash => ParameterSubstitutionKind::Default(has_colon, param, word),
+                Equals => ParameterSubstitutionKind::Assign(has_colon, param, word),
+                Question => ParameterSubstitutionKind::Error(has_colon, param, word),
+                Plus => ParameterSubstitutionKind::Alternative(has_colon, param, word),
                 _ => unreachable!(),
             }
         };
@@ -1564,10 +1656,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
     /// Nothing is passed to the builder.
-    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<B::Command>> {
-        use crate::shell::ast::builder::ParameterSubstitutionKind::*;
-        use crate::shell::ast::Parameter;
-
+    fn parameter_substitution_raw(&mut self) -> ParseResult<SimpleWordKind<ast::Command>> {
         let start_pos = self.iter.pos();
         match self.iter.peek() {
             Some(&ParenOpen) => {
@@ -1597,9 +1686,9 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     self.skip_whitespace();
                     eat!(self, { ParenClose => {} });
 
-                    Arith(subst)
+                    ParameterSubstitutionKind::Arith(subst)
                 } else {
-                    Command(self.subshell_internal(true)?)
+                    ParameterSubstitutionKind::Command(self.subshell_internal(true)?)
                 };
 
                 Ok(SimpleWordKind::Subst(Box::new(subst)))
@@ -1616,11 +1705,11 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         eat_maybe!(self, {
                             Percent => {
                                 let word = self.parameter_substitution_word_raw(curly_open_pos);
-                                RemoveLargestSuffix(param, word?)
+                                ParameterSubstitutionKind::RemoveLargestSuffix(param, word?)
                             };
                             _ => {
                                 let word = self.parameter_substitution_word_raw(curly_open_pos);
-                                RemoveSmallestSuffix(param, word?)
+                                ParameterSubstitutionKind::RemoveSmallestSuffix(param, word?)
                             }
                         })
                     }
@@ -1630,13 +1719,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                         eat_maybe!(self, {
                             Pound => {
                                 let word = self.parameter_substitution_word_raw(curly_open_pos);
-                                RemoveLargestPrefix(param, word?)
+                                ParameterSubstitutionKind::RemoveLargestPrefix(param, word?)
                             };
                             _ => {
                                 match self.parameter_substitution_word_raw(curly_open_pos)? {
                                     // Handle ${##} case
-                                    None if Parameter::Pound == param => Len(Parameter::Pound),
-                                    w => RemoveSmallestPrefix(param, w),
+                                    None if Parameter::Pound == param => ParameterSubstitutionKind::Len(Parameter::Pound),
+                                    w => ParameterSubstitutionKind::RemoveSmallestPrefix(param, w),
                                 }
                             }
                         })
@@ -1653,7 +1742,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                     // Otherwise we must have ${#param}
                     _ if Parameter::Pound == param => {
                         let param = self.parameter_inner()?;
-                        eat!(self, { CurlyClose => { Len(param) } })
+                        eat!(self, { CurlyClose => { ParameterSubstitutionKind::Len(param) } })
                     }
 
                     _ => return self.parameter_substitution_body_raw(param, curly_open_pos),
@@ -1667,9 +1756,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
-    fn parameter_inner(&mut self) -> ParseResult<DefaultParameter> {
-        use crate::shell::ast::Parameter;
-
+    fn parameter_inner(&mut self) -> ParseResult<Parameter> {
         let start_pos = self.iter.pos();
         let param = match self.iter.next() {
             Some(Star) => Parameter::Star,
@@ -1696,7 +1783,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses any number of sequential commands between the `do` and `done`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
-    pub fn do_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
+    pub fn do_group(&mut self) -> ParseResult<CommandGroup<ast::Command>> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[DO])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1711,7 +1798,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses any number of sequential commands between balanced `{` and `}`
     /// reserved words. Each of the reserved words must be a literal token, and cannot be quoted.
-    pub fn brace_group(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
+    pub fn brace_group(&mut self) -> ParseResult<CommandGroup<ast::Command>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
         let start_pos = self.iter.pos();
@@ -1728,7 +1815,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Parses any number of sequential commands between balanced `(` and `)`.
     ///
     /// It is considered an error if no commands are present inside the subshell.
-    pub fn subshell(&mut self) -> ParseResult<builder::CommandGroup<B::Command>> {
+    pub fn subshell(&mut self) -> ParseResult<CommandGroup<ast::Command>> {
         self.subshell_internal(false)
     }
 
@@ -1737,7 +1824,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn subshell_internal(
         &mut self,
         empty_body_ok: bool,
-    ) -> ParseResult<builder::CommandGroup<B::Command>> {
+    ) -> ParseResult<CommandGroup<ast::Command>> {
         let start_pos = self.iter.pos();
         eat!(self, { ParenOpen => {} });
 
@@ -1779,7 +1866,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses compound commands like `for`, `case`, `if`, `while`, `until`,
     /// brace groups, or subshells, including any redirection lists to be applied to them.
-    pub fn compound_command(&mut self) -> ParseResult<B::CompoundCommand> {
+    pub fn compound_command(&mut self) -> ParseResult<ast::CompoundCommand> {
         self.compound_command_internal(None)
     }
 
@@ -1788,48 +1875,141 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn compound_command_internal(
         &mut self,
         kw: Option<CompoundCmdKeyword>,
-    ) -> ParseResult<B::CompoundCommand> {
+    ) -> ParseResult<ast::CompoundCommand> {
         let cmd = match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
-                let fragments = self.if_command()?;
-                let io = self.redirect_list()?;
-                self.builder.if_command(fragments, io)
+                let IfFragments {
+                    conditionals,
+                    else_branch,
+                } = self.if_command()?;
+                let mut io = self.redirect_list()?;
+
+                let conditionals = conditionals
+                    .into_iter()
+                    .map(|gbp| {
+                        let mut guard = gbp.guard.commands;
+                        let mut body = gbp.body.commands;
+
+                        guard.shrink_to_fit();
+                        body.shrink_to_fit();
+
+                        ast::GuardBodyPair { guard, body }
+                    })
+                    .collect();
+
+                let else_branch = else_branch.map(
+                    |CommandGroup {
+                         commands: mut els, ..
+                     }| {
+                        els.shrink_to_fit();
+                        els
+                    },
+                );
+
+                io.shrink_to_fit();
+
+                Ok(ast::CompoundCommand {
+                    kind: ast::CompoundCommandKind::If {
+                        conditionals,
+                        else_branch,
+                    },
+                    io,
+                })
             }
 
             Some(CompoundCmdKeyword::While) | Some(CompoundCmdKeyword::Until) => {
-                let (until, guard_body_pair) = self.loop_command()?;
-                let io = self.redirect_list()?;
-                self.builder.loop_command(until, guard_body_pair, io)
+                let (kind, guard_body_pair) = self.loop_command()?;
+                let mut io = self.redirect_list()?;
+
+                let mut guard = guard_body_pair.guard.commands;
+                let mut body = guard_body_pair.body.commands;
+
+                guard.shrink_to_fit();
+                body.shrink_to_fit();
+                io.shrink_to_fit();
+
+                let guard_body_pair = ast::GuardBodyPair { guard, body };
+
+                let loop_cmd = match kind {
+                    LoopKind::While => ast::CompoundCommandKind::While(guard_body_pair),
+                    LoopKind::Until => ast::CompoundCommandKind::Until(guard_body_pair),
+                };
+
+                Ok(ast::CompoundCommand { kind: loop_cmd, io })
             }
 
             Some(CompoundCmdKeyword::For) => {
-                let for_fragments = self.for_command()?;
-                let io = self.redirect_list()?;
-                self.builder.for_command(for_fragments, io)
+                let fragments = self.for_command()?;
+                let mut io = self.redirect_list()?;
+
+                let mut body = fragments.body.commands;
+                body.shrink_to_fit();
+                io.shrink_to_fit();
+
+                Ok(ast::CompoundCommand {
+                    kind: ast::CompoundCommandKind::For {
+                        var: fragments.var,
+                        words: fragments.words,
+                        body,
+                    },
+                    io,
+                })
             }
 
             Some(CompoundCmdKeyword::Case) => {
                 let fragments = self.case_command()?;
-                let io = self.redirect_list()?;
-                self.builder.case_command(fragments, io)
+                let mut io = self.redirect_list()?;
+
+                let arms = fragments
+                    .arms
+                    .into_iter()
+                    .map(|arm| {
+                        let mut patterns = arm.patterns.pattern_alternatives;
+                        patterns.shrink_to_fit();
+
+                        let mut body = arm.body.commands;
+                        body.shrink_to_fit();
+
+                        ast::PatternBodyPair { patterns, body }
+                    })
+                    .collect();
+
+                io.shrink_to_fit();
+                Ok(ast::CompoundCommand {
+                    kind: ast::CompoundCommandKind::Case {
+                        word: fragments.word,
+                        arms,
+                    },
+                    io,
+                })
             }
 
             Some(CompoundCmdKeyword::Brace) => {
-                let cmds = self.brace_group()?;
-                let io = self.redirect_list()?;
-                self.builder.brace_group(cmds, io)
+                let mut cmds = self.brace_group()?.commands;
+                let mut io = self.redirect_list()?;
+                cmds.shrink_to_fit();
+                io.shrink_to_fit();
+                Ok(ast::CompoundCommand {
+                    kind: ast::CompoundCommandKind::Brace(cmds),
+                    io,
+                })
             }
 
             Some(CompoundCmdKeyword::Subshell) => {
-                let cmds = self.subshell()?;
-                let io = self.redirect_list()?;
-                self.builder.subshell(cmds, io)
+                let mut cmds = self.subshell()?.commands;
+                let mut io = self.redirect_list()?;
+                cmds.shrink_to_fit();
+                io.shrink_to_fit();
+                Ok(ast::CompoundCommand {
+                    kind: ast::CompoundCommandKind::Subshell(cmds),
+                    io,
+                })
             }
 
             None => return Err(self.make_unexpected_err()),
         };
 
-        Ok(cmd)
+        cmd
     }
 
     /// Parses loop commands like `while` and `until` but does not parse any
@@ -1838,16 +2018,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since they are compound commands (and can have redirections applied to
     /// the entire loop) this method returns the relevant parts of the loop command,
     /// without constructing an AST node, it so that the caller can do so with redirections.
-    pub fn loop_command(
-        &mut self,
-    ) -> ParseResult<(builder::LoopKind, builder::GuardBodyPairGroup<B::Command>)> {
+    pub fn loop_command(&mut self) -> ParseResult<(LoopKind, GuardBodyPairGroup<ast::Command>)> {
         let start_pos = self.iter.pos();
         let kind = match self
             .reserved_word(&[WHILE, UNTIL])
             .map_err(|_| self.make_unexpected_err())?
         {
-            WHILE => builder::LoopKind::While,
-            UNTIL => builder::LoopKind::Until,
+            WHILE => LoopKind::While,
+            UNTIL => LoopKind::Until,
             _ => unreachable!(),
         };
         let guard = self.command_group(CommandGroupDelimiters {
@@ -1857,7 +2035,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         match self.peek_reserved_word(&[DO]) {
             Some(_) => Ok((
                 kind,
-                builder::GuardBodyPairGroup {
+                GuardBodyPairGroup {
                     guard,
                     body: self.do_group()?,
                 },
@@ -1876,7 +2054,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `if` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `if` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn if_command(&mut self) -> ParseResult<builder::IfFragments<B::Command>> {
+    pub fn if_command(&mut self) -> ParseResult<IfFragments<ast::Command>> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[IF])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1905,7 +2083,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 reserved_words: &[ELIF, ELSE, FI],
                 ..Default::default()
             })?;
-            conditionals.push(builder::GuardBodyPairGroup { guard, body });
+            conditionals.push(GuardBodyPairGroup { guard, body });
 
             let els = match self
                 .reserved_word(&[ELIF, ELSE, FI])
@@ -1924,7 +2102,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 _ => unreachable!(),
             };
 
-            return Ok(builder::IfFragments {
+            return Ok(IfFragments {
                 conditionals,
                 else_branch: els,
             });
@@ -1936,7 +2114,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `for` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `for` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn for_command(&mut self) -> ParseResult<builder::ForFragments<B::Word, B::Command>> {
+    pub fn for_command(&mut self) -> ParseResult<ForFragments<ast::ComplexWord, ast::Command>> {
         let start_pos = self.iter.pos();
         self.reserved_word(&[FOR])
             .map_err(|_| self.make_unexpected_err())?;
@@ -1961,7 +2139,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         // A for command can take one of several different shapes (in pseudo regex syntax):
         // `for name [\n*] [in [word*]] [;\n* | \n+] do_group`
         // Below we'll disambiguate what situation we have as we move along.
-        let (words, pre_body_comments) = if self.peek_reserved_word(&[IN]).is_some() {
+        let words = if self.peek_reserved_word(&[IN]).is_some() {
             // Found `in` keyword, therefore we're looking at something like
             // `for name \n* in [words*] [;\n* | \n+] do_group`
             self.reserved_word(&[IN]).unwrap();
@@ -1979,18 +2157,17 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             // We need either a newline or a ; to separate the words from the body
             // Thus if neither is found it is considered an error
             let words_comment = self.newline();
-            if !found_semi && words_comment.is_none() {
+            if !found_semi && !words_comment {
                 return Err(self.make_unexpected_err());
             }
 
-            (
-                Some((post_var_comments, words, words_comment)),
-                self.linebreak(),
-            )
+            self.linebreak();
+            Some(words)
         } else if Some(&Semi) == self.iter.peek() {
             // `for name \n*;\n* do_group`
             eat!(self, { Semi => {} });
-            (None, self.linebreak())
+            self.linebreak();
+            None
         } else if self.peek_reserved_word(&[DO]).is_none() {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
@@ -2003,7 +2180,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             ));
         } else {
             // `for name \n* do_group`
-            (None, post_var_comments)
+            None
         };
 
         if self.peek_reserved_word(&[DO]).is_none() {
@@ -2016,13 +2193,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         }
 
         let body = self.do_group()?;
-        Ok(builder::ForFragments {
-            var,
-            var_comment,
-            words,
-            pre_body_comments,
-            body,
-        })
+        Ok(ForFragments { var, words, body })
     }
 
     /// Parses a single `case` command but does not parse any redirections that may follow.
@@ -2030,7 +2201,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Since `case` is a compound command (and can have redirections applied to it) this
     /// method returns the relevant parts of the `case` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
-    pub fn case_command(&mut self) -> ParseResult<builder::CaseFragments<B::Word, B::Command>> {
+    pub fn case_command(&mut self) -> ParseResult<CaseFragments<ast::ComplexWord, ast::Command>> {
         let start_pos = self.iter.pos();
 
         macro_rules! missing_in {
@@ -2114,17 +2285,14 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
                 self.iter.next();
                 (false, self.newline())
             } else {
-                (true, None)
+                (true, false)
             };
 
-            arms.push(builder::CaseArm {
-                patterns: builder::CasePatternFragments {
-                    pre_pattern_comments,
+            arms.push(CaseArm {
+                patterns: CasePatternFragments {
                     pattern_alternatives: patterns,
-                    pattern_comment,
                 },
                 body,
-                arm_comment,
             });
 
             if no_more_arms {
@@ -2132,29 +2300,15 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             }
         }
 
-        let remaining_comments = self.linebreak();
-        let pre_esac_comments = match pre_esac_comments {
-            Some(mut comments) => {
-                comments.extend(remaining_comments);
-                comments
-            }
-            None => remaining_comments,
-        };
-
+        self.linebreak();
         self.reserved_word(&[ESAC]).map_err(missing_esac!())?;
 
-        Ok(builder::CaseFragments {
-            word,
-            post_word_comments,
-            in_comment,
-            arms,
-            post_arms_comments: pre_esac_comments,
-        })
+        Ok(CaseFragments { word, arms })
     }
 
     /// Parses a single function declaration if present. If no function is present,
     /// nothing is consumed from the token stream.
-    pub fn maybe_function_declaration(&mut self) -> ParseResult<Option<B::PipeableCommand>> {
+    pub fn maybe_function_declaration(&mut self) -> ParseResult<Option<ast::PipeableCommand>> {
         if self.peek_reserved_word(&[FUNCTION]).is_some() {
             return self.function_declaration().map(Some);
         }
@@ -2184,17 +2338,13 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// A function declaration must either begin with the `function` reserved word, or
     /// the name of the function must be followed by `()`. Whitespace is allowed between
     /// the name and `(`, and whitespace is allowed between `()`.
-    pub fn function_declaration(&mut self) -> ParseResult<B::PipeableCommand> {
-        let (name, post_name_comments, body) = self.function_declaration_internal()?;
-        Ok(self
-            .builder
-            .function_declaration(name, post_name_comments, body))
+    pub fn function_declaration(&mut self) -> ParseResult<ast::PipeableCommand> {
+        let (name, body) = self.function_declaration_internal()?;
+        Ok(ast::PipeableCommand::FunctionDef(name, Arc::new(body)))
     }
 
     /// Like `Parser::function_declaration`, but does not pass the result to the builder
-    fn function_declaration_internal(
-        &mut self,
-    ) -> ParseResult<(String, Vec<builder::Newline>, B::CompoundCommand)> {
+    fn function_declaration_internal(&mut self) -> ParseResult<(String, ast::CompoundCommand)> {
         let found_fn = match self.peek_reserved_word(&[FUNCTION]) {
             Some(_) => {
                 self.iter.next();
@@ -2241,24 +2391,30 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
             } else if Some(&ParenOpen) == self.iter.peek() {
                 // Otherwise it is possible for there to be a subshell as the body
                 let subshell = self.subshell_internal(true)?;
-                if subshell.commands.is_empty() && subshell.trailing_comments.is_empty() {
+                if subshell.commands.is_empty() {
                     // Case like `function foo () ...`
                     None
                 } else {
                     // Case like `function foo (subshell)`
-                    Some(self.builder.subshell(subshell, Vec::new()))
+                    Some(ast::CompoundCommand {
+                        kind: ast::CompoundCommandKind::Subshell(subshell.commands),
+                        io: Vec::new(),
+                    })
                 }
             } else {
                 None
             }
         };
 
-        let (post_name_comments, body) = match body {
-            Some(subshell) => (Vec::new(), subshell),
-            None => (self.linebreak(), self.compound_command()?),
+        let body = match body {
+            Some(subshell) => subshell,
+            None => {
+                self.linebreak();
+                self.compound_command()?
+            }
         };
 
-        Ok((name, post_name_comments, body))
+        Ok((name, body))
     }
 
     /// Skips over any encountered whitespace but preserves newlines.
@@ -2285,34 +2441,26 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses zero or more `Token::Newline`s, skipping whitespace but capturing comments.
     #[inline]
-    pub fn linebreak(&mut self) -> Vec<builder::Newline> {
-        let mut lines = Vec::new();
-        while let Some(n) = self.newline() {
-            lines.push(n);
-        }
-        lines
+    pub fn linebreak(&mut self) {
+        while self.newline() {}
     }
 
     /// Tries to parse a `Token::Newline` (or a comment) after skipping whitespace.
-    pub fn newline(&mut self) -> Option<builder::Newline> {
+    pub fn newline(&mut self) -> bool {
         self.skip_whitespace();
 
         match self.iter.peek() {
             Some(&Pound) => {
-                let comment = self
-                    .iter
-                    .by_ref()
-                    .take_while(|t| t != &Newline)
-                    .collect::<Vec<_>>();
-                Some(builder::Newline(Some(concat_tokens(&comment))))
+                self.iter.by_ref().take_while(|t| t != &Newline).count();
+                true
             }
 
             Some(&Newline) => {
                 self.iter.next();
-                Some(builder::Newline(None))
+                true
             }
 
-            _ => None,
+            _ => false,
         }
     }
 
@@ -2451,7 +2599,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     pub fn command_group(
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> ParseResult<builder::CommandGroup<B::Command>> {
+    ) -> ParseResult<CommandGroup<ast::Command>> {
         self.command_group_internal(cfg)
     }
 
@@ -2459,8 +2607,8 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     fn command_group_internal(
         &mut self,
         cfg: CommandGroupDelimiters<'_, '_, '_>,
-    ) -> ParseResult<builder::CommandGroup<B::Command>> {
-        let found_delim = |slf: &mut Parser<_, _>| {
+    ) -> ParseResult<CommandGroup<ast::Command>> {
+        let found_delim = |slf: &mut Parser<_>| {
             let found_exact = !cfg.exact_tokens.is_empty()
                 && slf
                     .iter
@@ -2474,32 +2622,29 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
         };
 
         let mut cmds = Vec::new();
-        let mut trailing_comments = Vec::new();
         loop {
             if found_delim(self) {
                 break;
             }
 
-            let leading_comments = self.linebreak();
+            self.linebreak();
 
             if found_delim(self) || self.iter.peek().is_none() {
-                debug_assert!(trailing_comments.is_empty());
-                trailing_comments = leading_comments;
                 break;
             }
 
-            cmds.push(self.complete_command_with_leading_comments(leading_comments)?);
+            match self.complete_command()? {
+                Some(cmd) => cmds.push(cmd),
+                None => break,
+            }
         }
 
-        Ok(builder::CommandGroup {
-            commands: cmds,
-            trailing_comments,
-        })
+        Ok(CommandGroup { commands: cmds })
     }
 
     /// Parses the body of any arbitrary arithmetic expression, e.g. `x + $y << 5`.
     /// The caller is responsible for parsing the external `$(( ))` tokens.
-    pub fn arithmetic_substitution(&mut self) -> ParseResult<DefaultArithmetic> {
+    pub fn arithmetic_substitution(&mut self) -> ParseResult<Arithmetic> {
         let mut exprs = Vec::new();
         loop {
             self.skip_whitespace();
@@ -2520,7 +2665,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
-    fn arith_assig(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_assig(&mut self) -> ParseResult<Arithmetic> {
         use crate::shell::ast::Arithmetic::*;
 
         self.skip_whitespace();
@@ -2591,7 +2736,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses expressions such as `expr ? expr : expr`.
-    fn arith_ternary(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_ternary(&mut self) -> ParseResult<Arithmetic> {
         let guard = self.arith_logical_or()?;
         self.skip_whitespace();
         eat_maybe!(self, {
@@ -2643,7 +2788,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr == expr` or `expr != expr`.
     #[inline]
-    fn arith_eq(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_eq(&mut self) -> ParseResult<Arithmetic> {
         let mut expr = self.arith_ineq()?;
         loop {
             self.skip_whitespace();
@@ -2666,7 +2811,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
 
     /// Parses expressions such as `expr < expr`,`expr <= expr`,`expr > expr`,`expr >= expr`.
     #[inline]
-    fn arith_ineq(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_ineq(&mut self) -> ParseResult<Arithmetic> {
         let mut expr = self.arith_shift()?;
         loop {
             self.skip_whitespace();
@@ -2723,7 +2868,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     );
 
     /// Parses expressions such as `expr ** expr`.
-    fn arith_pow(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_pow(&mut self) -> ParseResult<Arithmetic> {
         let expr = self.arith_unary_misc()?;
         self.skip_whitespace();
 
@@ -2750,7 +2895,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     }
 
     /// Parses expressions such as `!expr`, `~expr`, `+expr`, `-expr`, `++var` and `--var`.
-    fn arith_unary_misc(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_unary_misc(&mut self) -> ParseResult<Arithmetic> {
         self.skip_whitespace();
         let expr = eat_maybe!(self, {
             Bang  => { ast::Arithmetic::LogicalNot(Box::new(self.arith_unary_misc()?)) },
@@ -2790,7 +2935,7 @@ impl<I: Iterator<Item = Token>, B: Builder> Parser<I, B> {
     /// Numeric literals must appear as a single `Literal` token. `Name` tokens will be
     /// treated as variables.
     #[inline]
-    fn arith_post_incr(&mut self) -> ParseResult<DefaultArithmetic> {
+    fn arith_post_incr(&mut self) -> ParseResult<Arithmetic> {
         self.skip_whitespace();
         eat_maybe!(self, {
             ParenOpen => {
@@ -2885,26 +3030,217 @@ fn concat_tokens(tokens: &[Token]) -> String {
     s
 }
 
+fn build_word(kind: ComplexWordKind<ast::Command>) -> ast::ComplexWord {
+    macro_rules! map {
+        ($pat:expr) => {
+            match $pat {
+                Some(w) => Some(build_word(w)),
+                None => None,
+            }
+        };
+    }
+
+    let mut map_simple = |kind| {
+        let simple = match kind {
+            SimpleWordKind::Literal(s) => ast::SimpleWord::Literal(s.into()),
+            SimpleWordKind::Escaped(s) => ast::SimpleWord::Escaped(s.into()),
+            SimpleWordKind::Param(p) => ast::SimpleWord::Param(p),
+            SimpleWordKind::Star => ast::SimpleWord::Star,
+            SimpleWordKind::Question => ast::SimpleWord::Question,
+            SimpleWordKind::SquareOpen => ast::SimpleWord::SquareOpen,
+            SimpleWordKind::SquareClose => ast::SimpleWord::SquareClose,
+            SimpleWordKind::Tilde => ast::SimpleWord::Tilde,
+            SimpleWordKind::Colon => ast::SimpleWord::Colon,
+
+            SimpleWordKind::CommandSubst(c) => {
+                ast::SimpleWord::Subst(ast::ParameterSubstitution::Command(c.commands))
+            }
+
+            SimpleWordKind::Subst(s) => {
+                // Force a move out of the boxed substitution. For some reason doing
+                // the deref in the match statment gives a strange borrow failure
+                let s = *s;
+                let subst = match s {
+                    ParameterSubstitutionKind::Len(p) => ast::ParameterSubstitution::Len(p),
+                    ParameterSubstitutionKind::Command(c) => {
+                        ast::ParameterSubstitution::Command(c.commands)
+                    }
+                    ParameterSubstitutionKind::Arith(a) => ast::ParameterSubstitution::Arith(a),
+                    ParameterSubstitutionKind::Default(c, p, w) => {
+                        ast::ParameterSubstitution::Default(c, p, map!(w))
+                    }
+                    ParameterSubstitutionKind::Assign(c, p, w) => {
+                        ast::ParameterSubstitution::Assign(c, p, map!(w))
+                    }
+                    ParameterSubstitutionKind::Error(c, p, w) => {
+                        ast::ParameterSubstitution::Error(c, p, map!(w))
+                    }
+                    ParameterSubstitutionKind::Alternative(c, p, w) => {
+                        ast::ParameterSubstitution::Alternative(c, p, map!(w))
+                    }
+                    ParameterSubstitutionKind::RemoveSmallestSuffix(p, w) => {
+                        ast::ParameterSubstitution::RemoveSmallestSuffix(p, map!(w))
+                    }
+                    ParameterSubstitutionKind::RemoveLargestSuffix(p, w) => {
+                        ast::ParameterSubstitution::RemoveLargestSuffix(p, map!(w))
+                    }
+                    ParameterSubstitutionKind::RemoveSmallestPrefix(p, w) => {
+                        ast::ParameterSubstitution::RemoveSmallestPrefix(p, map!(w))
+                    }
+                    ParameterSubstitutionKind::RemoveLargestPrefix(p, w) => {
+                        ast::ParameterSubstitution::RemoveLargestPrefix(p, map!(w))
+                    }
+                };
+                ast::SimpleWord::Subst(subst)
+            }
+        };
+        simple
+    };
+
+    let mut map_word = |kind| {
+        let word = match kind {
+            WordKind::Simple(s) => ast::Word::Simple(Box::new(map_simple(s))),
+            WordKind::SingleQuoted(s) => ast::Word::SingleQuoted(s.into()),
+            WordKind::DoubleQuoted(v) => {
+                ast::Word::DoubleQuoted(v.into_iter().map(&mut map_simple).collect::<Vec<_>>())
+            }
+        };
+        word
+    };
+
+    let word = match compress(kind) {
+        ComplexWordKind::Single(s) => ast::ComplexWord::Single(map_word(s)),
+        ComplexWordKind::Concat(words) => {
+            ast::ComplexWord::Concat(words.into_iter().map(map_word).collect::<Vec<_>>())
+        }
+    };
+
+    word
+}
+
+#[must_use = "iterator adaptors are lazy and do nothing unless consumed"]
+struct Coalesce<I: Iterator, F> {
+    iter: I,
+    cur: Option<I::Item>,
+    func: F,
+}
+
+impl<I: Iterator, F> Coalesce<I, F> {
+    fn new<T>(iter: T, func: F) -> Self
+    where
+        T: IntoIterator<IntoIter = I, Item = I::Item>,
+    {
+        Coalesce {
+            iter: iter.into_iter(),
+            cur: None,
+            func,
+        }
+    }
+}
+
+type CoalesceResult<T> = Result<T, (T, T)>;
+
+impl<I, F> Iterator for Coalesce<I, F>
+where
+    I: Iterator,
+    F: FnMut(I::Item, I::Item) -> CoalesceResult<I::Item>,
+{
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let cur = self.cur.take().or_else(|| self.iter.next());
+        let (mut left, mut right) = match (cur, self.iter.next()) {
+            (Some(l), Some(r)) => (l, r),
+            (Some(l), None) | (None, Some(l)) => return Some(l),
+            (None, None) => return None,
+        };
+
+        loop {
+            match (self.func)(left, right) {
+                Ok(combined) => match self.iter.next() {
+                    Some(next) => {
+                        left = combined;
+                        right = next;
+                    }
+                    None => return Some(combined),
+                },
+
+                Err((left, right)) => {
+                    debug_assert!(self.cur.is_none());
+                    self.cur = Some(right);
+                    return Some(left);
+                }
+            }
+        }
+    }
+}
+
+fn compress<C>(word: ComplexWordKind<C>) -> ComplexWordKind<C> {
+    fn coalesce_simple<C>(
+        a: SimpleWordKind<C>,
+        b: SimpleWordKind<C>,
+    ) -> CoalesceResult<SimpleWordKind<C>> {
+        match (a, b) {
+            (SimpleWordKind::Literal(mut a), SimpleWordKind::Literal(b)) => {
+                a.push_str(&b);
+                Ok(SimpleWordKind::Literal(a))
+            }
+            (a, b) => Err((a, b)),
+        }
+    }
+
+    fn coalesce_word<C>(a: WordKind<C>, b: WordKind<C>) -> CoalesceResult<WordKind<C>> {
+        match (a, b) {
+            (WordKind::Simple(a), WordKind::Simple(b)) => coalesce_simple(a, b)
+                .map(WordKind::Simple)
+                .map_err(|(a, b)| (WordKind::Simple(a), WordKind::Simple(b))),
+            (WordKind::SingleQuoted(mut a), WordKind::SingleQuoted(b)) => {
+                a.push_str(&b);
+                Ok(WordKind::SingleQuoted(a))
+            }
+            (WordKind::DoubleQuoted(a), WordKind::DoubleQuoted(b)) => {
+                let quoted = Coalesce::new(a.into_iter().chain(b), coalesce_simple).collect();
+                Ok(WordKind::DoubleQuoted(quoted))
+            }
+            (a, b) => Err((a, b)),
+        }
+    }
+
+    match word {
+        ComplexWordKind::Single(s) => ComplexWordKind::Single(match s {
+            s @ WordKind::Simple(_) | s @ WordKind::SingleQuoted(_) => s,
+            WordKind::DoubleQuoted(v) => {
+                WordKind::DoubleQuoted(Coalesce::new(v, coalesce_simple).collect())
+            }
+        }),
+        ComplexWordKind::Concat(v) => {
+            let mut body: Vec<_> = Coalesce::new(v.into_iter(), coalesce_word).collect();
+            if body.len() == 1 {
+                ComplexWordKind::Single(body.pop().unwrap())
+            } else {
+                ComplexWordKind::Concat(body)
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::shell::ast::builder::Newline;
     use crate::shell::ast::Command::*;
     use crate::shell::ast::CompoundCommandKind::*;
     use crate::shell::ast::*;
     use crate::shell::lexer::Lexer;
     use crate::shell::parse::*;
 
-    fn make_parser(src: &str) -> DefaultParser<Lexer<std::str::Chars<'_>>> {
-        DefaultParser::new(Lexer::new(src.chars()))
+    fn make_parser(src: &str) -> Parser<Lexer<std::str::Chars<'_>>> {
+        Parser::new(Lexer::new(src.chars()))
     }
 
-    fn word(s: &str) -> TopLevelWord<String> {
-        TopLevelWord(ComplexWord::Single(Word::Simple(SimpleWord::Literal(
-            String::from(s),
-        ))))
+    fn word(s: &str) -> AtomicTopLevelWord {
+        ComplexWord::Single(Word::Simple(Box::new(SimpleWord::Literal(String::from(s)))))
     }
 
-    fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<DefaultSimpleCommand> {
+    fn cmd_args_simple(cmd: &str, args: &[&str]) -> Box<SimpleCommand> {
         let mut cmd_args = Vec::with_capacity(args.len() + 1);
         cmd_args.push(RedirectOrCmdWord::CmdWord(word(cmd)));
         cmd_args.extend(args.iter().map(|&a| RedirectOrCmdWord::CmdWord(word(a))));
@@ -2915,15 +3251,15 @@ mod tests {
         })
     }
 
-    fn cmd(cmd: &str) -> TopLevelCommand<String> {
+    fn cmd(cmd: &str) -> AtomicTopLevelCommand {
         cmd_args(cmd, &[])
     }
 
-    fn cmd_args(cmd: &str, args: &[&str]) -> TopLevelCommand<String> {
-        TopLevelCommand(List(CommandList {
+    fn cmd_args(cmd: &str, args: &[&str]) -> AtomicTopLevelCommand {
+        List(AndOrList {
             first: ListableCommand::Single(PipeableCommand::Simple(cmd_args_simple(cmd, args))),
             rest: vec![],
-        }))
+        })
     }
 
     #[test]
@@ -2949,12 +3285,6 @@ mod tests {
             "foo () #comment1\n\n#comment2\n         (echo body)",
         ];
 
-        let comments = vec![
-            Newline(Some(String::from("#comment1"))),
-            Newline(None),
-            Newline(Some(String::from("#comment2"))),
-        ];
-
         let name = String::from("foo");
         let body = vec![cmd_args("echo", &["body"])];
         let body_brace = CompoundCommand {
@@ -2970,7 +3300,7 @@ mod tests {
             .into_iter()
             .zip(repeat(body_brace))
             .chain(cases_subshell.into_iter().zip(repeat(body_subshell)))
-            .map(|(src, body)| (src, (name.clone(), comments.clone(), body)));
+            .map(|(src, body)| (src, (name.clone(), body)));
 
         for (src, correct) in iter {
             assert_eq!(
@@ -2989,12 +3319,10 @@ mod tests {
 
     #[test]
     fn test_parameter_substitution_command_can_contain_comments() {
-        let param_subst = builder::SimpleWordKind::Subst(Box::new(
-            builder::ParameterSubstitutionKind::Command(builder::CommandGroup {
+        let param_subst =
+            SimpleWordKind::Subst(Box::new(ParameterSubstitutionKind::Command(CommandGroup {
                 commands: vec![cmd("foo")],
-                trailing_comments: vec![Newline(Some("#comment".into()))],
-            }),
-        ));
+            })));
         assert_eq!(
             Ok(param_subst),
             make_parser("$(foo\n#comment\n)").parameter_raw()
@@ -3003,9 +3331,8 @@ mod tests {
 
     #[test]
     fn test_backticked_command_can_contain_comments() {
-        let cmd_subst = builder::SimpleWordKind::CommandSubst(builder::CommandGroup {
+        let cmd_subst = SimpleWordKind::CommandSubst(CommandGroup {
             commands: vec![cmd("foo")],
-            trailing_comments: vec![Newline(Some("#comment".into()))],
         });
         assert_eq!(
             Ok(cmd_subst),

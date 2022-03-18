@@ -1,8 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::str::CharIndices;
 
-use crate::shell::ast::builder::{AtomicDefaultBuilder, Builder, DefaultBuilder};
 use crate::shell::ast::AtomicTopLevelCommand;
 use crate::shell::lexer::Lexer;
 use crate::shell::parse::{CommandGroupDelimiters, ParseError, Parser};
@@ -45,9 +43,9 @@ pub enum RunscriptParseError {
 
 pub fn parse_shell(
     source: RunscriptSource,
-) -> Result<Vec<AtomicTopLevelCommand<String>>, RunscriptParseError> {
+) -> Result<Vec<AtomicTopLevelCommand>, RunscriptParseError> {
     let lexer = Lexer::new(source.source.chars());
-    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+    let mut parser = Parser::<_>::new(lexer);
 
     parser
         .command_group(CommandGroupDelimiters::default())
@@ -58,9 +56,9 @@ pub fn parse_shell(
         })
 }
 
-pub fn parse_command(command: &str) -> Result<AtomicTopLevelCommand<String>, ParseError> {
+pub fn parse_command(command: &str) -> Result<AtomicTopLevelCommand, ParseError> {
     let lexer = Lexer::new(command.chars());
-    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+    let mut parser = Parser::<_>::new(lexer);
     parser.complete_command().map(Option::unwrap)
 }
 
@@ -179,7 +177,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                     let command_pos = line_index!(i);
 
                     let lexer = Lexer::new((&mut iterator).map(|(_, ch)| ch));
-                    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+                    let mut parser = Parser::<_>::new(lexer);
                     let command = parser
                         .complete_command()
                         .map_err(|e| RunscriptParseError::CommandParseError {

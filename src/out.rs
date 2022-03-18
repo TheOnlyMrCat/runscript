@@ -1,16 +1,15 @@
 use std::io::Write;
 
 use crate::shell::ast::{
-    AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, Redirect, RedirectOrCmdWord,
+    AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, RedirectOrCmdWord,
     SimpleCommand, SimpleWord, Word,
 };
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 use crate::config::Config;
-use crate::exec::{AtomicSimpleWord, ProcessExit};
+use crate::exec::{EvaluatedRedirect, ProcessExit};
 // use crate::exec::CommandExecError;
 use crate::parser::RunscriptParseError;
-use crate::script::Runscript;
 
 pub fn no_runfile_err(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
@@ -124,13 +123,9 @@ pub fn phase_message(output_stream: &StandardStream, config: &Config, phase: &st
 
 pub fn command_prompt(
     output_stream: &StandardStream,
-    command: &SimpleCommand<
-        String,
-        AtomicTopLevelWord<String>,
-        Redirect<AtomicTopLevelWord<String>>,
-    >,
+    command: &SimpleCommand,
     env_remaps: &[(String, String)],
-    redirects: &[Redirect<Vec<String>>],
+    redirects: &[EvaluatedRedirect],
     evaluated: &[Vec<String>],
 ) {
     let mut lock = output_stream.lock();
@@ -168,20 +163,22 @@ pub fn command_prompt(
         }
         for redirect in redirects {
             match redirect {
-                Redirect::Read(fd, file) => write!(lock, "{}<{} ", fd.unwrap_or(0), file.join(" ")),
-                Redirect::Write(fd, file) => {
-                    write!(lock, "{}>{} ", fd.unwrap_or(1), file.join(" "))
+                EvaluatedRedirect::Read(fd, file) => {
+                    write!(lock, "{}<{} ", fd.unwrap_or(0), file.join(" "))
                 }
-                Redirect::ReadWrite(fd, file) => {
-                    write!(lock, "{}<>{} ", fd.unwrap_or(0), file.join(" "))
+                EvaluatedRedirect::Write(fd, file) => {
+                    write!(lock, "{}>{} ", fd.unwrap_or(1), file.join(""))
                 }
-                Redirect::Append(fd, file) => {
-                    write!(lock, "{}>>{} ", fd.unwrap_or(1), file.join(" "))
+                EvaluatedRedirect::ReadWrite(fd, file) => {
+                    write!(lock, "{}<>{} ", fd.unwrap_or(0), file.join(""))
                 }
-                Redirect::Clobber(fd, file) => {
-                    write!(lock, "{}>|{} ", fd.unwrap_or(1), file.join(" "))
+                EvaluatedRedirect::Append(fd, file) => {
+                    write!(lock, "{}>>{} ", fd.unwrap_or(1), file.join(""))
                 }
-                Redirect::Heredoc(fd, _) => {
+                EvaluatedRedirect::Clobber(fd, file) => {
+                    write!(lock, "{}>|{} ", fd.unwrap_or(1), file.join(""))
+                }
+                EvaluatedRedirect::Heredoc(fd, _) => {
                     write!(lock, "{}<", fd.unwrap_or(0)).expect("Failed to write");
                     lock.set_color(
                         ColorSpec::new()
@@ -192,18 +189,15 @@ pub fn command_prompt(
                     write!(lock, "(heredoc) ").expect("Failed to write");
                     lock.reset()
                 }
-                Redirect::DupRead(_fd, _) => todo!(),
-                Redirect::DupWrite(_fd, _) => todo!(),
+                EvaluatedRedirect::DupRead(_fd, _) => todo!(),
+                EvaluatedRedirect::DupWrite(_fd, _) => todo!(),
             }
             .expect("Failed to write");
         }
     }
 }
 
-fn print_tl_word(
-    lock: &mut StandardStreamLock,
-    AtomicTopLevelWord(word): &AtomicTopLevelWord<String>,
-) -> String {
+fn print_tl_word(lock: &mut StandardStreamLock, word: &AtomicTopLevelWord) -> String {
     match word {
         ComplexWord::Concat(words) => {
             let mut concat = String::new();
@@ -216,7 +210,7 @@ fn print_tl_word(
     }
 }
 
-fn print_word(lock: &mut StandardStreamLock, word: &Word<String, AtomicSimpleWord>) -> String {
+fn print_word(lock: &mut StandardStreamLock, word: &Word) -> String {
     match word {
         Word::Simple(w) => print_simple_word(lock, w),
         Word::DoubleQuoted(w) => {
@@ -235,7 +229,7 @@ fn print_word(lock: &mut StandardStreamLock, word: &Word<String, AtomicSimpleWor
     }
 }
 
-fn print_simple_word(lock: &mut StandardStreamLock, word: &AtomicSimpleWord) -> String {
+fn print_simple_word(lock: &mut StandardStreamLock, word: &SimpleWord) -> String {
     match word {
         SimpleWord::Literal(lit) => {
             write!(lock, "{}", lit).expect("Failed to write");
@@ -250,7 +244,7 @@ fn print_simple_word(lock: &mut StandardStreamLock, word: &AtomicSimpleWord) -> 
             print_parameter(lock, p)
         }
         SimpleWord::Subst(s) => {
-            match **s {
+            match *s {
                 ParameterSubstitution::Command(_) => {
                     write!(lock, "$(...)").expect("Failed to write")
                 }
@@ -294,7 +288,7 @@ fn print_simple_word(lock: &mut StandardStreamLock, word: &AtomicSimpleWord) -> 
     }
 }
 
-fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter<String>) -> String {
+fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter) -> String {
     match parameter {
         Parameter::At => write!(lock, "@").expect("Failed to write"),
         Parameter::Star => write!(lock, "*").expect("Failed to write"),
