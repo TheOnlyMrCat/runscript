@@ -27,7 +27,7 @@ pub struct Scripts {
 
 #[derive(Clone, Debug)]
 pub struct Script {
-    pub commands: Vec<AtomicTopLevelCommand<String>>,
+    pub commands: Vec<AtomicTopLevelCommand>,
     pub line: usize,
 }
 

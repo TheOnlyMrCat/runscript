@@ -38,6 +38,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[cfg(not(feature = "dev-panic"))]
 fn panic_hook(info: &std::panic::PanicInfo) {
+    use std::fs::File;
+
     let mut tries = 0;
     let report_file = loop {
         let uuid = uuid::Uuid::new_v4().to_hyphenated().to_string();

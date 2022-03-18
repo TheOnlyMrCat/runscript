@@ -1,4 +1,3 @@
-use crate::shell::ast::builder::{AtomicDefaultBuilder, Newline};
 use crate::shell::ast::AtomicTopLevelCommand;
 use crate::shell::lexer::Lexer;
 use crate::shell::parse::{ParseError, Parser};
@@ -277,13 +276,13 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 
 fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<Vec<AtomicTopLevelCommand<String>>, OldParseError> {
+) -> Result<Vec<AtomicTopLevelCommand>, OldParseError> {
     let mut cmds = Vec::new();
     let i = context.iterator.peek().unwrap().0;
     let eof_loc = context.get_line(context.runfile.source.len());
 
     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
-    let mut parser = Parser::<_, AtomicDefaultBuilder<String>>::new(lexer);
+    let mut parser = Parser::<_>::new(lexer);
     loop {
         if let Some(Newline(Some(comment))) = parser.newline() {
             if comment == "#/" {

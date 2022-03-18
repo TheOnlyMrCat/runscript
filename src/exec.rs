@@ -8,27 +8,15 @@ use std::sync::Arc;
 
 use crate::parser::RunscriptSource;
 use crate::shell::ast::{
-    AndOr, Arithmetic, AtomicCommandList, AtomicShellPipeableCommand, AtomicTopLevelCommand,
-    AtomicTopLevelWord, ComplexWord, CompoundCommand, CompoundCommandKind, GuardBodyPair,
-    ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair, PipeableCommand, Redirect,
-    RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord, Word,
+    AndOr, AndOrList, AtomicTopLevelCommand, ComplexWord, CompoundCommand, CompoundCommandKind,
+    GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair,
+    PipeableCommand, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord,
+    Word,
 };
 use itertools::Itertools;
 
-use crate::{out, Script};
+use crate::out;
 use glob::{glob_with, MatchOptions, Pattern, PatternError};
-
-type AtomicParameterSubstitution = ParameterSubstitution<
-    Parameter<String>,
-    AtomicTopLevelWord<String>,
-    AtomicTopLevelCommand<String>,
-    Arithmetic<String>,
->;
-pub type AtomicSimpleWord = SimpleWord<String, Parameter<String>, Box<AtomicParameterSubstitution>>;
-pub type AtomicCompoundCommand = CompoundCommand<
-    CompoundCommandKind<String, AtomicTopLevelWord<String>, AtomicTopLevelCommand<String>>,
-    Redirect<AtomicTopLevelWord<String>>,
->;
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {
@@ -496,8 +484,19 @@ impl From<Output> for FinishedProcess {
     }
 }
 
+pub enum EvaluatedRedirect {
+    Read(Option<u16>, Vec<String>),
+    Write(Option<u16>, Vec<String>),
+    ReadWrite(Option<u16>, Vec<String>),
+    Append(Option<u16>, Vec<String>),
+    Clobber(Option<u16>, Vec<String>),
+    Heredoc(Option<u16>, Vec<String>),
+    DupRead(Option<u16>, Vec<String>),
+    DupWrite(Option<u16>, Vec<String>),
+}
+
 pub fn exec_script(
-    script: &[AtomicTopLevelCommand<String>],
+    script: &[AtomicTopLevelCommand],
     config: &ExecConfig,
 ) -> Result<FinishedProcess, CommandExecError> {
     let proc = ShellContext {
@@ -523,7 +522,7 @@ struct ShellContext {
     /// Exported varables
     env: HashMap<String, String>,
     /// Function definitions
-    functions: HashMap<String, Arc<AtomicCompoundCommand>>,
+    functions: HashMap<String, Arc<CompoundCommand>>,
     /// PID of most recent job
     pid: i32,
     /// Exit code of most recent top-level command
@@ -533,7 +532,7 @@ struct ShellContext {
 impl ShellContext {
     fn exec_script_entries(
         &mut self,
-        commands: &[AtomicTopLevelCommand<String>],
+        commands: &[AtomicTopLevelCommand],
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
         use crate::shell::ast::Command;
@@ -541,7 +540,7 @@ impl ShellContext {
         let mut jobs = vec![];
 
         if commands.len() > 1 {
-            for AtomicTopLevelCommand(command) in &commands[..commands.len() - 1] {
+            for command in &commands[..commands.len() - 1] {
                 let (command, is_job) = match command {
                     Command::Job(list) => (list, true),
                     Command::List(list) => (list, false),
@@ -561,7 +560,7 @@ impl ShellContext {
         }
 
         if !commands.is_empty() {
-            match &commands.last().unwrap().0 {
+            match &commands.last().unwrap() {
                 Command::Job(list) => {
                     let proc = self.exec_andor_list(list, config, true)?;
                     let mut last_proc = WaitableProcess::empty_success();
@@ -582,11 +581,7 @@ impl ShellContext {
 
     fn exec_andor_list(
         &mut self,
-        command: &AtomicCommandList<
-            String,
-            AtomicTopLevelWord<String>,
-            AtomicTopLevelCommand<String>,
-        >,
+        command: &AndOrList,
         config: &ExecConfig,
         is_job: bool,
     ) -> Result<WaitableProcess, CommandExecError> {
@@ -624,13 +619,7 @@ impl ShellContext {
 
     fn exec_listable_command(
         &mut self,
-        command: &ListableCommand<
-            AtomicShellPipeableCommand<
-                String,
-                AtomicTopLevelWord<String>,
-                AtomicTopLevelCommand<String>,
-            >,
-        >,
+        command: &ListableCommand,
         config: &ExecConfig,
         is_job: bool,
     ) -> Result<WaitableProcess, CommandExecError> {
@@ -682,11 +671,7 @@ impl ShellContext {
 
     fn exec_pipeable_command(
         &mut self,
-        command: &AtomicShellPipeableCommand<
-            String,
-            AtomicTopLevelWord<String>,
-            AtomicTopLevelCommand<String>,
-        >,
+        command: &PipeableCommand,
         pipe: Pipe,
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
@@ -794,11 +779,7 @@ impl ShellContext {
 
     fn exec_simple_command(
         &mut self,
-        command: &SimpleCommand<
-            String,
-            AtomicTopLevelWord<String>,
-            Redirect<AtomicTopLevelWord<String>>,
-        >,
+        command: &SimpleCommand,
         pipe: Pipe,
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
@@ -847,7 +828,7 @@ impl ShellContext {
                     macro_rules! map_redirect {
                         ($($t:ident),*) => {
                             match redirect {
-                                $(Redirect::$t(fd, word) => Redirect::$t(*fd, self.evaluate_tl_word(word, config)?),)*
+                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word, config)?),)*
                             }
                         }
                     }
@@ -886,7 +867,7 @@ impl ShellContext {
 
             for redirect in redirects {
                 match redirect {
-                    Redirect::Read(fd, word) => {
+                    EvaluatedRedirect::Read(fd, word) => {
                         let file = OpenOptions::new()
                             .read(true)
                             .open(self.working_directory.clone().join(word.join(" ")))
@@ -898,7 +879,7 @@ impl ShellContext {
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::Write(fd, word) => {
+                    EvaluatedRedirect::Write(fd, word) => {
                         let file = OpenOptions::new()
                             .write(true)
                             .create(true)
@@ -911,7 +892,7 @@ impl ShellContext {
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::ReadWrite(fd, word) => {
+                    EvaluatedRedirect::ReadWrite(fd, word) => {
                         let file = OpenOptions::new()
                             .read(true)
                             .write(true)
@@ -925,7 +906,7 @@ impl ShellContext {
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::Append(fd, word) => {
+                    EvaluatedRedirect::Append(fd, word) => {
                         let file = OpenOptions::new()
                             .write(true)
                             .append(true)
@@ -939,7 +920,7 @@ impl ShellContext {
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::Clobber(fd, word) => {
+                    EvaluatedRedirect::Clobber(fd, word) => {
                         let file = OpenOptions::new()
                             .write(true)
                             .create(true)
@@ -952,7 +933,7 @@ impl ShellContext {
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::Heredoc(fd, word) => {
+                    EvaluatedRedirect::Heredoc(fd, word) => {
                         let mut file = tempfile::tempfile()
                             .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
                         for word in word {
@@ -967,8 +948,10 @@ impl ShellContext {
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
-                    Redirect::DupRead(_fd, _) => return Err(CommandExecError::UnsupportedRedirect),
-                    Redirect::DupWrite(_fd, _) => {
+                    EvaluatedRedirect::DupRead(_fd, _) => {
+                        return Err(CommandExecError::UnsupportedRedirect)
+                    }
+                    EvaluatedRedirect::DupWrite(_fd, _) => {
                         return Err(CommandExecError::UnsupportedRedirect)
                     }
                 }
@@ -1157,7 +1140,7 @@ impl ShellContext {
 
     fn evaluate_tl_word(
         &mut self,
-        AtomicTopLevelWord(word): &AtomicTopLevelWord<String>,
+        word: &ComplexWord,
         config: &ExecConfig,
     ) -> Result<Vec<String>, CommandExecError> {
         match word {
@@ -1225,7 +1208,7 @@ impl ShellContext {
 
     fn evaluate_word(
         &mut self,
-        word: &Word<String, AtomicSimpleWord>,
+        word: &Word,
         config: &ExecConfig,
     ) -> Result<GlobPart, CommandExecError> {
         match word {
@@ -1245,7 +1228,7 @@ impl ShellContext {
 
     fn evaluate_simple_word(
         &mut self,
-        word: &AtomicSimpleWord,
+        word: &SimpleWord,
         config: &ExecConfig,
     ) -> Result<GlobPart, CommandExecError> {
         match word {
@@ -1264,7 +1247,7 @@ impl ShellContext {
 
     fn evaluate_param_subst(
         &mut self,
-        param: &AtomicParameterSubstitution,
+        param: &ParameterSubstitution,
         config: &ExecConfig,
     ) -> Result<Vec<String>, CommandExecError> {
         Ok(match param {
@@ -1315,11 +1298,7 @@ impl ShellContext {
         })
     }
 
-    fn evaluate_parameter(
-        &mut self,
-        parameter: &Parameter<String>,
-        config: &ExecConfig,
-    ) -> Vec<String> {
+    fn evaluate_parameter(&mut self, parameter: &Parameter, config: &ExecConfig) -> Vec<String> {
         match parameter {
             Parameter::Positional(n) => config
                 .positional_args

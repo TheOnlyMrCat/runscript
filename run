@@ -1,8 +1,8 @@
 [runscript:build]
-cargo build --all-features
+cargo build
 
 [runscript:run]
-cargo run --all-features -- -t -f test/run
+cargo run --features dev-panic -- -t -f test/run
 
 [args]
 cargo run --all-features -- $@
