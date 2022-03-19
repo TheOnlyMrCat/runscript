@@ -7,6 +7,7 @@ use std::str::Utf8Error;
 use std::sync::Arc;
 
 use crate::parser::RunscriptSource;
+use crate::script::Script;
 use crate::shell::ast::{
     AndOr, AndOrList, AtomicTopLevelCommand, ComplexWord, CompoundCommand, CompoundCommandKind,
     GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair,
@@ -155,7 +156,7 @@ impl OngoingProcess {
     }
 }
 
-struct WaitableProcess {
+pub struct WaitableProcess {
     process: OngoingProcess,
     associated_jobs: Vec<WaitableProcess>,
 }
@@ -274,7 +275,7 @@ impl WaitableProcess {
         }
     }
 
-    fn wait(self) -> FinishedProcess {
+    pub fn wait(self) -> FinishedProcess {
         match self.process {
             OngoingProcess::Concurrent(mut process) => {
                 let status = process.wait().unwrap();
@@ -495,26 +496,8 @@ pub enum EvaluatedRedirect {
     DupWrite(Option<u16>, Vec<String>),
 }
 
-pub fn exec_script(
-    script: &[AtomicTopLevelCommand],
-    config: &ExecConfig,
-) -> Result<FinishedProcess, CommandExecError> {
-    let proc = ShellContext {
-        working_directory: config.working_directory.to_owned(),
-        vars: HashMap::new(),
-        env: HashMap::new(),
-        functions: HashMap::new(),
-        pid: -1,
-        exit_code: 0,
-    }
-    .exec_script_entries(script, config)?
-    .wait();
-    out::process_finish(&proc.status);
-    Ok(proc)
-}
-
 #[derive(Debug, Clone)]
-struct ShellContext {
+pub struct ShellContext {
     /// The current working directory
     working_directory: PathBuf,
     /// The current shell variables
@@ -530,18 +513,29 @@ struct ShellContext {
 }
 
 impl ShellContext {
-    fn exec_script_entries(
+    pub fn new(config: &ExecConfig) -> ShellContext {
+        ShellContext {
+            working_directory: config.working_directory.to_owned(),
+            vars: HashMap::new(),
+            env: HashMap::new(),
+            functions: HashMap::new(),
+            pid: -1,
+            exit_code: 0,
+        }
+    }
+
+    pub fn exec_script(
         &mut self,
-        commands: &[AtomicTopLevelCommand],
+        script: &[AtomicTopLevelCommand],
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
         use crate::shell::ast::Command;
 
         let mut jobs = vec![];
 
-        if commands.len() > 1 {
-            for command in &commands[..commands.len() - 1] {
-                let (command, is_job) = match command {
+        if script.len() > 1 {
+            for command in &script[..script.len() - 1] {
+                let (command, is_job) = match &command {
                     Command::Job(list) => (list, true),
                     Command::List(list) => (list, false),
                 };
@@ -559,8 +553,8 @@ impl ShellContext {
             }
         }
 
-        if !commands.is_empty() {
-            match &commands.last().unwrap() {
+        if !script.is_empty() {
+            match &script.last().unwrap() {
                 Command::Job(list) => {
                     let proc = self.exec_andor_list(list, config, true)?;
                     let mut last_proc = WaitableProcess::empty_success();
@@ -678,31 +672,21 @@ impl ShellContext {
         match command {
             PipeableCommand::Simple(command) => self.exec_simple_command(command, pipe, config),
             PipeableCommand::Compound(command) => match &command.kind {
-                CompoundCommandKind::Brace(commands) => self.exec_script_entries(commands, config),
+                CompoundCommandKind::Brace(commands) => self.exec_script(commands, config),
                 CompoundCommandKind::Subshell(commands) => {
                     let mut context = self.clone();
-                    context.exec_script_entries(commands, config)
+                    context.exec_script(commands, config)
                 }
                 CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
-                    while self
-                        .exec_script_entries(guard, config)?
-                        .wait()
-                        .status
-                        .success()
-                    {
-                        self.exec_script_entries(body, config)?.wait();
+                    while self.exec_script(guard, config)?.wait().status.success() {
+                        self.exec_script(body, config)?.wait();
                     }
 
                     Ok(WaitableProcess::empty_success())
                 }
                 CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
-                    while !self
-                        .exec_script_entries(guard, config)?
-                        .wait()
-                        .status
-                        .success()
-                    {
-                        self.exec_script_entries(body, config)?.wait();
+                    while !self.exec_script(guard, config)?.wait().status.success() {
+                        self.exec_script(body, config)?.wait();
                     }
 
                     Ok(WaitableProcess::empty_success())
@@ -713,18 +697,13 @@ impl ShellContext {
                 } => {
                     let mut last_proc = WaitableProcess::empty_success();
                     for GuardBodyPair { guard, body } in conditionals {
-                        if self
-                            .exec_script_entries(guard, config)?
-                            .wait()
-                            .status
-                            .success()
-                        {
-                            last_proc = self.exec_script_entries(body, config)?;
+                        if self.exec_script(guard, config)?.wait().status.success() {
+                            last_proc = self.exec_script(body, config)?;
                         }
                     }
 
                     if let Some(else_branch) = else_branch {
-                        last_proc = self.exec_script_entries(else_branch, config)?;
+                        last_proc = self.exec_script(else_branch, config)?;
                     }
 
                     Ok(last_proc)
@@ -744,7 +723,7 @@ impl ShellContext {
                         .unwrap_or_else(|| config.positional_args.clone())
                     {
                         self.vars.insert(var.clone(), word.clone());
-                        last_proc = self.exec_script_entries(body, config)?;
+                        last_proc = self.exec_script(body, config)?;
                     }
 
                     Ok(last_proc)
@@ -762,7 +741,7 @@ impl ShellContext {
                         }
 
                         if pattern_matches {
-                            last_proc = self.exec_script_entries(body, config)?;
+                            last_proc = self.exec_script(body, config)?;
                             break;
                         }
                     }
@@ -991,7 +970,7 @@ impl ShellContext {
                     if let Some(ref output_stream) = config.output_stream {
                         writeln!(output_stream.lock()).unwrap();
                     }
-                    self.exec_script_entries(&shell_file, config)
+                    self.exec_script(&shell_file, config)
                 }
                 #[cfg(unix)]
                 "run" => {
@@ -1085,6 +1064,8 @@ impl ShellContext {
 
                             let mut args = command_words;
                             args.remove(0);
+                            //TODO: This recusrive context only makes sense if we haven't changed directory.
+                            // If we have, the script might be assuming `run` will run the script in that directory.
                             let recursive_context = BaseExecContext {
                                 args,
                                 current_file: config.script_path.to_owned(),
@@ -1252,7 +1233,7 @@ impl ShellContext {
     ) -> Result<Vec<String>, CommandExecError> {
         Ok(match param {
             ParameterSubstitution::Command(commands) => self
-                .exec_script_entries(commands, config)
+                .exec_script(commands, config)
                 .map(|output| {
                     Ok(vec![String::from_utf8(output.wait().stdout).map_err(
                         |e| CommandExecError::UnhandledOsString {

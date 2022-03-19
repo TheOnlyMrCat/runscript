@@ -57,6 +57,10 @@ pub fn file_parse_err(output_stream: &StandardStream, error: RunscriptParseError
         RunscriptParseError::IllegalCommandLocation { line } => {
             writeln!(lock, "run({line}): Illegal command location").unwrap();
         }
+        RunscriptParseError::NonexistentOption { line, option } => {
+            writeln!(lock, "run({line}): Nonexistent option: {option}").unwrap();
+        }
+        #[cfg(feature = "old-parser")]
         RunscriptParseError::OldParseError { line, data } => {
             writeln!(lock, "run({line}): {data}").unwrap();
         }

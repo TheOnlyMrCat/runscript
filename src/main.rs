@@ -25,9 +25,9 @@ mod parser;
 mod script;
 mod shell;
 
-use script::{Runscript, Script};
+use script::{CommandOptions, Runscript, Script, ScriptCommand, ScriptOptions};
 
-use crate::exec::{exec_script, ExecConfig};
+use crate::exec::{ExecConfig, ShellContext};
 
 const VERSION_TEXT: &str = "\
 Written by TheOnlyMrCat
@@ -114,11 +114,12 @@ fn main() {
     };
 
     loop {
-        match std::panic::catch_unwind(|| {
-            let output = run(context);
-            std::process::exit(output);
-        }) {
-            Ok(_) => unreachable!(),
+        // This flagrant abuse of unwinding is the best way I can think of to have
+        // the process `fork(2)` itself and get back to `main()` as cleanly as possible.
+        // Speaking of which, it's probably wildly unsafe to do so. I might switch to using
+        // `clone(2)` on Linux, and simply `Command::spawn` on everything else.
+        match std::panic::catch_unwind(|| run(context)) {
+            Ok(output) => std::process::exit(output),
             Err(panic) => match panic.downcast::<BaseExecContext>() {
                 Ok(new_context) => {
                     context = *new_context;
@@ -152,7 +153,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             arg!(-s --script <FILE> "Run a shell script")
                 .required(false)
                 .value_hint(ValueHint::FilePath)
-                .conflicts_with_all(&["file", "list", "target", "build", "command", "test"]),
+                .conflicts_with_all(&["file", "list", "target", "build", "run", "test"]),
         )
         .arg(
             arg!(-f --file <FILE> "Run a runscript file")
@@ -292,6 +293,11 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     #[cfg(not(feature = "dev-panic"))]
     if config.dev.panic {
         std::panic::take_hook();
+    } else {
+        // Capture a short backtrace by default, unless RUST_BACKTRACE is already set
+        if env::var_os("RUST_BACKTRACE").is_none() {
+            env::set_var("RUST_BACKTRACE", "1");
+        }
     }
 
     let cwd = match env::current_dir() {
@@ -305,10 +311,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     if let Some(command) = options.value_of("command") {
         match parser::parse_command(command) {
             Ok(command) => {
-                let script = Script {
-                    commands: vec![command],
-                    line: 1,
-                };
                 let exec_cfg = ExecConfig {
                     output_stream: Some(output_stream),
                     colour_choice,
@@ -322,8 +324,11 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         .map(ToOwned::to_owned)
                         .collect(),
                 };
-
-                exec_script(&script.commands, &exec_cfg).unwrap();
+                let mut shell_context = ShellContext::new(&exec_cfg);
+                shell_context
+                    .exec_script(&[command], &exec_cfg)
+                    .unwrap()
+                    .wait();
                 exitcode::OK
             }
             Err(e) => {
@@ -369,7 +374,14 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 .collect(),
         };
 
-        exec_script(&script, &exec_cfg).unwrap();
+        let mut shell_context = ShellContext::new(&exec_cfg);
+        out::process_finish(
+            &shell_context
+                .exec_script(&script, &exec_cfg)
+                .unwrap()
+                .wait()
+                .status,
+        );
         exitcode::OK
     } else {
         let runfile = match select_file(
@@ -423,7 +435,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 if options.is_present("list") {
                     let longest_target = rf
                         .scripts
-                        .targets
                         .keys()
                         .map(|s| match s.as_str() {
                             "" => "(blank)".len(),
@@ -475,7 +486,18 @@ pub fn run(context: BaseExecContext) -> ExitCode {
 
                         if let Some(script) = scripts.get(phase) {
                             out::phase_message(&output_stream, &config, phase, name);
-                            exec_script(&script.commands, &exec_cfg).unwrap();
+                            let mut shell_context = ShellContext::new(&exec_cfg);
+                            shell_context
+                                .exec_script(
+                                    &script
+                                        .commands
+                                        .clone() //TODO: Don't clone
+                                        .into_iter()
+                                        .map(|sc| sc.command)
+                                        .collect::<Vec<_>>(),
+                                    &exec_cfg,
+                                )
+                                .unwrap();
                             exitcode::OK
                         } else {
                             out::bad_script_phase(&output_stream);
@@ -559,7 +581,7 @@ fn list_scripts_for(
     name_length: usize,
     runscript: &Runscript,
 ) {
-    for (target, map) in runscript.scripts.targets.iter().map(|(target, map)| {
+    for (target, map) in runscript.scripts.iter().map(|(target, map)| {
         if target.is_empty() {
             ("(blank)", map)
         } else {
