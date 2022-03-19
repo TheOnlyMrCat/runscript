@@ -1,7 +1,3 @@
-#[cfg(feature = "trace")]
-#[macro_use]
-extern crate trace;
-
 use std::collections::HashMap;
 use std::env;
 use std::io::Write;
@@ -326,7 +322,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 };
                 let mut shell_context = ShellContext::new(&exec_cfg);
                 shell_context
-                    .exec_script(&[command], &exec_cfg)
+                    .exec_command_group(&[command], &exec_cfg)
                     .unwrap()
                     .wait();
                 exitcode::OK
@@ -377,7 +373,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         let mut shell_context = ShellContext::new(&exec_cfg);
         out::process_finish(
             &shell_context
-                .exec_script(&script, &exec_cfg)
+                .exec_command_group(&script, &exec_cfg)
                 .unwrap()
                 .wait()
                 .status,
@@ -487,17 +483,21 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         if let Some(script) = scripts.get(phase) {
                             out::phase_message(&output_stream, &config, phase, name);
                             let mut shell_context = ShellContext::new(&exec_cfg);
-                            shell_context
-                                .exec_script(
-                                    &script
-                                        .commands
-                                        .clone() //TODO: Don't clone
-                                        .into_iter()
-                                        .map(|sc| sc.command)
-                                        .collect::<Vec<_>>(),
-                                    &exec_cfg,
-                                )
-                                .unwrap();
+                            out::process_finish(
+                                &shell_context
+                                    .exec_command_group(
+                                        &script
+                                            .commands
+                                            .clone() //TODO: Don't clone
+                                            .into_iter()
+                                            .map(|sc| sc.command)
+                                            .collect::<Vec<_>>(),
+                                        &exec_cfg,
+                                    )
+                                    .unwrap()
+                                    .wait()
+                                    .status,
+                            );
                             exitcode::OK
                         } else {
                             out::bad_script_phase(&output_stream);
