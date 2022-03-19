@@ -524,7 +524,7 @@ impl ShellContext {
         }
     }
 
-    pub fn exec_script(
+    pub fn exec_command_group(
         &mut self,
         script: &[AtomicTopLevelCommand],
         config: &ExecConfig,
@@ -672,21 +672,31 @@ impl ShellContext {
         match command {
             PipeableCommand::Simple(command) => self.exec_simple_command(command, pipe, config),
             PipeableCommand::Compound(command) => match &command.kind {
-                CompoundCommandKind::Brace(commands) => self.exec_script(commands, config),
+                CompoundCommandKind::Brace(commands) => self.exec_command_group(commands, config),
                 CompoundCommandKind::Subshell(commands) => {
                     let mut context = self.clone();
-                    context.exec_script(commands, config)
+                    context.exec_command_group(commands, config)
                 }
                 CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
-                    while self.exec_script(guard, config)?.wait().status.success() {
-                        self.exec_script(body, config)?.wait();
+                    while self
+                        .exec_command_group(guard, config)?
+                        .wait()
+                        .status
+                        .success()
+                    {
+                        self.exec_command_group(body, config)?.wait();
                     }
 
                     Ok(WaitableProcess::empty_success())
                 }
                 CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
-                    while !self.exec_script(guard, config)?.wait().status.success() {
-                        self.exec_script(body, config)?.wait();
+                    while !self
+                        .exec_command_group(guard, config)?
+                        .wait()
+                        .status
+                        .success()
+                    {
+                        self.exec_command_group(body, config)?.wait();
                     }
 
                     Ok(WaitableProcess::empty_success())
@@ -697,13 +707,18 @@ impl ShellContext {
                 } => {
                     let mut last_proc = WaitableProcess::empty_success();
                     for GuardBodyPair { guard, body } in conditionals {
-                        if self.exec_script(guard, config)?.wait().status.success() {
-                            last_proc = self.exec_script(body, config)?;
+                        if self
+                            .exec_command_group(guard, config)?
+                            .wait()
+                            .status
+                            .success()
+                        {
+                            last_proc = self.exec_command_group(body, config)?;
                         }
                     }
 
                     if let Some(else_branch) = else_branch {
-                        last_proc = self.exec_script(else_branch, config)?;
+                        last_proc = self.exec_command_group(else_branch, config)?;
                     }
 
                     Ok(last_proc)
@@ -723,7 +738,7 @@ impl ShellContext {
                         .unwrap_or_else(|| config.positional_args.clone())
                     {
                         self.vars.insert(var.clone(), word.clone());
-                        last_proc = self.exec_script(body, config)?;
+                        last_proc = self.exec_command_group(body, config)?;
                     }
 
                     Ok(last_proc)
@@ -741,7 +756,7 @@ impl ShellContext {
                         }
 
                         if pattern_matches {
-                            last_proc = self.exec_script(body, config)?;
+                            last_proc = self.exec_command_group(body, config)?;
                             break;
                         }
                     }
@@ -970,7 +985,7 @@ impl ShellContext {
                     if let Some(ref output_stream) = config.output_stream {
                         writeln!(output_stream.lock()).unwrap();
                     }
-                    self.exec_script(&shell_file, config)
+                    self.exec_command_group(&shell_file, config)
                 }
                 #[cfg(unix)]
                 "run" => {
@@ -1233,7 +1248,7 @@ impl ShellContext {
     ) -> Result<Vec<String>, CommandExecError> {
         Ok(match param {
             ParameterSubstitution::Command(commands) => self
-                .exec_script(commands, config)
+                .exec_command_group(commands, config)
                 .map(|output| {
                     Ok(vec![String::from_utf8(output.wait().stdout).map_err(
                         |e| CommandExecError::UnhandledOsString {

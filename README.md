@@ -1,46 +1,42 @@
 # Runscript
 
-Runscript is a tool like `make` which manages run commands. Runscript can also handle building, but it doesn't track file update times (yet?), so you may still want to use make for that (but you can call it from runscript).
+Runscript is a tool like `make` (or, perhaps, [`just`](https://github.com/casey/just)) which manages project-specific
+commands. When you want to run your program, simply type `run`.
 
 For an example of a useful runscript, see [the runfile for this repository](run).
-
-**Note: This readme is for runscript 2.0. See [the tree at v1.3.0](https://github.com/TheOnlyMrCat/runscript/tree/v1.3.0) for information on the latest stable release**
 
 ## Features
 
 - Does **not** use Makefile syntax
-- Supports most of the shell features you know and love (parsing by [conch_parser](https://github.com/ipetkov/conch-parser) currently)
-- Multiple 'phases' per target, so you can chose to only build, build & run, or only run a target.
+- Supports most of the shell features you know and love (parsing adapted from [ipetkov/conch_parser](https://github.com/ipetkov/conch-parser))
+- Multiple 'phases' per target, so you can chose to build, run, or test a target. If those options aren't enough, you can name your phases whatever you want!
 - Fancy output while running scripts
+- Properly emulates a shell, with `export`able variables, `source`ing shell scripts, `cd`ing.
 
-### To be implemented
+### Still to do
 
-- `source`ing external script files (such as `.env` files)
-- A number of more advanced shell features
+- [ ] A number of more advanced shell features, including:
+  - [ ] Functions
+  - [ ] A few shell builtin commands (e.g. `exit`, `nohup`)
+  - [ ] Arithmetic and a number of parameter substitutions
+- [ ] Remove most sources of panicking (fuzz testing?)
+- [ ] Support windows properly
+- [ ] Execute a script with an external shell (e.g. `bash`)
+
+### Non-goals
+
+Despite having `-c` and `-s` options for executing single commands and shell scripts, respectively, Runscript
+won't emulate a POSIX shell perfectly. I'll try to make it useful enough for most use cases, but if you want a
+POSIX shell, just use a POSIX shell. That being said, feel free to test the limitations of those two flags! I do have
+to be able to execute shell scripts to implement the `source` builtin.
 
 ## How to install
 
-Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Alternatively, you can use cargo to
-build and install it. Supporting package managers is difficult, so I'm not going to try doing it until this gets real use. (Feel
-free to open an issue about it)
-
-### Cargo
-
-If you have cargo, and are fine with building from source, runscript is on [crates.io](https://crates.io/crates/runscript)
-
-```sh
-cargo install runscript
-```
+Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Supporting package managers is
+difficult, so I'm not going to try doing it until this gets real use. (Feel free to open an issue about it)
 
 ## License
 
-Licensed under either of
+Licensed under the Apache License, Version 2.0 (<http://www.apache.org/licenses/LICENSE-2.0>).
 
-- Apache License, Version 2.0, (LICENSE-APACHE or <http://www.apache.org/licenses/LICENSE-2.0>)
-- MIT license (LICENSE-MIT or <http://opensource.org/licenses/MIT>)
-
-at your option.
-
-### Contribution
-
-Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in the work by you, as defined in the Apache-2.0 license, shall be licensed as above, without any additional terms or conditions.
