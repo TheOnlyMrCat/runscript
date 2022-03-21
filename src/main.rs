@@ -18,6 +18,7 @@ mod exec;
 mod old_parser;
 mod out;
 mod parser;
+mod process;
 mod script;
 mod shell;
 
