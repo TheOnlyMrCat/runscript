@@ -1,5 +1,6 @@
 use std::io::Write;
 
+use crate::process::ProcessExit;
 use crate::shell::ast::{
     AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, RedirectOrCmdWord,
     SimpleCommand, SimpleWord, Word,
@@ -7,8 +8,7 @@ use crate::shell::ast::{
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 use crate::config::Config;
-use crate::exec::{EvaluatedRedirect, ProcessExit};
-// use crate::exec::CommandExecError;
+use crate::exec::EvaluatedRedirect;
 use crate::parser::RunscriptParseError;
 
 pub fn no_runfile_err(output_stream: &StandardStream) {
