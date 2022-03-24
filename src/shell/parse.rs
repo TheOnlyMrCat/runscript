@@ -306,11 +306,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         })
     }
 
-    /// Returns the parser's current position in the source.
-    pub fn pos(&self) -> SourcePos {
-        self.iter.pos()
-    }
-
     /// Parses a single complete command.
     ///
     /// For example, `foo && bar; baz` will yield two complete
@@ -321,13 +316,13 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         if self.iter.peek().is_some() {
             let cmd = self.and_or_list()?;
 
-            let (sep, cmd_comment) = eat_maybe!(self, {
-                Semi => { (SeparatorKind::Semi, self.newline()) },
-                Amp  => { (SeparatorKind::Amp , self.newline()) };
+            let sep = eat_maybe!(self, {
+                Semi => { self.newline(); SeparatorKind::Semi },
+                Amp  => { self.newline(); SeparatorKind::Amp };
                 _ => {
                     match self.newline() {
-                        true => (SeparatorKind::Newline, true),
-                        false => (SeparatorKind::Other, false),
+                        true => SeparatorKind::Newline,
+                        false => SeparatorKind::Other,
                     }
                 }
             });
@@ -358,7 +353,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 _ => { break },
             });
 
-            let post_sep_comments = self.linebreak();
+            self.linebreak();
             let next = self.pipeline()?;
 
             let next = if is_and {
@@ -1612,7 +1607,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         &mut self,
         kw: Option<CompoundCmdKeyword>,
     ) -> ParseResult<ast::CompoundCommand> {
-        let cmd = match kw.or_else(|| self.next_compound_command_type()) {
+        match kw.or_else(|| self.next_compound_command_type()) {
             Some(CompoundCmdKeyword::If) => {
                 let IfFragments {
                     conditionals,
@@ -1733,10 +1728,8 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 })
             }
 
-            None => return Err(self.make_unexpected_err()),
-        };
-
-        cmd
+            None => Err(self.make_unexpected_err()),
+        }
     }
 
     /// Parses loop commands like `while` and `until` but does not parse any
@@ -1863,8 +1856,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             _ => unreachable!(),
         };
 
-        let var_comment = self.newline();
-        let post_var_comments = self.linebreak();
+        self.linebreak();
 
         // A for command can take one of several different shapes (in pseudo regex syntax):
         // `for name [\n*] [in [word*]] [;\n* | \n+] do_group`
@@ -1954,18 +1946,14 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             None => return Err(self.make_unexpected_err()),
         };
 
-        let post_word_comments = self.linebreak();
+        self.linebreak();
         self.reserved_word(&[IN]).map_err(missing_in!())?;
-        let in_comment = self.newline();
+        self.newline();
 
-        let mut pre_esac_comments = None;
         let mut arms = Vec::new();
         loop {
-            let pre_pattern_comments = self.linebreak();
+            self.linebreak();
             if self.peek_reserved_word(&[ESAC]).is_some() {
-                // Make sure we don't lose the captured comments if there are no body
-                debug_assert_eq!(pre_esac_comments, None);
-                pre_esac_comments = Some(pre_pattern_comments);
                 break;
             }
 
@@ -2004,18 +1992,19 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 }
             }
 
-            let pattern_comment = self.newline();
+            self.newline();
             let body = self.command_group(CommandGroupDelimiters {
                 reserved_words: &[ESAC],
                 reserved_tokens: &[],
                 exact_tokens: &[DSemi],
             })?;
 
-            let (no_more_arms, arm_comment) = if Some(&DSemi) == self.iter.peek() {
+            let no_more_arms = if Some(&DSemi) == self.iter.peek() {
                 self.iter.next();
-                (false, self.newline())
+                self.newline();
+                false
             } else {
-                (true, false)
+                true
             };
 
             arms.push(ast::PatternBodyPair {
