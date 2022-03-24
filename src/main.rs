@@ -22,7 +22,7 @@ mod process;
 mod script;
 mod shell;
 
-use script::{CommandOptions, Runscript, Script, ScriptCommand, ScriptOptions};
+use script::{Runscript, Script};
 
 use crate::exec::{ExecConfig, ShellContext};
 
@@ -290,7 +290,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
 
     #[cfg(not(feature = "dev-panic"))]
     if config.dev.panic {
-        std::panic::take_hook();
+        let _ = std::panic::take_hook();
     } else {
         // Capture a short backtrace by default, unless RUST_BACKTRACE is already set
         if env::var_os("RUST_BACKTRACE").is_none() {

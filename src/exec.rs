@@ -1,14 +1,13 @@
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ExitStatus, Output, Stdio};
-use std::str::Utf8Error;
+
 use std::sync::Arc;
 
 use crate::parser::RunscriptSource;
 use crate::process::{CommandExecError, Pipe, PipeInput, StdioRepr, WaitableProcess};
-use crate::script::Script;
+
 use crate::shell::ast::{
     AndOr, AndOrList, AtomicTopLevelCommand, ComplexWord, CompoundCommand, CompoundCommandKind,
     GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair,
@@ -18,7 +17,7 @@ use crate::shell::ast::{
 use itertools::Itertools;
 
 use crate::out;
-use glob::{glob_with, MatchOptions, Pattern, PatternError};
+use glob::{glob_with, MatchOptions, Pattern};
 
 #[derive(Clone)]
 pub struct ExecConfig<'a> {

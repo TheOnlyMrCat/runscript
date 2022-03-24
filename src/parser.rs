@@ -46,6 +46,8 @@ pub enum RunscriptParseError {
     },
 }
 
+//TODO: It might be convenient to fold this and conch_parser together even more
+
 pub fn parse_shell(
     source: RunscriptSource,
 ) -> Result<Vec<AtomicTopLevelCommand>, RunscriptParseError> {
@@ -101,7 +103,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
         script: Script,
         target: String,
         phase: String,
-        command_options: CommandOptions,
+        command_option: bool,
     }
 
     let mut current_script: Option<CurrentScript> = None;
@@ -124,7 +126,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                         .rfind(':')
                         .map(|idx| {
                             let phase = name.split_off(idx + 1);
-                            name.pop(); // To remove the `:` as well
+                            name.pop(); // To remove the trailing `:`
                             phase
                         })
                         .unwrap_or_else(|| "run".to_owned());
@@ -170,7 +172,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                     },
                     target: name,
                     phase,
-                    command_options: CommandOptions::default(),
+                    command_option: false,
                 });
             }
             // Option
@@ -183,23 +185,17 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                         let option_name = (&mut iterator)
                             .map_while(|(_, ch)| if ch.is_whitespace() { None } else { Some(ch) })
                             .collect::<String>();
-                    } else {
-                        // Command-specific option
-                        let option_name = (&mut iterator)
-                            .map_while(|(_, ch)| if ch.is_whitespace() { None } else { Some(ch) })
-                            .collect::<String>();
 
-                        match option_name.as_str() {
-                            "ignore-exit" => {
-                                current_script.command_options.ignore_exit_code = true;
-                            }
-                            _ => {
-                                return Err(RunscriptParseError::NonexistentOption {
-                                    line: line_index!(i),
-                                    option: option_name,
-                                });
-                            }
-                        }
+                        return Err(RunscriptParseError::NonexistentOption {
+                            line: line_index!(i),
+                            option: option_name,
+                        });
+                    } else {
+                        // Command-specific option. This must be given to the command parser, but
+                        // we've already consumed the `:`, so we must pass it through with a state
+                        // change. If >1 lookahead is needed elsewhere, I might generalise
+                        // conch_parser's multipeek adapter.
+                        current_script.command_option = true;
                     }
                 } else if let Some((_, ':')) = iterator.peek() {
                     // File-wide option
@@ -237,9 +233,12 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
             (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => {
                 iterator.next();
             }
+            // Everything else is probably a command
             (i, _) => {
                 if let Some(ref mut current_script) = current_script {
                     let command_pos = line_index!(i);
+
+                    current_script.command_option = false;
 
                     let lexer = Lexer::new((&mut iterator).map(|(_, ch)| ch));
                     let mut parser = Parser::<_>::new(lexer);
@@ -249,11 +248,11 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                             line: command_pos,
                             error: e,
                         })?
-                        .unwrap(); // The only error that can occur is EOF, but we already skip whitespace
+                        .unwrap(); // The only error that can occur is EOF before any word, but we already skip whitespace
 
                     current_script.script.commands.push(ScriptCommand {
                         command,
-                        options: std::mem::take(&mut current_script.command_options),
+                        options: CommandOptions::default(),
                     });
                 } else {
                     return Err(RunscriptParseError::IllegalCommandLocation {
