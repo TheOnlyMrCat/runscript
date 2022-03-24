@@ -11,9 +11,9 @@ use std::str::FromStr;
 use std::sync::Arc;
 
 use self::iter::{PeekableIterator, PositionIterator, TokenIter, TokenIterWrapper, TokenIterator};
-use crate::shell::ast::{self, Arithmetic, Parameter};
-use crate::shell::token::Token;
-use crate::shell::token::Token::*;
+use crate::parser::ast::{self, Arithmetic, Parameter};
+use crate::parser::token::Token;
+use crate::parser::token::Token::*;
 
 mod iter;
 
@@ -422,7 +422,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// A valid command is expected to have at least an executable name, or a single
     /// variable assignment or redirection. Otherwise an error will be returned.
     pub fn simple_command(&mut self) -> ParseResult<ast::PipeableCommand> {
-        use crate::shell::ast::{RedirectOrCmdWord, RedirectOrEnvVar};
+        use crate::parser::ast::{RedirectOrCmdWord, RedirectOrEnvVar};
 
         let mut vars = Vec::new();
         let mut cmd_args = Vec::new();
@@ -2377,7 +2377,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// Parses expressions such as `var = expr` or `var op= expr`, where `op` is
     /// any of the following operators: *, /, %, +, -, <<, >>, &, |, ^.
     fn arith_assig(&mut self) -> ParseResult<Arithmetic> {
-        use crate::shell::ast::Arithmetic::*;
+        use crate::parser::ast::Arithmetic::*;
 
         self.skip_whitespace();
 
@@ -2740,11 +2740,11 @@ fn concat_tokens(tokens: &[Token]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::shell::ast::Command::*;
-    use crate::shell::ast::CompoundCommandKind::*;
-    use crate::shell::ast::*;
-    use crate::shell::lexer::Lexer;
-    use crate::shell::parse::*;
+    use crate::parser::ast::Command::*;
+    use crate::parser::ast::CompoundCommandKind::*;
+    use crate::parser::ast::*;
+    use crate::parser::lexer::Lexer;
+    use crate::parser::parse::*;
 
     fn make_parser(src: &str) -> Parser<Lexer<std::str::Chars<'_>>> {
         Parser::new(Lexer::new(src.chars()))

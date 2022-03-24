@@ -1,12 +1,20 @@
 use std::path::PathBuf;
 
-use crate::shell::ast::AtomicTopLevelCommand;
-use crate::shell::lexer::Lexer;
-use crate::shell::parse::{CommandGroupDelimiters, ParseError, Parser};
 use indexmap::IndexMap;
+use parse::{CommandGroupDelimiters, ParseError, Parser};
 
 use crate::script::Overrideable::*;
 use crate::script::*;
+
+pub mod ast;
+pub mod lexer;
+#[cfg(feature = "old-parser")]
+pub mod old;
+pub mod parse;
+pub mod token;
+
+use ast::AtomicTopLevelCommand;
+use lexer::Lexer;
 
 #[derive(Debug, Clone)]
 pub struct RunscriptSource {

@@ -1,3 +1,6 @@
+#![warn(clippy::print_stdout)]
+#![warn(clippy::print_stderr)]
+
 use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -13,13 +16,10 @@ use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 mod config;
 mod exec;
-#[cfg(feature = "old-parser")]
-mod old_parser;
 mod out;
 mod parser;
 mod process;
 mod script;
-mod shell;
 
 use script::{Overrideable, Runscript, Target};
 
@@ -178,6 +178,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     app.print_help().expect("Failed to print clap help");
                     return exitcode::OK;
                 }
+                #[allow(clippy::print_stdout)]
                 clap::ErrorKind::DisplayVersion => {
                     print!("Runscript {}", VERSION);
                     for feature in [
@@ -397,7 +398,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             {
                 match parser::parse_runscript(runfile.clone()) {
                     Ok(rf) => Ok(rf),
-                    Err(e) => old_parser::parse_runscript(runfile.clone())
+                    Err(e) => parser::old::parse_runscript(runfile.clone())
                         .map(|rf| {
                             let mut lock = output_stream.lock();
                             lock.set_color(

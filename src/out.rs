@@ -1,10 +1,10 @@
 use std::io::Write;
 
-use crate::process::ProcessExit;
-use crate::shell::ast::{
+use crate::parser::ast::{
     AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, RedirectOrCmdWord,
     SimpleCommand, SimpleWord, Word,
 };
+use crate::process::ProcessExit;
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 use crate::config::Config;

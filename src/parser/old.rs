@@ -1,5 +1,5 @@
-use crate::shell::lexer::Lexer;
-use crate::shell::parse::{ParseError, Parser};
+use crate::parser::lexer::Lexer;
+use crate::parser::parse::{ParseError, Parser};
 use indexmap::IndexMap;
 
 use crate::parser::RunscriptSource;
