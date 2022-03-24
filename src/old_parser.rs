@@ -4,6 +4,7 @@ use indexmap::IndexMap;
 
 use crate::parser::RunscriptSource;
 use crate::script::*;
+use Overrideable::*;
 
 /// Data related to a `RunscriptParseError`
 #[derive(Debug)]
@@ -130,7 +131,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, OldParseErr
                 .unwrap() //TODO: Something other than unwrap
                 .to_string_lossy()
                 .into_owned(),
-            source: source.source.clone(),
+            source_text: source.source.clone(),
             scripts: IndexMap::new(),
             options: GlobalOptions::default(),
         },
@@ -224,6 +225,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .scripts
                         .entry("default".to_owned())
                         .or_default()
+                        .scripts
                         .insert(phase.to_owned(), script)
                     {
                         return Err(OldParseError::MultipleDefinition {
@@ -248,7 +250,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         });
                     }
                     let target = context.runfile.scripts.entry(name.clone()).or_default();
-                    if let Some(prev_script) = target.insert(phase.to_owned(), script) {
+                    if let Some(prev_script) = target.scripts.insert(phase.to_owned(), script) {
                         return Err(OldParseError::MultipleDefinition {
                             prev_line: prev_script.line,
                             new_line: line,
@@ -258,7 +260,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                 }
             }
             (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => continue,
-            _ => todo!(),
+            _ => unimplemented!(),
         }
     }
 
@@ -270,7 +272,7 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 ) -> Result<Vec<ScriptCommand>, OldParseError> {
     let mut cmds = Vec::new();
     let i = context.iterator.peek().unwrap().0;
-    let eof_loc = context.get_line(context.runfile.source.len());
+    let eof_loc = context.get_line(context.runfile.source_text.len());
 
     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
     let mut parser = Parser::<_>::new(lexer);

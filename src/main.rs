@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +21,7 @@ mod process;
 mod script;
 mod shell;
 
-use script::{Runscript, Script};
+use script::{Overrideable, Runscript, Target};
 
 use crate::exec::{ExecConfig, ShellContext};
 
@@ -449,15 +448,20 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 }
 
                 let target = options.value_of("target").unwrap_or("");
-                let (target, phase) = target.split_once(':').unwrap_or_else(|| {
-                    if options.is_present("build") {
-                        (target, "build")
-                    } else if options.is_present("test") {
-                        (target, "test")
-                    } else {
-                        (target, "run")
-                    }
-                });
+                let (target, phase) = target
+                    .split_once(':')
+                    .map(|(target, phase)| (target, Some(phase)))
+                    .unwrap_or_else(|| {
+                        if options.is_present("build") {
+                            (target, Some("build"))
+                        } else if options.is_present("run") {
+                            (target, Some("run"))
+                        } else if options.is_present("test") {
+                            (target, Some("test"))
+                        } else {
+                            (target, None)
+                        }
+                    });
 
                 match if target.is_empty() {
                     match context.current_target {
@@ -467,7 +471,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 } else {
                     rf.get_target(target)
                 } {
-                    Some((name, scripts)) => {
+                    Some((name, target)) => {
                         let exec_cfg = ExecConfig {
                             output_stream: Some(output_stream.clone()),
                             colour_choice,
@@ -482,28 +486,49 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 .collect(),
                         };
 
-                        if let Some(script) = scripts.get(phase) {
-                            out::phase_message(&output_stream, &config, phase, name);
-                            let mut shell_context = ShellContext::new(&exec_cfg);
-                            let status = shell_context
-                                .exec_command_group(
-                                    &script
-                                        .commands
-                                        .clone() //TODO: Don't clone
-                                        .into_iter()
-                                        .map(|sc| sc.command)
-                                        .collect::<Vec<_>>(),
-                                    &exec_cfg,
-                                )
-                                .unwrap() //TODO: Handle errors here
-                                .wait()
-                                .status;
-                            out::process_finish(&status);
-                            status.coerced_code()
-                        } else {
-                            out::bad_script_phase(&output_stream);
-                            exitcode::NOINPUT
+                        let phases = match phase {
+                            Some(phase) => vec![phase.to_string()],
+                            None => match target.options.default_phase {
+                                Overrideable::Set(ref phases) => phases.clone(),
+                                Overrideable::Unset => vec!["run".to_string()],
+                                Overrideable::SetNone => {
+                                    out::bad_script_phase(&output_stream);
+                                    return exitcode::NOINPUT;
+                                }
+                            },
+                        };
+
+                        let mut exit_code = exitcode::OK;
+                        for phase in phases {
+                            if let Some(script) = target.scripts.get(&phase) {
+                                out::phase_message(&output_stream, &config, &phase, name);
+                                let mut shell_context = ShellContext::new(&exec_cfg);
+                                let status = shell_context
+                                    .exec_command_group(
+                                        &script
+                                            .commands
+                                            .clone() //TODO: Don't clone
+                                            .into_iter()
+                                            .map(|sc| sc.command)
+                                            .collect::<Vec<_>>(),
+                                        &exec_cfg,
+                                    )
+                                    .unwrap() //TODO: Handle errors here
+                                    .wait()
+                                    .status;
+                                out::process_finish(&status);
+                                exit_code = status.coerced_code();
+                                if exitcode::is_error(exit_code) {
+                                    break;
+                                }
+                            } else {
+                                //TODO: Ensure all phases exist prior to running any of them
+                                out::bad_script_phase(&output_stream);
+                                exit_code = exitcode::NOINPUT;
+                                break;
+                            }
                         }
+                        exit_code
                     }
                     None => {
                         if target.is_empty() {
@@ -598,7 +623,7 @@ fn print_phase_list(
     config: &Config,
     name: &str,
     name_length: usize,
-    target: &HashMap<String, Script>,
+    target: &Target,
 ) {
     write!(
         lock,
@@ -608,7 +633,7 @@ fn print_phase_list(
     )
     .expect("Failed to write");
     //TODO: This could be configured
-    if target.contains_key("build") {
+    if target.scripts.contains_key("build") {
         lock.set_color(
             ColorSpec::new()
                 .set_bold(true)
@@ -627,7 +652,7 @@ fn print_phase_list(
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
     }
-    if target.contains_key("run") {
+    if target.scripts.contains_key("run") {
         lock.set_color(
             ColorSpec::new()
                 .set_bold(true)
@@ -646,7 +671,7 @@ fn print_phase_list(
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
     }
-    if target.contains_key("test") {
+    if target.scripts.contains_key("test") {
         lock.set_color(
             ColorSpec::new()
                 .set_bold(true)
@@ -666,7 +691,7 @@ fn print_phase_list(
         write!(lock, ".").unwrap();
     }
 
-    for phase in target.keys() {
+    for phase in target.scripts.keys() {
         if phase == "test" || phase == "build" || phase == "run" {
             continue;
         }
