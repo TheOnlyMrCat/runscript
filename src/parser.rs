@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::shell::ast::AtomicTopLevelCommand;
@@ -6,6 +5,7 @@ use crate::shell::lexer::Lexer;
 use crate::shell::parse::{CommandGroupDelimiters, ParseError, Parser};
 use indexmap::IndexMap;
 
+use crate::script::Overrideable::*;
 use crate::script::*;
 
 #[derive(Debug, Clone)]
@@ -84,7 +84,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
             .unwrap()
             .to_string_lossy()
             .into_owned(),
-        source: source.source.clone(),
+        source_text: source.source.clone(),
         scripts: IndexMap::new(),
         options: GlobalOptions::default(),
     };
@@ -103,6 +103,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
         script: Script,
         target: String,
         phase: String,
+        target_options: TargetOptions,
         command_option: bool,
     }
 
@@ -145,18 +146,15 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                 }
 
                 if let Some(current_script) = current_script {
-                    let target = runscript
+                    let target = runscript.scripts.entry(current_script.target).or_default();
+                    target
                         .scripts
-                        .entry(current_script.target)
-                        .or_insert_with(HashMap::new);
-                    target.insert(current_script.phase, current_script.script);
+                        .insert(current_script.phase, current_script.script);
+                    target.options.merge(current_script.target_options).unwrap();
                 }
 
-                let new_target = runscript
-                    .scripts
-                    .entry(name.clone())
-                    .or_insert_with(HashMap::new);
-                if let Some(script) = new_target.get(&phase) {
+                let new_target = runscript.scripts.entry(name.clone()).or_default();
+                if let Some(script) = new_target.scripts.get(&phase) {
                     return Err(RunscriptParseError::DuplicateScript {
                         prev_line: script.line,
                         new_line: script.line,
@@ -172,6 +170,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                     },
                     target: name,
                     phase,
+                    target_options: TargetOptions::default(),
                     command_option: false,
                 });
             }
@@ -186,10 +185,36 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                             .map_while(|(_, ch)| if ch.is_whitespace() { None } else { Some(ch) })
                             .collect::<String>();
 
-                        return Err(RunscriptParseError::NonexistentOption {
-                            line: line_index!(i),
-                            option: option_name,
-                        });
+                        match option_name.as_str() {
+                            "default-phase" => {
+                                let mut phases = vec![];
+                                loop {
+                                    let (phase, bk) = consume_word(&mut iterator);
+                                    phases.push(phase);
+                                    if !matches!(bk, BreakCondition::Space) {
+                                        break;
+                                    }
+                                }
+                                current_script
+                                    .target_options
+                                    .default_phase
+                                    .merge(Set(phases))
+                                    .unwrap();
+                            }
+                            "no-default-phase" => {
+                                current_script
+                                    .target_options
+                                    .default_phase
+                                    .merge(SetNone)
+                                    .unwrap();
+                            }
+                            _ => {
+                                return Err(RunscriptParseError::NonexistentOption {
+                                    line: line_index!(i),
+                                    option: option_name,
+                                })
+                            }
+                        }
                     } else {
                         // Command-specific option. This must be given to the command parser, but
                         // we've already consumed the `:`, so we must pass it through with a state
@@ -211,10 +236,14 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                                     |(_, ch)| if ch.is_whitespace() { None } else { Some(ch) },
                                 )
                                 .collect::<String>();
-                            runscript.options.default_target = Some(Some(default_name));
+                            runscript
+                                .options
+                                .default_target
+                                .merge(Set(default_name))
+                                .unwrap();
                         }
                         "no-default-script" => {
-                            runscript.options.default_target = Some(None);
+                            runscript.options.default_target.merge(SetNone).unwrap();
                         }
                         _ => {
                             return Err(RunscriptParseError::NonexistentOption {
@@ -264,11 +293,11 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
     }
 
     if let Some(current_script) = current_script {
-        let target = runscript
+        let target = runscript.scripts.entry(current_script.target).or_default();
+        target
             .scripts
-            .entry(current_script.target)
-            .or_insert_with(HashMap::new);
-        target.insert(current_script.phase, current_script.script);
+            .insert(current_script.phase, current_script.script);
+        target.options.merge(current_script.target_options).unwrap();
     }
 
     Ok(runscript)

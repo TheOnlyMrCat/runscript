@@ -1,6 +1,7 @@
 [all:test]
 run args
 run chain
+run default
 run params
 run exit
 run recursive
@@ -13,6 +14,13 @@ echo 'globs:' ../src/*.rs
 
 [chain]
 yes | head -n 2
+
+[default:build]
+::default-phase build run
+echo Build!
+
+[default:run]
+echo Run!
 
 [params]
 FOO='bar' echo ${FOO-No foo}
