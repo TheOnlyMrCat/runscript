@@ -59,11 +59,11 @@ impl ProcessExit {
         }
     }
 
-    /// The exit code the process exited with, if any.
+    /// The coerced exit code of the process.
     ///
     /// Coerces the `Bool` variant into `true = 0`, `false = 1`
     /// Signals are converted to an exit code of `128 + signal`
-    pub fn code(&self) -> i32 {
+    pub fn coerced_code(&self) -> i32 {
         match self {
             ProcessExit::Bool(b) => !b as i32,
             ProcessExit::StdStatus(s) => s.code().unwrap_or_else(|| {
@@ -75,14 +75,14 @@ impl ProcessExit {
                 }
                 #[cfg(not(unix))]
                 {
-                    panic!()
+                    unreachable!()
                 }
             }),
             #[cfg(unix)]
             ProcessExit::NixStatus(s) => match s {
                 nix::sys::wait::WaitStatus::Exited(_, code) => *code,
                 nix::sys::wait::WaitStatus::Signaled(_, sig, _) => 128 + *sig as i32,
-                _ => panic!(),
+                _ => unreachable!(),
             },
         }
     }

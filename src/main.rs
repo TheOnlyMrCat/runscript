@@ -265,6 +265,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 match toml::from_str(&contents) {
                     Ok(config) => config,
                     Err(e) => {
+                        //TODO: Move "Warning message" into `out.rs`
                         let mut lock = output_stream.lock();
                         let _ =
                             lock.set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)));
@@ -309,7 +310,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         match parser::parse_command(command) {
             Ok(command) => {
                 let exec_cfg = ExecConfig {
-                    output_stream: Some(output_stream),
+                    output_stream: None,
                     colour_choice,
                     working_directory: &cwd,
                     script_path: None,
@@ -324,9 +325,10 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 let mut shell_context = ShellContext::new(&exec_cfg);
                 shell_context
                     .exec_command_group(&[command], &exec_cfg)
-                    .unwrap()
-                    .wait();
-                exitcode::OK
+                    .unwrap() //TODO: Handle errors here
+                    .wait()
+                    .status
+                    .coerced_code()
             }
             Err(e) => {
                 let mut lock = output_stream.lock();
@@ -352,8 +354,8 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         }) {
             Ok(script) => script,
             Err(e) => {
-                todo!();
-                // return exitcode::DATAERR;
+                out::file_parse_err(&output_stream, e);
+                return exitcode::DATAERR;
             }
         };
 
@@ -372,14 +374,13 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         };
 
         let mut shell_context = ShellContext::new(&exec_cfg);
-        out::process_finish(
-            &shell_context
-                .exec_command_group(&script, &exec_cfg)
-                .unwrap()
-                .wait()
-                .status,
-        );
-        exitcode::OK
+        let status = shell_context
+            .exec_command_group(&script, &exec_cfg)
+            .unwrap() //TODO: Handle errors here
+            .wait()
+            .status;
+        out::process_finish(&status);
+        status.coerced_code()
     } else {
         let runfile = match select_file(
             &options,
@@ -414,7 +415,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 runfile
                                     .path
                                     .strip_prefix(&cwd)
-                                    .unwrap_or(runfile.path.as_ref())
+                                    .unwrap_or(&runfile.path)
                                     .display()
                             )
                             .unwrap();
@@ -484,22 +485,21 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         if let Some(script) = scripts.get(phase) {
                             out::phase_message(&output_stream, &config, phase, name);
                             let mut shell_context = ShellContext::new(&exec_cfg);
-                            out::process_finish(
-                                &shell_context
-                                    .exec_command_group(
-                                        &script
-                                            .commands
-                                            .clone() //TODO: Don't clone
-                                            .into_iter()
-                                            .map(|sc| sc.command)
-                                            .collect::<Vec<_>>(),
-                                        &exec_cfg,
-                                    )
-                                    .unwrap()
-                                    .wait()
-                                    .status,
-                            );
-                            exitcode::OK
+                            let status = shell_context
+                                .exec_command_group(
+                                    &script
+                                        .commands
+                                        .clone() //TODO: Don't clone
+                                        .into_iter()
+                                        .map(|sc| sc.command)
+                                        .collect::<Vec<_>>(),
+                                    &exec_cfg,
+                                )
+                                .unwrap() //TODO: Handle errors here
+                                .wait()
+                                .status;
+                            out::process_finish(&status);
+                            status.coerced_code()
                         } else {
                             out::bad_script_phase(&output_stream);
                             exitcode::NOINPUT
