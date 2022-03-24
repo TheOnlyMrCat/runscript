@@ -8,7 +8,7 @@ use std::sync::Arc;
 use crate::parser::RunscriptSource;
 use crate::process::{CommandExecError, Pipe, PipeInput, StdioRepr, WaitableProcess};
 
-use crate::shell::ast::{
+use crate::parser::ast::{
     AndOr, AndOrList, AtomicTopLevelCommand, ComplexWord, CompoundCommand, CompoundCommandKind,
     GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair,
     PipeableCommand, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord,
@@ -88,7 +88,7 @@ impl ShellContext {
         script: &[AtomicTopLevelCommand],
         config: &ExecConfig,
     ) -> Result<WaitableProcess, CommandExecError> {
-        use crate::shell::ast::Command;
+        use crate::parser::ast::Command;
 
         let mut jobs = vec![];
 
