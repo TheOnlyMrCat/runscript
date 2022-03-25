@@ -183,6 +183,8 @@ impl WaitableProcess {
         use nix::sys::wait::WaitStatus;
         use nix::unistd::Pid;
 
+        // I shouldn't have to do this manually; there's something I can do with process groups
+        // so the OS does this. I just don't know how.
         for job in self.associated_jobs {
             job.hup();
         }

@@ -1,95 +1,13 @@
+//! Old-format parser, from the previous "1.0.0" version of runscript. Used by very few people,
+//! and only accessible using the `old-format` feature. No error-checking is done, since new
+//! (and edited) runscripts should use the new format.
+
 use crate::parser::lexer::Lexer;
-use crate::parser::parse::{ParseError, Parser};
+use crate::parser::parse::Parser;
 use indexmap::IndexMap;
 
 use crate::parser::RunscriptSource;
 use crate::script::*;
-use Overrideable::*;
-
-/// Data related to a `RunscriptParseError`
-#[derive(Debug)]
-#[non_exhaustive]
-pub enum OldParseError {
-    /// End-of-file in an unexpected location
-    UnexpectedEOF {
-        line: usize,
-        /// The token or token type which was expected to come before an end-of-file.
-        ///
-        /// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
-        expected: String,
-    },
-    /// Found a token in a place which does not match the context
-    UnexpectedToken {
-        line: usize,
-        /// The text of the token which triggered the error
-        found: String,
-        /// The token or token type which was expected to come before or instead of the `found` token.
-        ///
-        /// Specific tokens would be in backticks (e.g. `\`#/\``), and token groups without backticks (e.g. `an environment variable`)
-        expected: String,
-    },
-    /// Found a name of a script which contains characters outside of `[A-Za-z_-]`
-    InvalidID {
-        line: usize,
-        /// The text of the identifier that triggered the error
-        found: String,
-    },
-    /// Attempted to define the same script twice
-    MultipleDefinition {
-        prev_line: usize,
-        new_line: usize,
-        target_name: String,
-    },
-    UnsupportedFeature {
-        line: usize,
-        msg: String,
-    },
-    CommandParseError {
-        line: usize,
-        error: ParseError,
-    },
-}
-
-type NewParseError = crate::parser::RunscriptParseError;
-
-impl From<OldParseError> for NewParseError {
-    fn from(err: OldParseError) -> Self {
-        match err {
-            OldParseError::UnexpectedEOF { line, expected } => NewParseError::OldParseError {
-                line,
-                data: format!("Unexpected EOF, expected `{expected}`"),
-            },
-            OldParseError::UnexpectedToken {
-                line,
-                found,
-                expected,
-            } => NewParseError::OldParseError {
-                line,
-                data: format!("Unexpected token `{found}`, expected `{expected}`"),
-            },
-            OldParseError::InvalidID { line, found } => NewParseError::InvalidValue {
-                line,
-                expected: "alphanumeric".to_owned(),
-                found,
-            },
-            OldParseError::MultipleDefinition {
-                prev_line,
-                new_line,
-                target_name,
-            } => NewParseError::DuplicateScript {
-                prev_line,
-                new_line,
-                target_name,
-            },
-            OldParseError::UnsupportedFeature { line, msg } => {
-                NewParseError::OldParseError { line, data: msg }
-            }
-            OldParseError::CommandParseError { line, error } => {
-                NewParseError::CommandParseError { line, error }
-            }
-        }
-    }
-}
 
 #[derive(Debug)]
 struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
@@ -98,26 +16,7 @@ struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
     line_indices: Vec<usize>,
 }
 
-impl<T: Iterator<Item = (usize, char)> + std::fmt::Debug> ParsingContext<T> {
-    #[cfg_attr(feature = "trace", trace)]
-    fn get_line(&self, index: usize) -> usize {
-        self.line_indices
-            .iter()
-            .enumerate()
-            .find_map(
-                |(line, &end)| {
-                    if end > index {
-                        Some(line + 1)
-                    } else {
-                        None
-                    }
-                },
-            )
-            .unwrap_or_else(|| self.line_indices.len())
-    }
-}
-
-pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, OldParseError> {
+pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, ()> {
     let mut context = ParsingContext {
         iterator: source.source.char_indices().peekable(),
         line_indices: source
@@ -128,7 +27,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, OldParseErr
         runfile: Runscript {
             name: (&source.path)
                 .strip_prefix(&source.dir)
-                .unwrap() //TODO: Something other than unwrap
+                .unwrap()
                 .to_string_lossy()
                 .into_owned(),
             source_text: source.source.clone(),
@@ -138,56 +37,29 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, OldParseErr
     };
     match parse_root(&mut context) {
         Ok(()) => Ok(context.runfile),
-        Err(data) => Err(data),
+        Err(()) => Err(()),
     }
 }
 
 fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<(), OldParseError> {
+) -> Result<(), ()> {
     while let Some(tk) = context.iterator.next() {
         match tk {
             // Comment
             (_, '!') => {
                 consume_line(&mut context.iterator);
             }
-            // Annotation (Better name?)
-            (i, '$') => {
-                let (special, bk) = consume_word(&mut context.iterator);
-
-                if matches!(bk, BreakCondition::Eof) {
-                    return Err(OldParseError::UnexpectedEOF {
-                        line: context.get_line(i + 1),
-                        expected: "include".to_owned(),
-                    });
-                }
-
-                match &*special {
-                    "include" => {
-                        return Err(OldParseError::UnsupportedFeature {
-                            line: context.get_line(i + 1),
-                            msg: "Includes are not supported".to_owned(),
-                        });
-                    }
-                    "opt" => {
-                        // The only option that existed was `default_positionals`, which does not change the
-                        // behaviour of the script or script parsing in any way. It's not even unsupported,
-                        // because there's nothing to support.
-                    }
-                    _ => {
-                        return Err(OldParseError::UnexpectedToken {
-                            line: context.get_line(i + 1),
-                            found: special,
-                            expected: "include` or `opt".to_owned(),
-                        })
-                    }
-                }
+            // Annotation
+            (_, '$') => {
+                // The only thing that it would be is `$opt default_positionals`. In practise, `$include`s weren't used.
+                consume_line(&mut context.iterator);
             }
             // Script
             (i, '#') => {
                 let (name, bk) = consume_word(&mut context.iterator);
 
-                // Currently, b!, b => "build", br, r, r! => "run"
+                // b!, b => "build", br, r, r! => "run"
                 let (phase, bk) = match bk {
                     BreakCondition::Newline(i) => ("run", BreakCondition::Newline(i)),
                     _ => match context.iterator.next() {
@@ -212,7 +84,12 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     consume_line(&mut context.iterator);
                 }
 
-                let line = context.get_line(i);
+                let line = context
+                    .line_indices
+                    .iter()
+                    .enumerate()
+                    .find_map(|(line, &end)| if end > i { Some(line + 1) } else { None })
+                    .unwrap_or(context.line_indices.len());
                 let script = Script {
                     line,
                     commands: parse_commands(context)?,
@@ -220,43 +97,21 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                 };
 
                 if name == "-" {
-                    if let Some(prev_script) = &context
+                    context
                         .runfile
                         .scripts
                         .entry("default".to_owned())
                         .or_default()
                         .scripts
-                        .insert(phase.to_owned(), script)
-                    {
-                        return Err(OldParseError::MultipleDefinition {
-                            prev_line: prev_script.line,
-                            new_line: line,
-                            target_name: name,
-                        });
-                    }
-                } else if name == "#" || name == "<" {
-                    return Err(OldParseError::UnsupportedFeature {
-                        line: script.line,
-                        msg: "Global scripts are not supported".to_owned(),
-                    });
+                        .insert(phase.to_owned(), script);
                 } else {
-                    if name
-                        .chars()
-                        .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-                    {
-                        return Err(OldParseError::InvalidID {
-                            line: context.get_line(i + 1),
-                            found: name,
-                        });
-                    }
-                    let target = context.runfile.scripts.entry(name.clone()).or_default();
-                    if let Some(prev_script) = target.scripts.insert(phase.to_owned(), script) {
-                        return Err(OldParseError::MultipleDefinition {
-                            prev_line: prev_script.line,
-                            new_line: line,
-                            target_name: name,
-                        });
-                    }
+                    context
+                        .runfile
+                        .scripts
+                        .entry(name.clone())
+                        .or_default()
+                        .scripts
+                        .insert(phase.to_owned(), script);
                 }
             }
             (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => continue,
@@ -269,10 +124,8 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
 
 fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<Vec<ScriptCommand>, OldParseError> {
+) -> Result<Vec<ScriptCommand>, ()> {
     let mut cmds = Vec::new();
-    let i = context.iterator.peek().unwrap().0;
-    let eof_loc = context.get_line(context.runfile.source_text.len());
 
     let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
     let mut parser = Parser::<_>::new(lexer);
@@ -281,13 +134,7 @@ fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
             break;
         }
         cmds.push(ScriptCommand {
-            command: parser
-                .complete_command()
-                .map_err(|e| OldParseError::CommandParseError { line: 0, error: e })?
-                .ok_or(OldParseError::UnexpectedEOF {
-                    line: eof_loc,
-                    expected: "#/".to_owned(),
-                })?,
+            command: parser.complete_command().map_err(|_| ())?.ok_or(())?,
             options: CommandOptions::default(),
         });
     }
