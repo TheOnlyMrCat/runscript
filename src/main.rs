@@ -271,18 +271,14 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 match toml::from_str(&contents) {
                     Ok(config) => config,
                     Err(e) => {
-                        //TODO: Move "Warning message" into `out.rs`
-                        let mut lock = output_stream.lock();
-                        let _ =
-                            lock.set_color(ColorSpec::new().set_fg(Some(termcolor::Color::Yellow)));
-                        let _ = write!(lock, "Warning:");
-                        let _ = lock.reset();
-                        let _ = writeln!(
-                            lock,
-                            " Failed to parse config file at `{}`",
-                            config_file.display(),
+                        out::warning(
+                            &output_stream,
+                            &format!(
+                                "Failed to parse config file at `{}`\n{}",
+                                config_file.display(),
+                                e
+                            ),
                         );
-                        let _ = writeln!(lock, "{}", e);
                         Config::default()
                     }
                 }
@@ -406,25 +402,17 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     Ok(rf) => Ok(rf),
                     Err(e) => parser::old::parse_runscript(runfile.clone())
                         .map(|rf| {
-                            let mut lock = output_stream.lock();
-                            lock.set_color(
-                                ColorSpec::new()
-                                    .set_fg(Some(termcolor::Color::Yellow))
-                                    .set_bold(true),
-                            )
-                            .unwrap();
-                            write!(lock, "Warning:").unwrap();
-                            lock.reset().unwrap();
-                            writeln!(
-                                lock,
-                                " Using old parser to parse `{}`",
-                                runfile
-                                    .path
-                                    .strip_prefix(&cwd)
-                                    .unwrap_or(&runfile.path)
-                                    .display()
-                            )
-                            .unwrap();
+                            out::warning(
+                                &output_stream,
+                                &format!(
+                                    "Using old parser to parse `{}`",
+                                    runfile
+                                        .path
+                                        .strip_prefix(&cwd)
+                                        .unwrap_or(&runfile.path)
+                                        .display()
+                                ),
+                            );
                             rf
                         })
                         .map_err(|()| e),
