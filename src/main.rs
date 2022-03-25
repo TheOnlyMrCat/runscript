@@ -31,6 +31,10 @@ Source code available at https://github.com/TheOnlyMrCat/runscript
 ";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
+const FEATURE_FLAGS: [(bool, &str); 2] = [
+    (cfg!(feature = "old-parser"), "old-parser"),
+    (cfg!(feature = "dev-panic"), "dev-panic"),
+];
 
 #[cfg(not(feature = "dev-panic"))]
 fn panic_hook(info: &std::panic::PanicInfo) {
@@ -52,14 +56,19 @@ fn panic_hook(info: &std::panic::PanicInfo) {
 Runscript panicked.
 Crate version: {}
 Operating System: {}
-
-Panic message:
-{}
 ",
                     VERSION,
                     os_info::get(),
-                    info,
                 );
+                for feature in FEATURE_FLAGS
+                    .into_iter()
+                    .filter_map(|(enabled, feature)| enabled.then(|| feature))
+                {
+                    let _ = writeln!(writer, "Feature: {}", feature);
+                }
+                let _ = writeln!(writer);
+                let _ = writeln!(writer, "Panic info:");
+                let _ = writeln!(writer, "{}", info);
                 break Some(file);
             }
             Err(_) => {
@@ -181,12 +190,9 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 #[allow(clippy::print_stdout)]
                 clap::ErrorKind::DisplayVersion => {
                     print!("Runscript {}", VERSION);
-                    for feature in [
-                        (cfg!(feature = "old-parser"), "old-parser"),
-                        (cfg!(feature = "dev-panic"), "dev-panic"),
-                    ]
-                    .into_iter()
-                    .filter_map(|(enabled, feature)| enabled.then(|| feature))
+                    for feature in FEATURE_FLAGS
+                        .into_iter()
+                        .filter_map(|(enabled, feature)| enabled.then(|| feature))
                     {
                         print!(" +{}", feature);
                     }
