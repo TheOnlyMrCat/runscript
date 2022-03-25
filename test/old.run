@@ -16,20 +16,12 @@ echo 'globs:' ../src/*.rs
 yes | head -n 2
 #/
 
-#default b
-echo Build!
-#/
-
-#default r
-echo Run!
-#/
-
 #params
 FOO='bar' echo ${FOO-No foo}
 FOO='bar' printenv FOO
 FOO='bar'
 echo ${FOO-No foo}
-printenv FOO
+printenv FOO || :
 export FOO
 printenv FOO
 #/

@@ -47,11 +47,6 @@ pub enum RunscriptParseError {
     IllegalCommandLocation {
         line: usize,
     },
-    #[cfg(feature = "old-parser")]
-    OldParseError {
-        line: usize,
-        data: String,
-    },
 }
 
 //TODO: It might be convenient to fold this and conch_parser together even more

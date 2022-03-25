@@ -421,7 +421,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                             .unwrap();
                             rf
                         })
-                        .map_err(|_| e),
+                        .map_err(|()| e),
                 }
             }
             #[cfg(not(feature = "old-parser"))]
