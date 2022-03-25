@@ -75,8 +75,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                             Some((i, '\n')) => ("run", BreakCondition::Newline(i)),
                             _ => ("run", BreakCondition::Parse),
                         },
-                        Some(_) => todo!(),
-                        None => todo!(),
+                        _ => unimplemented!(),
                     },
                 };
 
@@ -174,7 +173,7 @@ fn consume_line(
             Some((i, '\n')) => break BreakCondition::Newline(i),
             Some((_, '\r')) => continue,
             Some((_, c)) => buf.push(c),
-            None => break BreakCondition::Eof, //TODO: Get an index for this
+            None => break BreakCondition::Eof,
         }
     };
     (buf, bk)

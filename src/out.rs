@@ -11,6 +11,15 @@ use crate::config::Config;
 use crate::exec::EvaluatedRedirect;
 use crate::parser::RunscriptParseError;
 
+pub fn warning(output_stream: &StandardStream, message: &str) {
+    let mut lock = output_stream.lock();
+    lock.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Yellow)))
+        .unwrap();
+    write!(lock, "Warning: ").unwrap();
+    lock.reset().unwrap();
+    writeln!(lock, "{}", message).unwrap();
+}
+
 pub fn no_runfile_err(output_stream: &StandardStream) {
     let mut lock = output_stream.lock();
     writeln!(lock, "run: Could not find runfile to execute").expect("Failed to write");
