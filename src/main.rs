@@ -273,7 +273,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     Err(e) => {
                         out::warning(
                             &output_stream,
-                            &format!(
+                            format_args!(
                                 "Failed to parse config file at `{}`\n{}",
                                 config_file.display(),
                                 e
@@ -404,7 +404,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         .map(|rf| {
                             out::warning(
                                 &output_stream,
-                                &format!(
+                                format_args!(
                                     "Using old parser to parse `{}`",
                                     runfile
                                         .path

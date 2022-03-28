@@ -11,69 +11,93 @@ use crate::config::Config;
 use crate::exec::EvaluatedRedirect;
 use crate::parser::RunscriptParseError;
 
-pub fn warning(output_stream: &StandardStream, message: &str) {
+pub fn warning(output_stream: &StandardStream, message: std::fmt::Arguments) {
     let mut lock = output_stream.lock();
     lock.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Yellow)))
         .unwrap();
-    write!(lock, "Warning: ").unwrap();
+    write!(lock, "warning:").unwrap();
     lock.reset().unwrap();
-    writeln!(lock, "{message}").unwrap();
+    writeln!(lock, " {message}").unwrap();
+}
+
+pub fn error(output_stream: &StandardStream, message: std::fmt::Arguments) {
+    let mut lock = output_stream.lock();
+    lock.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Red)))
+        .unwrap();
+    write!(lock, "error:").unwrap();
+    lock.reset().unwrap();
+    writeln!(lock, " {message}").unwrap()
 }
 
 pub fn no_runfile_err(output_stream: &StandardStream) {
-    let mut lock = output_stream.lock();
-    writeln!(lock, "run: Could not find runfile to execute").expect("Failed to write");
+    error(
+        output_stream,
+        format_args!("Could not find runfile to execute"),
+    );
 }
 
 pub fn dir_read_err(output_stream: &StandardStream, err: std::io::Error) {
-    let mut lock = output_stream.lock();
-    writeln!(lock, "run: Failed to access working directory: {err}").expect("Failed to write");
+    error(
+        output_stream,
+        format_args!("Failed to access working directory: {err}"),
+    );
 }
 
 pub fn file_read_err(output_stream: &StandardStream, err: std::io::Error) {
-    let mut lock = output_stream.lock();
-    writeln!(lock, "run: Failed to read script: {err}").expect("Failed to write");
+    error(output_stream, format_args!("Failed to read script: {err}"));
 }
 
-pub fn file_parse_err(output_stream: &StandardStream, error: RunscriptParseError) {
-    let mut lock = output_stream.lock();
-    match &error {
+pub fn file_parse_err(output_stream: &StandardStream, err: RunscriptParseError) {
+    match &err {
         RunscriptParseError::DuplicateScript {
             new_line: line,
             prev_line: prev,
             target_name: t,
         } => {
-            writeln!(
-                lock,
-                "run: Duplicate script: `{t}` on line {line} (previously defined at {prev})"
-            )
-            .unwrap();
+            error(
+                output_stream,
+                format_args!(
+                    "Duplicate script: `{t}` on line {line} (previously defined at {prev})"
+                ),
+            );
         }
-        RunscriptParseError::CommandParseError { line, error } => {
-            writeln!(lock, "run: Parse error: {error} on line {line}").unwrap();
+        RunscriptParseError::CommandParseError { line, error: err } => {
+            error(
+                output_stream,
+                format_args!("Parse error: {err} on line {line}"),
+            );
         }
         RunscriptParseError::IllegalCommandLocation { line } => {
-            writeln!(lock, "run: Command outside of target on line {line}").unwrap();
+            error(
+                output_stream,
+                format_args!("Command outside of target on line {line}"),
+            );
         }
         RunscriptParseError::NonexistentOption { line, option } => {
-            writeln!(lock, "run: Nonexistent option: `{option}` on line {line}").unwrap();
+            error(
+                output_stream,
+                format_args!("Nonexistent option: `{option}` on line {line}"),
+            );
         }
     }
 }
 
 pub fn bad_target(output_stream: &StandardStream, target: &str) {
-    let mut lock = output_stream.lock();
-    writeln!(lock, "run: No target with name `{target}`").expect("Failed to write");
+    error(
+        output_stream,
+        format_args!("No target with name `{target}`"),
+    );
 }
 
 pub fn bad_default(output_stream: &StandardStream) {
-    let mut lock = output_stream.lock();
-    writeln!(lock, "run: No default target").expect("Failed to write");
+    error(output_stream, format_args!("No default target"));
 }
 
 pub fn bad_script_phase(output_stream: &StandardStream) {
-    let mut lock = output_stream.lock();
-    writeln!(lock, "run: No scripts to execute for specified phase").expect("Failed to write");
+    error(
+        output_stream,
+        format_args!("No scripts to execute for specified phase"),
+    );
 }
 
 pub fn phase_color(config: &Config, phase: &str) -> Color {
@@ -97,10 +121,10 @@ pub fn phase_message(output_stream: &StandardStream, config: &Config, phase: &st
             .set_intense(true)
             .set_fg(Some(phase_color(config, phase))),
     )
-    .expect("Failed to set colour");
-    write!(lock, "{}", { phase[0..1].to_uppercase() + &phase[1..] }).expect("Failed to write");
-    lock.reset().expect("Failed to reset colour");
-    writeln!(lock, " {}", name).expect("Failed to write");
+    .unwrap();
+    write!(lock, "{}", { phase[0..1].to_uppercase() + &phase[1..] }).unwrap();
+    lock.reset().unwrap();
+    writeln!(lock, " {}", name).unwrap();
 }
 
 pub fn command_prompt(
@@ -119,7 +143,7 @@ pub fn command_prompt(
             RedirectOrCmdWord::CmdWord(w) => Some(w),
         });
     lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
-        .expect("Failed to set colour");
+        .unwrap();
     for (word, evaluated) in words.zip(evaluated.iter()) {
         let word_contents = print_tl_word(&mut lock, word);
         let evaluated_contents = evaluated.join(" ");
@@ -131,17 +155,17 @@ pub fn command_prompt(
                     .set_intense(true)
                     .set_fg(Some(Color::Cyan)),
             )
-            .expect("Failed to set colour");
-            write!(lock, "={}", evaluated_contents).expect("Failed to write");
+            .unwrap();
+            write!(lock, "={}", evaluated_contents).unwrap();
         }
-        lock.reset().expect("Failed to reset colour");
-        write!(lock, " ").expect("Failed to write");
+        lock.reset().unwrap();
+        write!(lock, " ").unwrap();
     }
     if !redirects.is_empty() || !env_remaps.is_empty() {
-        writeln!(lock).expect("Failed to write");
-        write!(lock, "-- ").expect("Failed to write");
+        writeln!(lock).unwrap();
+        write!(lock, "-- ").unwrap();
         for (key, value) in env_remaps {
-            write!(lock, "{}={} ", key, value).expect("Failed to write");
+            write!(lock, "{}={} ", key, value).unwrap();
         }
         for redirect in redirects {
             match redirect {
@@ -161,20 +185,20 @@ pub fn command_prompt(
                     write!(lock, "{}>|{} ", fd.unwrap_or(1), file.join(""))
                 }
                 EvaluatedRedirect::Heredoc(fd, _) => {
-                    write!(lock, "{}<", fd.unwrap_or(0)).expect("Failed to write");
+                    write!(lock, "{}<", fd.unwrap_or(0)).unwrap();
                     lock.set_color(
                         ColorSpec::new()
                             .set_intense(true)
                             .set_fg(Some(Color::Black)),
                     )
-                    .expect("Failed to set colour");
-                    write!(lock, "(heredoc) ").expect("Failed to write");
+                    .unwrap();
+                    write!(lock, "(heredoc) ").unwrap();
                     lock.reset()
                 }
                 EvaluatedRedirect::DupRead(_fd, _) => todo!(),
                 EvaluatedRedirect::DupWrite(_fd, _) => todo!(),
             }
-            .expect("Failed to write");
+            .unwrap();
         }
     }
 }
@@ -196,16 +220,16 @@ fn print_word(lock: &mut StandardStreamLock, word: &Word) -> String {
     match word {
         Word::Simple(w) => print_simple_word(lock, w),
         Word::DoubleQuoted(w) => {
-            write!(lock, "\"").expect("Failed to write");
+            write!(lock, "\"").unwrap();
             let mut concat = String::new();
             for word in w.iter() {
                 concat.push_str(&print_simple_word(lock, word));
             }
-            write!(lock, "\"").expect("Failed to write");
+            write!(lock, "\"").unwrap();
             concat
         }
         Word::SingleQuoted(lit) => {
-            write!(lock, "'{}'", lit).expect("Failed to write");
+            write!(lock, "'{}'", lit).unwrap();
             lit.clone()
         }
     }
@@ -214,57 +238,55 @@ fn print_word(lock: &mut StandardStreamLock, word: &Word) -> String {
 fn print_simple_word(lock: &mut StandardStreamLock, word: &SimpleWord) -> String {
     match word {
         SimpleWord::Literal(lit) => {
-            write!(lock, "{}", lit).expect("Failed to write");
+            write!(lock, "{}", lit).unwrap();
             lit.clone()
         }
         SimpleWord::Escaped(tk) => {
-            write!(lock, "\\{}", tk).expect("Failed to write");
+            write!(lock, "\\{}", tk).unwrap();
             tk.clone()
         }
         SimpleWord::Param(p) => {
-            write!(lock, "$").expect("Failed to write");
+            write!(lock, "$").unwrap();
             print_parameter(lock, p)
         }
         SimpleWord::Subst(s) => {
             match *s {
-                ParameterSubstitution::Command(_) => {
-                    write!(lock, "$(...)").expect("Failed to write")
-                }
+                ParameterSubstitution::Command(_) => write!(lock, "$(...)").unwrap(),
                 ParameterSubstitution::Default(colon, ref param, ref default) => {
-                    write!(lock, "${{").expect("Failed to write");
+                    write!(lock, "${{").unwrap();
                     print_parameter(lock, param);
-                    write!(lock, "{}-", if colon { ":" } else { "" }).expect("Failed to write");
+                    write!(lock, "{}-", if colon { ":" } else { "" }).unwrap();
                     if let Some(word) = default {
                         print_tl_word(lock, word);
                     }
-                    write!(lock, "}}").expect("Failed to write");
+                    write!(lock, "}}").unwrap();
                 }
                 _ => todo!(),
             }
             "$\u{0}".to_owned()
         }
         SimpleWord::Star => {
-            write!(lock, "*").expect("Failed to write");
+            write!(lock, "*").unwrap();
             "*".to_owned()
         }
         SimpleWord::Question => {
-            write!(lock, "?").expect("Failed to write");
+            write!(lock, "?").unwrap();
             "?".to_owned()
         }
         SimpleWord::SquareOpen => {
-            write!(lock, "[").expect("Failed to write");
+            write!(lock, "[").unwrap();
             "[".to_owned()
         }
         SimpleWord::SquareClose => {
-            write!(lock, "]").expect("Failed to write");
+            write!(lock, "]").unwrap();
             "]".to_owned()
         }
         SimpleWord::Tilde => {
-            write!(lock, "~").expect("Failed to write");
+            write!(lock, "~").unwrap();
             "~".to_owned()
         }
         SimpleWord::Colon => {
-            write!(lock, ":").expect("Failed to write");
+            write!(lock, ":").unwrap();
             ":".to_owned()
         }
     }
@@ -272,16 +294,16 @@ fn print_simple_word(lock: &mut StandardStreamLock, word: &SimpleWord) -> String
 
 fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter) -> String {
     match parameter {
-        Parameter::At => write!(lock, "@").expect("Failed to write"),
-        Parameter::Star => write!(lock, "*").expect("Failed to write"),
-        Parameter::Pound => write!(lock, "#").expect("Failed to write"),
-        Parameter::Question => write!(lock, "?").expect("Failed to write"),
-        Parameter::Dash => write!(lock, "-").expect("Failed to write"),
-        Parameter::Dollar => write!(lock, "$").expect("Failed to write"),
-        Parameter::Bang => write!(lock, "!").expect("Failed to write"),
-        Parameter::Positional(n) if *n < 10 => write!(lock, "{}", n).expect("Failed to write"),
-        Parameter::Positional(n) => write!(lock, "{{{}}}", n).expect("Failed to write"),
-        Parameter::Var(v) => write!(lock, "{}", v).expect("Failed to write"),
+        Parameter::At => write!(lock, "@").unwrap(),
+        Parameter::Star => write!(lock, "*").unwrap(),
+        Parameter::Pound => write!(lock, "#").unwrap(),
+        Parameter::Question => write!(lock, "?").unwrap(),
+        Parameter::Dash => write!(lock, "-").unwrap(),
+        Parameter::Dollar => write!(lock, "$").unwrap(),
+        Parameter::Bang => write!(lock, "!").unwrap(),
+        Parameter::Positional(n) if *n < 10 => write!(lock, "{}", n).unwrap(),
+        Parameter::Positional(n) => write!(lock, "{{{}}}", n).unwrap(),
+        Parameter::Var(v) => write!(lock, "{}", v).unwrap(),
     }
     "$\u{0}".to_owned()
 }
@@ -289,7 +311,7 @@ fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter) -> Stri
 pub fn env_remaps(output_stream: &StandardStream, remaps: &[(String, String)]) {
     let mut lock = output_stream.lock();
     for (k, v) in remaps {
-        write!(lock, "{k}={v} ").expect("Failed to write");
+        write!(lock, "{k}={v} ").unwrap();
     }
 }
 

@@ -114,8 +114,6 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
             }
             // Script
             (i, '[') => {
-                let line = line_index!(i);
-
                 let (name, phase) = {
                     iterator.next();
                     let mut name = (&mut iterator)
@@ -144,7 +142,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                 if let Some(script) = new_target.scripts.get(&phase) {
                     return Err(RunscriptParseError::DuplicateScript {
                         prev_line: script.line,
-                        new_line: script.line,
+                        new_line: line_index!(i),
                         target_name: name,
                     });
                 }
