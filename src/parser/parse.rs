@@ -85,22 +85,18 @@ impl SourcePos {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// Encountered a word that could not be interpreted as a valid file descriptor.
-    /// Stores the start and end position of the invalid word.
-    BadFd(SourcePos, SourcePos),
+    BadFd,
     /// Encountered a `Token::Literal` where expecting a `Token::Name`.
-    BadIdent(String, SourcePos),
+    BadIdent(String),
     /// Encountered a bad token inside of `${...}`.
-    BadSubst(Token, SourcePos),
+    BadSubst(Token),
     /// Encountered EOF while looking for a match for the specified token.
-    /// Stores position of opening token.
-    Unmatched(Token, SourcePos),
+    Unmatched(Token),
     /// Did not find a reserved keyword within a command. The first String is the
-    /// command being parsed, followed by the position of where it starts. Next
-    /// is the missing keyword followed by the position of where the parse
-    /// expected to have encountered it.
-    IncompleteCmd(&'static str, SourcePos, &'static str, SourcePos),
+    /// command being parsed. Next is the missing keyword.
+    IncompleteCmd(&'static str, &'static str),
     /// Encountered a token not appropriate for the current context.
-    Unexpected(Token, SourcePos),
+    Unexpected(Token),
     /// Encountered the end of input while expecting additional tokens.
     UnexpectedEOF,
 }
@@ -114,33 +110,27 @@ impl Error for ParseError {
 impl fmt::Display for ParseError {
     fn fmt(&self, fmt: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
-            ParseError::BadFd(ref start, ref end) => write!(
-                fmt,
-                "file descriptor found between lines {} - {} cannot possibly be a valid",
-                start, end
-            ),
-            ParseError::BadIdent(ref id, pos) => {
-                write!(fmt, "not a valid identifier {}: {}", pos, id)
+            ParseError::BadFd => write!(fmt, "file descriptor cannot possibly be valid",),
+            ParseError::BadIdent(ref id) => {
+                write!(fmt, "not a valid identifier: `{}`", id)
             }
-            ParseError::BadSubst(ref t, pos) => {
-                write!(fmt, "bad substitution {}: invalid token: {}", pos, t)
+            ParseError::BadSubst(ref t) => {
+                write!(fmt, "bad substitution: invalid token: `{}`", t)
             }
-            ParseError::Unmatched(ref t, pos) => {
-                write!(fmt, "unmatched `{}` starting on line {}", t, pos)
+            ParseError::Unmatched(ref t) => {
+                write!(fmt, "unmatched `{}`", t)
             }
 
-            ParseError::IncompleteCmd(c, start, kw, kw_pos) => write!(
-                fmt,
-                "did not find `{}` keyword on line {}, in `{}` command which starts on line {}",
-                kw, kw_pos, c, start
-            ),
+            ParseError::IncompleteCmd(c, kw) => {
+                write!(fmt, "missing `{}` in `{}` group", kw, c)
+            }
 
             // When printing unexpected newlines, print \n instead to avoid confusingly formatted messages
-            ParseError::Unexpected(Newline, pos) => {
-                write!(fmt, "found unexpected token on line {}: \\n", pos)
+            ParseError::Unexpected(Newline) => {
+                write!(fmt, "unexpected token: `\\n`")
             }
-            ParseError::Unexpected(ref t, pos) => {
-                write!(fmt, "found unexpected token on line {}: {}", pos, t)
+            ParseError::Unexpected(ref t) => {
+                write!(fmt, "unexpected token: `{}`", t)
             }
 
             ParseError::UnexpectedEOF => fmt.write_str("unexpected end of input"),
@@ -301,9 +291,9 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     #[inline]
     fn make_unexpected_err(&mut self) -> ParseError {
         let pos = self.iter.pos();
-        self.iter.next().map_or(ParseError::UnexpectedEOF, |t| {
-            ParseError::Unexpected(t, pos)
-        })
+        self.iter
+            .next()
+            .map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t))
     }
 
     /// Parses a single complete command.
@@ -509,7 +499,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             let start_pos = self.iter.pos();
             match self.redirect()? {
                 Some(Ok(io)) => list.push(io),
-                Some(Err(_)) => return Err(ParseError::BadFd(start_pos, self.iter.pos())),
+                Some(Err(_)) => return Err(ParseError::BadFd),
                 None => break,
             }
         }
@@ -631,7 +621,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                     if is_numeric {
                         path
                     } else {
-                        return Err(ParseError::BadFd(path_start_pos, self.iter.pos()));
+                        return Err(ParseError::BadFd);
                     }
                 };
                 path
@@ -665,7 +655,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     pub fn redirect_heredoc(&mut self, src_fd: Option<u16>) -> ParseResult<ast::Redirect> {
         macro_rules! try_map {
             ($result:expr) => {
-                $result.map_err(|e: iter::UnmatchedError| ParseError::Unmatched(e.0, e.1))?
+                $result.map_err(|e: iter::UnmatchedError| ParseError::Unmatched(e.0))?
             };
         }
 
@@ -1028,7 +1018,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 SingleQuote => {
                     let mut buf = String::new();
                     for t in self.iter.single_quoted(start_pos) {
-                        buf.push_str(t.map_err(|e| ParseError::Unmatched(e.0, e.1))?.as_str())
+                        buf.push_str(t.map_err(|e| ParseError::Unmatched(e.0))?.as_str())
                     }
 
                     ast::Word::SingleQuoted(buf)
@@ -1147,7 +1137,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
                 Some(t) => buf.push_str(t.as_str()),
                 None => match delim_open {
-                    Some(delim) => return Err(ParseError::Unmatched(delim, start_pos)),
+                    Some(delim) => return Err(ParseError::Unmatched(delim)),
                     None => break,
                 },
             }
@@ -1177,7 +1167,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         let tok_iter = self
             .iter
             .token_iter_from_backticked_with_removed_backslashes(backtick_pos)
-            .map_err(|e| ParseError::Unmatched(e.0, e.1))?;
+            .map_err(|e| ParseError::Unmatched(e.0))?;
 
         let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
 
@@ -1213,7 +1203,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 _ => Ok(ast::SimpleWord::Literal(Dollar.to_string())),
             },
 
-            Some(t) => Err(ParseError::Unexpected(t, start_pos)),
+            Some(t) => Err(ParseError::Unexpected(t)),
             None => Err(ParseError::UnexpectedEOF),
         }
     }
@@ -1324,7 +1314,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
         eat_maybe!(self, {
             CurlyClose => {};
-            _ => { return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos)); }
+            _ => { return Err(ParseError::Unmatched(CurlyOpen)); }
         });
 
         if words.is_empty() {
@@ -1358,8 +1348,8 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
             Some(CurlyClose) => return Ok(ast::SimpleWord::Param(param)),
 
-            Some(t) => return Err(ParseError::BadSubst(t, op_pos)),
-            None => return Err(ParseError::Unmatched(CurlyOpen, curly_open_pos)),
+            Some(t) => return Err(ParseError::BadSubst(t)),
+            None => return Err(ParseError::Unmatched(CurlyOpen)),
         };
 
         let word = self.parameter_substitution_word_raw(curly_open_pos)?;
@@ -1501,10 +1491,10 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             Some(Name(n)) => Parameter::Var(n),
             Some(Literal(s)) => match u32::from_str(&s) {
                 Ok(n) => Parameter::Positional(n),
-                Err(_) => return Err(ParseError::BadSubst(Literal(s), start_pos)),
+                Err(_) => return Err(ParseError::BadSubst(Literal(s))),
             },
 
-            Some(t) => return Err(ParseError::BadSubst(t, start_pos)),
+            Some(t) => return Err(ParseError::BadSubst(t)),
             None => return Err(ParseError::UnexpectedEOF),
         };
 
@@ -1523,7 +1513,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             ..Default::default()
         })?;
         self.reserved_word(&[DONE])
-            .map_err(|()| ParseError::IncompleteCmd(DO, start_pos, DONE, self.iter.pos()))?;
+            .map_err(|()| ParseError::IncompleteCmd(DO, DONE))?;
         Ok(result)
     }
 
@@ -1539,7 +1529,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             ..Default::default()
         })?;
         self.reserved_token(&[CurlyClose])
-            .map_err(|_| ParseError::Unmatched(CurlyOpen, start_pos))?;
+            .map_err(|_| ParseError::Unmatched(CurlyOpen))?;
         Ok(cmds)
     }
 
@@ -1571,7 +1561,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 Ok(body)
             }
             Some(_) => Err(self.make_unexpected_err()),
-            None => Err(ParseError::Unmatched(ParenOpen, start_pos)),
+            None => Err(ParseError::Unmatched(ParenOpen)),
         }
     }
 
@@ -1760,12 +1750,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                     body: self.do_group()?.commands,
                 },
             )),
-            None => Err(ParseError::IncompleteCmd(
-                WHILE,
-                start_pos,
-                DO,
-                self.iter.pos(),
-            )),
+            None => Err(ParseError::IncompleteCmd(WHILE, DO)),
         }
     }
 
@@ -1781,13 +1766,13 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
         macro_rules! missing_fi {
             () => {
-                |_| ParseError::IncompleteCmd(IF, start_pos, FI, self.iter.pos())
+                |_| ParseError::IncompleteCmd(IF, FI)
             };
         }
 
         macro_rules! missing_then {
             () => {
-                |_| ParseError::IncompleteCmd(IF, start_pos, THEN, self.iter.pos())
+                |_| ParseError::IncompleteCmd(IF, THEN)
             };
         }
 
@@ -1852,7 +1837,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         let var_pos = self.iter.pos();
         let var = match self.iter.next() {
             Some(Name(v)) => v,
-            Some(Literal(s)) => return Err(ParseError::BadIdent(s, var_pos)),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s)),
             _ => unreachable!(),
         };
 
@@ -1894,24 +1879,14 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             // If we didn't find an `in` keyword, and we havent hit the body
             // (a `do` keyword), then we can reasonably say the script has
             // words without an `in` keyword.
-            return Err(ParseError::IncompleteCmd(
-                FOR,
-                start_pos,
-                IN,
-                self.iter.pos(),
-            ));
+            return Err(ParseError::IncompleteCmd(FOR, IN));
         } else {
             // `for name \n* do_group`
             None
         };
 
         if self.peek_reserved_word(&[DO]).is_none() {
-            return Err(ParseError::IncompleteCmd(
-                FOR,
-                start_pos,
-                DO,
-                self.iter.pos(),
-            ));
+            return Err(ParseError::IncompleteCmd(FOR, DO));
         }
 
         let body = self.do_group()?;
@@ -1928,13 +1903,13 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
         macro_rules! missing_in {
             () => {
-                |_| ParseError::IncompleteCmd(CASE, start_pos, IN, self.iter.pos())
+                |_| ParseError::IncompleteCmd(CASE, IN)
             };
         }
 
         macro_rules! missing_esac {
             () => {
-                |_| ParseError::IncompleteCmd(CASE, start_pos, ESAC, self.iter.pos())
+                |_| ParseError::IncompleteCmd(CASE, ESAC)
             };
         }
 
@@ -2080,7 +2055,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         let ident_pos = self.iter.pos();
         let name = match self.iter.next() {
             Some(Name(n)) => n,
-            Some(Literal(s)) => return Err(ParseError::BadIdent(s, ident_pos)),
+            Some(Literal(s)) => return Err(ParseError::BadIdent(s)),
             _ => unreachable!(),
         };
 

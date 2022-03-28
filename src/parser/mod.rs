@@ -26,11 +26,6 @@ pub struct RunscriptSource {
 
 #[derive(Debug)]
 pub enum RunscriptParseError {
-    InvalidValue {
-        line: usize,
-        found: String,
-        expected: String,
-    },
     NonexistentOption {
         line: usize,
         option: String,
@@ -136,17 +131,6 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                         .unwrap_or_else(|| "run".to_owned());
                     (name, phase)
                 };
-
-                if name
-                    .chars()
-                    .any(|c| !(c.is_ascii_alphanumeric() || c == '_' || c == '-'))
-                {
-                    return Err(RunscriptParseError::InvalidValue {
-                        line,
-                        found: name,
-                        expected: "alphanumeric".to_owned(),
-                    });
-                }
 
                 if let Some(current_script) = current_script {
                     let target = runscript.scripts.entry(current_script.target).or_default();

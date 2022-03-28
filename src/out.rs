@@ -17,7 +17,7 @@ pub fn warning(output_stream: &StandardStream, message: &str) {
         .unwrap();
     write!(lock, "Warning: ").unwrap();
     lock.reset().unwrap();
-    writeln!(lock, "{}", message).unwrap();
+    writeln!(lock, "{message}").unwrap();
 }
 
 pub fn no_runfile_err(output_stream: &StandardStream) {
@@ -27,28 +27,17 @@ pub fn no_runfile_err(output_stream: &StandardStream) {
 
 pub fn dir_read_err(output_stream: &StandardStream, err: std::io::Error) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "run: Failed to access working directory: {}", err).expect("Failed to write");
+    writeln!(lock, "run: Failed to access working directory: {err}").expect("Failed to write");
 }
 
 pub fn file_read_err(output_stream: &StandardStream, err: std::io::Error) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "run: Failed to read script: {}", err).expect("Failed to write");
+    writeln!(lock, "run: Failed to read script: {err}").expect("Failed to write");
 }
 
 pub fn file_parse_err(output_stream: &StandardStream, error: RunscriptParseError) {
     let mut lock = output_stream.lock();
     match &error {
-        RunscriptParseError::InvalidValue {
-            line,
-            found,
-            expected,
-        } => {
-            writeln!(
-                lock,
-                "run({line}): Invalid value: {found} (expected {expected})"
-            )
-            .unwrap();
-        }
         RunscriptParseError::DuplicateScript {
             new_line: line,
             prev_line: prev,
@@ -56,41 +45,25 @@ pub fn file_parse_err(output_stream: &StandardStream, error: RunscriptParseError
         } => {
             writeln!(
                 lock,
-                "run({line}): Duplicate script: {t} (previously defined at {prev})"
+                "run: Duplicate script: `{t}` on line {line} (previously defined at {prev})"
             )
             .unwrap();
         }
         RunscriptParseError::CommandParseError { line, error } => {
-            writeln!(lock, "run({line}): {error}").unwrap();
+            writeln!(lock, "run: Parse error: {error} on line {line}").unwrap();
         }
         RunscriptParseError::IllegalCommandLocation { line } => {
-            writeln!(lock, "run({line}): Illegal command location").unwrap();
+            writeln!(lock, "run: Command outside of target on line {line}").unwrap();
         }
         RunscriptParseError::NonexistentOption { line, option } => {
-            writeln!(lock, "run({line}): Nonexistent option: {option}").unwrap();
+            writeln!(lock, "run: Nonexistent option: `{option}` on line {line}").unwrap();
         }
     }
 }
 
-// pub fn bad_command_err(output_stream: &StandardStream, cmd: &ScriptEntry, script: &Runscript, error: CommandExecError) {
-// 	match &error {
-// 		CommandExecError::BadCommand { err, loc } => match cmd {
-// 		    ScriptEntry::Command(TopLevelCommand::Command(cmd)) => emit_error(&output_stream, loc, script, match err.kind() {
-// 				NotFound => format!("Couldn't find executable for `{}`", cmd.target),
-// 				PermissionDenied => format!("Insufficient permission to execute `{}`", cmd.target),
-// 				_ => format!("Failed to execute `{}`", cmd.target),
-// 			}),
-// 		    _ => unreachable!()
-// 		},
-// 		CommandExecError::InvalidGlob { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("Failed to parse `{}`", glob)),
-// 		CommandExecError::NoGlobMatches { glob, loc, .. } => emit_error(&output_stream, loc, script, format!("No matches found for `{}`", glob)),
-// 	}
-// 	//TODO Verbose output option
-// }
-
 pub fn bad_target(output_stream: &StandardStream, target: &str) {
     let mut lock = output_stream.lock();
-    writeln!(lock, "run: No target with name {target}").expect("Failed to write");
+    writeln!(lock, "run: No target with name `{target}`").expect("Failed to write");
 }
 
 pub fn bad_default(output_stream: &StandardStream) {
