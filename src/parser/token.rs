@@ -63,9 +63,9 @@ impl Positional {
     }
 }
 
-impl Into<u8> for Positional {
-    fn into(self) -> u8 {
-        self.as_num()
+impl From<Positional> for u8 {
+    fn from(val: Positional) -> Self {
+        val.as_num()
     }
 }
 
@@ -183,7 +183,7 @@ impl fmt::Display for Token {
 }
 
 impl Token {
-    /// Returns if the token's length is zero.
+    /// Returns whether the token's length is zero.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
