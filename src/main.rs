@@ -147,7 +147,11 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         .setting(clap::AppSettings::DeriveDisplayOrder)
         .override_usage("run [OPTIONS] [TARGET:PHASE] [--] [ARGS]")
         .arg(arg!([target] "Target to run in the script").hide(true))
-        .arg(arg!([args] ... "Arguments to pass to the script").hide(true))
+        .arg(
+            arg!([args] ... "Arguments to pass to the script")
+                .last(true)
+                .hide(true),
+        )
         .arg(
             arg!(-c --command <COMMAND> "Execute a command")
                 .required(false)
@@ -317,10 +321,8 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     working_directory: &cwd,
                     script_path: None,
                     target_name: None,
-                    positional_args: options
-                        .values_of("args")
-                        .into_iter()
-                        .flatten()
+                    positional_args: std::iter::once("")
+                        .chain(options.values_of("args").into_iter().flatten())
                         .map(ToOwned::to_owned)
                         .collect(),
                 };
@@ -349,7 +351,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             }
         };
 
-        let script = match parser::parse_shell(RunscriptSource {
+        let parsed_script = match parser::parse_shell(RunscriptSource {
             dir: script_path.parent().unwrap_or(&cwd).to_path_buf(),
             path: script_path.clone(),
             source: script_source,
@@ -361,23 +363,26 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             }
         };
 
+        let script_path_argument = script_path
+            .canonicalize()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| script.to_owned());
+
         let exec_cfg = ExecConfig {
             output_stream: Some(output_stream),
             colour_choice,
             working_directory: &cwd,
             script_path: Some(script_path),
             target_name: options.value_of("target"),
-            positional_args: options
-                .values_of("args")
-                .into_iter()
-                .flatten()
+            positional_args: std::iter::once(script_path_argument.as_str())
+                .chain(options.values_of("args").into_iter().flatten())
                 .map(ToOwned::to_owned)
                 .collect(),
         };
 
         let mut shell_context = ShellContext::new(&exec_cfg);
         let status = shell_context
-            .exec_command_group(&script, &exec_cfg)
+            .exec_command_group(&parsed_script, &exec_cfg)
             .unwrap() //TODO: Handle errors here
             .wait()
             .status;
@@ -473,10 +478,8 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                             working_directory: &runfile.dir,
                             script_path: Some(runfile.path),
                             target_name: Some(name),
-                            positional_args: options
-                                .values_of("args")
-                                .into_iter()
-                                .flatten()
+                            positional_args: std::iter::once(rf.path.as_str())
+                                .chain(options.values_of("args").into_iter().flatten())
                                 .map(ToOwned::to_owned)
                                 .collect(),
                         };
@@ -487,7 +490,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 Overrideable::Set(ref phases) => phases.clone(),
                                 Overrideable::Unset => vec!["run".to_string()],
                                 Overrideable::SetNone => {
-                                    out::bad_script_phase(&output_stream);
+                                    out::no_default_phase(&output_stream, name);
                                     return exitcode::NOINPUT;
                                 }
                             },
@@ -518,7 +521,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 }
                             } else {
                                 //TODO: Ensure all phases exist prior to running any of them
-                                out::bad_script_phase(&output_stream);
+                                out::bad_script_phase(&output_stream, name, &phase);
                                 exit_code = exitcode::NOINPUT;
                                 break;
                             }

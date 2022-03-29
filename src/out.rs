@@ -93,10 +93,17 @@ pub fn bad_default(output_stream: &StandardStream) {
     error(output_stream, format_args!("No default target"));
 }
 
-pub fn bad_script_phase(output_stream: &StandardStream) {
+pub fn no_default_phase(output_stream: &StandardStream, target: &str) {
     error(
         output_stream,
-        format_args!("No scripts to execute for specified phase"),
+        format_args!("Target `{target}` has no default phase"),
+    );
+}
+
+pub fn bad_script_phase(output_stream: &StandardStream, target: &str, phase: &str) {
+    error(
+        output_stream,
+        format_args!("No scripts to execute for `{target}:{phase}`"),
     );
 }
 

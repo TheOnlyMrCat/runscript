@@ -56,7 +56,7 @@ pub fn parse_shell(
         .command_group(CommandGroupDelimiters::default())
         .map(|group| group.commands)
         .map_err(|err| RunscriptParseError::CommandParseError {
-            line: 0, //TODO: Extract command parse error type
+            line: 0,
             error: err,
         })
 }
@@ -76,10 +76,10 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
     let mut iterator = source.source.char_indices().peekable();
 
     let mut runscript = Runscript {
-        name: source
+        path: source
             .path
-            .file_name()
-            .unwrap()
+            .canonicalize()
+            .unwrap_or(source.path)
             .to_string_lossy()
             .into_owned(),
         source_text: source.source.clone(),

@@ -6,7 +6,7 @@ use indexmap::IndexMap;
 /// A parsed runscript
 #[derive(Clone, Debug)]
 pub struct Runscript {
-    pub name: String,
+    pub path: String,
     pub source_text: String,
     pub scripts: IndexMap<String, Target>,
     pub options: GlobalOptions,
