@@ -25,9 +25,10 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, ()> {
             .filter_map(|(index, ch)| if ch == '\n' { Some(index) } else { None })
             .collect(),
         runfile: Runscript {
-            name: (&source.path)
-                .strip_prefix(&source.dir)
-                .unwrap()
+            path: source
+                .path
+                .canonicalize()
+                .unwrap_or(source.path)
                 .to_string_lossy()
                 .into_owned(),
             source_text: source.source.clone(),
