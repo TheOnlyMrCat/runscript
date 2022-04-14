@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::parser::RunscriptSource;
-use crate::process::{CommandExecError, Pipe, PipeInput, StdioRepr, WaitableProcess};
+use crate::process::{CommandExecError, Pipe, PipeInput, ProcessExit, StdioRepr, WaitableProcess};
 
 use crate::parser::ast::{
     AndOr, AndOrList, AtomicTopLevelCommand, ComplexWord, CompoundCommand, CompoundCommandKind,
@@ -87,7 +87,7 @@ impl ShellContext {
         &mut self,
         script: &[AtomicTopLevelCommand],
         config: &ExecConfig,
-    ) -> Result<WaitableProcess, CommandExecError> {
+    ) -> WaitableProcess {
         use crate::parser::ast::Command;
 
         let mut jobs = vec![];
@@ -99,14 +99,14 @@ impl ShellContext {
                     Command::List(list) => (list, false),
                 };
 
-                let proc = self.exec_andor_list(command, config, is_job)?;
+                let proc = self.exec_andor_list(command, config, is_job);
                 if is_job {
                     self.pid = proc.pid();
                     jobs.push(proc);
                 } else {
                     let finished = proc.wait();
                     if !finished.status.success() {
-                        return Ok(WaitableProcess::finished(finished));
+                        return WaitableProcess::finished(finished);
                     }
                 }
             }
@@ -115,20 +115,20 @@ impl ShellContext {
         if !script.is_empty() {
             match &script.last().unwrap() {
                 Command::Job(list) => {
-                    let proc = self.exec_andor_list(list, config, true)?;
+                    let proc = self.exec_andor_list(list, config, true);
                     let mut last_proc = WaitableProcess::empty_success();
                     jobs.push(proc);
                     last_proc.set_jobs(jobs);
-                    Ok(last_proc)
+                    last_proc
                 }
                 Command::List(list) => {
-                    let mut last_proc = self.exec_andor_list(list, config, false)?;
+                    let mut last_proc = self.exec_andor_list(list, config, false);
                     last_proc.set_jobs(jobs);
-                    Ok(last_proc)
+                    last_proc
                 }
             }
         } else {
-            Ok(WaitableProcess::empty_success())
+            WaitableProcess::empty_success()
         }
     }
 
@@ -137,17 +137,19 @@ impl ShellContext {
         command: &AndOrList,
         config: &ExecConfig,
         is_job: bool,
-    ) -> Result<WaitableProcess, CommandExecError> {
-        let mut previous_output = self.exec_listable_command(&command.first, config, is_job)?;
+    ) -> WaitableProcess {
+        let mut previous_output = self.exec_listable_command(&command.first, config, is_job);
         for chain in &command.rest {
             match chain {
                 AndOr::And(command) => {
                     let finished = previous_output.wait();
                     if !is_job {
-                        out::process_finish(&finished.status);
+                        if let Some(output_stream) = &config.output_stream {
+                            out::process_finish(output_stream, &finished.status);
+                        }
                     }
                     if finished.status.success() {
-                        previous_output = self.exec_listable_command(command, config, is_job)?;
+                        previous_output = self.exec_listable_command(command, config, is_job);
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -156,10 +158,12 @@ impl ShellContext {
                 AndOr::Or(command) => {
                     let finished = previous_output.wait();
                     if !is_job {
-                        out::process_finish(&finished.status);
+                        if let Some(output_stream) = &config.output_stream {
+                            out::process_finish(output_stream, &finished.status);
+                        }
                     }
                     if !finished.status.success() {
-                        previous_output = self.exec_listable_command(command, config, is_job)?;
+                        previous_output = self.exec_listable_command(command, config, is_job);
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -167,7 +171,7 @@ impl ShellContext {
                 }
             }
         }
-        Ok(previous_output)
+        previous_output
     }
 
     fn exec_listable_command(
@@ -175,7 +179,7 @@ impl ShellContext {
         command: &ListableCommand,
         config: &ExecConfig,
         is_job: bool,
-    ) -> Result<WaitableProcess, CommandExecError> {
+    ) -> WaitableProcess {
         if let Some(ref out) = config.output_stream {
             write!(out.lock(), "{}> ", if is_job { "&" } else { "" }).expect("Failed to write");
         }
@@ -189,7 +193,7 @@ impl ShellContext {
                         Pipe::inherit_pipe_out()
                     },
                     config,
-                )?;
+                );
                 if let Some(ref out) = config.output_stream {
                     //TODO: Do stuff with cursor position?
                     write!(out.lock(), "| ").expect("Failed to write");
@@ -199,7 +203,7 @@ impl ShellContext {
                         command,
                         Pipe::pipe_in_out(proc.pipe_out()),
                         config,
-                    )?;
+                    );
                     proc = next_proc;
                     if let Some(ref out) = config.output_stream {
                         write!(out.lock(), "| ").expect("Failed to write");
@@ -209,8 +213,8 @@ impl ShellContext {
                     commands.last().unwrap(),
                     Pipe::pipe_in(proc.pipe_out()),
                     config,
-                )?;
-                Ok(last_proc) //TODO: Negate?
+                );
+                last_proc //TODO: Negate?
             }
             ListableCommand::Single(command) => {
                 self.exec_pipeable_command(command, Pipe::no_pipe(), config)
@@ -227,7 +231,7 @@ impl ShellContext {
         command: &PipeableCommand,
         pipe: Pipe,
         config: &ExecConfig,
-    ) -> Result<WaitableProcess, CommandExecError> {
+    ) -> WaitableProcess {
         match command {
             PipeableCommand::Simple(command) => self.exec_simple_command(command, pipe, config),
             PipeableCommand::Compound(command) => match &command.kind {
@@ -238,27 +242,27 @@ impl ShellContext {
                 }
                 CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
                     while self
-                        .exec_command_group(guard, config)?
+                        .exec_command_group(guard, config)
                         .wait()
                         .status
                         .success()
                     {
-                        self.exec_command_group(body, config)?.wait();
+                        self.exec_command_group(body, config).wait();
                     }
 
-                    Ok(WaitableProcess::empty_success())
+                    WaitableProcess::empty_success()
                 }
                 CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
                     while !self
-                        .exec_command_group(guard, config)?
+                        .exec_command_group(guard, config)
                         .wait()
                         .status
                         .success()
                     {
-                        self.exec_command_group(body, config)?.wait();
+                        self.exec_command_group(body, config).wait();
                     }
 
-                    Ok(WaitableProcess::empty_success())
+                    WaitableProcess::empty_success()
                 }
                 CompoundCommandKind::If {
                     conditionals,
@@ -267,24 +271,24 @@ impl ShellContext {
                     let mut last_proc = WaitableProcess::empty_success();
                     for GuardBodyPair { guard, body } in conditionals {
                         if self
-                            .exec_command_group(guard, config)?
+                            .exec_command_group(guard, config)
                             .wait()
                             .status
                             .success()
                         {
-                            last_proc = self.exec_command_group(body, config)?;
+                            last_proc = self.exec_command_group(body, config);
                         }
                     }
 
                     if let Some(else_branch) = else_branch {
-                        last_proc = self.exec_command_group(else_branch, config)?;
+                        last_proc = self.exec_command_group(else_branch, config);
                     }
 
-                    Ok(last_proc)
+                    last_proc
                 }
                 CompoundCommandKind::For { var, words, body } => {
                     let mut last_proc = WaitableProcess::empty_success();
-                    for word in words
+                    for word in match words
                         .as_ref()
                         .map(|words| -> Result<_, _> {
                             words
@@ -293,39 +297,53 @@ impl ShellContext {
                                 .flatten_ok()
                                 .collect::<Result<Vec<_>, _>>()
                         })
-                        .transpose()?
-                        .unwrap_or_else(|| config.positional_args.clone())
+                        .transpose()
                     {
+                        Ok(words) => words.unwrap_or_else(|| config.positional_args.clone()),
+                        Err(status) => {
+                            return WaitableProcess::empty_status(status);
+                        }
+                    } {
                         self.vars.insert(var.clone(), word.clone());
-                        last_proc = self.exec_command_group(body, config)?;
+                        last_proc = self.exec_command_group(body, config);
                     }
 
-                    Ok(last_proc)
+                    last_proc
                 }
                 CompoundCommandKind::Case { word, arms } => {
                     let mut last_proc = WaitableProcess::empty_success();
-                    let word = self.evaluate_tl_word(word, config)?;
+                    let word = match self.evaluate_tl_word(word, config) {
+                        Ok(word) => word,
+                        Err(status) => {
+                            return WaitableProcess::empty_status(status);
+                        }
+                    };
                     for PatternBodyPair { patterns, body } in arms {
                         let mut pattern_matches = false;
                         for pattern in patterns {
-                            let pattern = self.evaluate_tl_word(pattern, config)?;
+                            let pattern = match self.evaluate_tl_word(pattern, config) {
+                                Ok(pattern) => pattern,
+                                Err(status) => {
+                                    return WaitableProcess::empty_status(status);
+                                }
+                            };
                             if pattern == word {
                                 pattern_matches = true;
                             }
                         }
 
                         if pattern_matches {
-                            last_proc = self.exec_command_group(body, config)?;
+                            last_proc = self.exec_command_group(body, config);
                             break;
                         }
                     }
 
-                    Ok(last_proc)
+                    last_proc
                 }
             },
             PipeableCommand::FunctionDef(name, body) => {
                 self.functions.insert(name.clone(), body.clone());
-                Ok(WaitableProcess::empty_success())
+                WaitableProcess::empty_success()
             }
         }
     }
@@ -335,12 +353,12 @@ impl ShellContext {
         command: &SimpleCommand,
         pipe: Pipe,
         config: &ExecConfig,
-    ) -> Result<WaitableProcess, CommandExecError> {
+    ) -> WaitableProcess {
         use std::process::Command;
 
         let mut redirects = vec![];
 
-        let env_remaps = command
+        let env_remaps = match command
             .redirects_or_env_vars
             .iter()
             .filter_map(|r| match r {
@@ -360,9 +378,13 @@ impl ShellContext {
                     None
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(remaps) => remaps,
+            Err(status) => return WaitableProcess::empty_status(status),
+        };
 
-        let command_words = command
+        let command_words = match command
             .redirects_or_cmd_words
             .iter()
             .filter_map(|r| match r {
@@ -372,10 +394,14 @@ impl ShellContext {
                     None
                 }
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(words) => words,
+            Err(status) => return WaitableProcess::empty_status(status),
+        };
 
         if !command_words.is_empty() {
-            let redirects = redirects
+            let redirects = match redirects
                 .into_iter()
                 .map(|redirect| {
                     macro_rules! map_redirect {
@@ -387,7 +413,11 @@ impl ShellContext {
                     }
                     Ok(map_redirect!(Read, Write, ReadWrite, Append, Clobber, Heredoc, DupRead, DupWrite))
                 })
-                .collect::<Result<Vec<_>, _>>()?;
+                .collect::<Result<Vec<_>, _>>()
+            {
+                Ok(redirects) => redirects,
+                Err(status) => return WaitableProcess::empty_status(status),
+            };
 
             if let Some(ref output_stream) = config.output_stream {
                 out::command_prompt(
@@ -399,6 +429,7 @@ impl ShellContext {
                 );
             }
 
+            //TODO: I don't think flatten()ing is correct. The internal Vec<String>s should instead be joined.
             let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
 
             let mut stdin_buffer = None;
@@ -421,10 +452,17 @@ impl ShellContext {
             for redirect in redirects {
                 match redirect {
                     EvaluatedRedirect::Read(fd, word) => {
-                        let file = OpenOptions::new()
+                        let file = match OpenOptions::new()
                             .read(true)
                             .open(self.working_directory.clone().join(word.join(" ")))
-                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        {
+                            Ok(file) => file,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::BadRedirect { err },
+                                );
+                            }
+                        };
                         match fd {
                             None | Some(0) => stdin = StdioRepr::from(file),
                             Some(1) => stdout = StdioRepr::from(file),
@@ -433,11 +471,18 @@ impl ShellContext {
                         }
                     }
                     EvaluatedRedirect::Write(fd, word) => {
-                        let file = OpenOptions::new()
+                        let file = match OpenOptions::new()
                             .write(true)
                             .create(true)
                             .open(self.working_directory.clone().join(word.join(" ")))
-                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        {
+                            Ok(file) => file,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::BadRedirect { err },
+                                );
+                            }
+                        };
                         match fd {
                             Some(0) => stdin = StdioRepr::from(file),
                             None | Some(1) => stdout = StdioRepr::from(file),
@@ -446,12 +491,19 @@ impl ShellContext {
                         }
                     }
                     EvaluatedRedirect::ReadWrite(fd, word) => {
-                        let file = OpenOptions::new()
+                        let file = match OpenOptions::new()
                             .read(true)
                             .write(true)
                             .create(true)
                             .open(self.working_directory.clone().join(word.join(" ")))
-                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        {
+                            Ok(file) => file,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::BadRedirect { err },
+                                );
+                            }
+                        };
                         match fd {
                             None | Some(0) => stdin = StdioRepr::from(file),
                             Some(1) => stdout = StdioRepr::from(file),
@@ -460,12 +512,19 @@ impl ShellContext {
                         }
                     }
                     EvaluatedRedirect::Append(fd, word) => {
-                        let file = OpenOptions::new()
+                        let file = match OpenOptions::new()
                             .write(true)
                             .append(true)
                             .create(true)
                             .open(self.working_directory.clone().join(word.join(" ")))
-                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        {
+                            Ok(file) => file,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::BadRedirect { err },
+                                );
+                            }
+                        };
                         match fd {
                             Some(0) => stdin = StdioRepr::from(file),
                             None | Some(1) => stdout = StdioRepr::from(file),
@@ -474,11 +533,18 @@ impl ShellContext {
                         }
                     }
                     EvaluatedRedirect::Clobber(fd, word) => {
-                        let file = OpenOptions::new()
+                        let file = match OpenOptions::new()
                             .write(true)
                             .create(true)
                             .open(self.working_directory.clone().join(word.join(" ")))
-                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        {
+                            Ok(file) => file,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::BadRedirect { err },
+                                );
+                            }
+                        };
                         match fd {
                             None | Some(0) => stdin = StdioRepr::from(file),
                             Some(1) => stdout = StdioRepr::from(file),
@@ -487,12 +553,23 @@ impl ShellContext {
                         }
                     }
                     EvaluatedRedirect::Heredoc(fd, word) => {
-                        let mut file = tempfile::tempfile()
-                            .map_err(|e| CommandExecError::BadRedirect { err: e })?; //TODO: Handle errors
+                        let mut file = match tempfile::tempfile() {
+                            Ok(file) => file,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::BadRedirect { err },
+                                );
+                            }
+                        };
                         for word in word {
-                            file.write_all(word.as_bytes())
-                                .map_err(|e| CommandExecError::BadRedirect { err: e })?;
-                            //TODO: Handle errors
+                            match file.write_all(word.as_bytes()) {
+                                Ok(_) => (),
+                                Err(err) => {
+                                    return WaitableProcess::empty_error(
+                                        CommandExecError::BadRedirect { err },
+                                    );
+                                }
+                            }
                         }
                         match fd {
                             None | Some(0) => stdin = StdioRepr::from(file),
@@ -502,16 +579,17 @@ impl ShellContext {
                         }
                     }
                     EvaluatedRedirect::DupRead(_fd, _) => {
-                        return Err(CommandExecError::UnsupportedRedirect)
+                        return WaitableProcess::empty_error(CommandExecError::UnsupportedRedirect)
                     }
                     EvaluatedRedirect::DupWrite(_fd, _) => {
-                        return Err(CommandExecError::UnsupportedRedirect)
+                        return WaitableProcess::empty_error(CommandExecError::UnsupportedRedirect)
                     }
                 }
             }
 
             match command_words[0].as_str() {
-                ":" => Ok(WaitableProcess::empty_success()),
+                ":" => WaitableProcess::empty_success(),
+                #[cfg(feature = "dev-panic")]
                 "__run_panic" => {
                     panic!("Explicit command panic")
                 }
@@ -519,23 +597,29 @@ impl ShellContext {
                     //TODO: Extended cd options
                     let dir = &command_words[1];
                     self.working_directory = self.working_directory.join(dir);
-                    Ok(WaitableProcess::empty_success())
+                    WaitableProcess::empty_success()
                 }
                 "export" => {
                     let name = &command_words[1];
                     if let Some((name, value)) = name.split_once('=') {
                         self.env.insert(name.to_string(), value.to_string());
-                        Ok(WaitableProcess::empty_success())
+                        WaitableProcess::empty_success()
                     } else {
                         self.env.insert(name.to_string(), self.vars[name].clone());
-                        Ok(WaitableProcess::empty_success())
+                        WaitableProcess::empty_success()
                     }
                 }
                 "source" => {
                     let file = config.working_directory.join(&command_words[1]);
                     let source = RunscriptSource {
-                        source: std::fs::read_to_string(&file)
-                            .map_err(|e| CommandExecError::CommandFailed { err: e })?,
+                        source: match std::fs::read_to_string(&file) {
+                            Ok(source) => source,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::CommandFailed { err },
+                                );
+                            }
+                        },
                         path: file,
                         dir: config.working_directory.to_owned(),
                     };
@@ -553,8 +637,14 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(0),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe()
-                                .map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
+                            let (read, write) = match nix::unistd::pipe() {
+                                Ok(pipe) => pipe,
+                                Err(err) => {
+                                    return WaitableProcess::empty_error(
+                                        CommandExecError::CommandFailed { err: err.into() },
+                                    );
+                                }
+                            };
                             child_stdin = Some(write);
                             Some(read)
                         }
@@ -565,8 +655,14 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(1),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe()
-                                .map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
+                            let (read, write) = match nix::unistd::pipe() {
+                                Ok(pipe) => pipe,
+                                Err(err) => {
+                                    return WaitableProcess::empty_error(
+                                        CommandExecError::CommandFailed { err: err.into() },
+                                    );
+                                }
+                            };
                             child_stdout = Some(read);
                             Some(write)
                         }
@@ -577,8 +673,14 @@ impl ShellContext {
                         StdioRepr::Inherit => Some(2),
                         StdioRepr::Null => None,
                         StdioRepr::MakePipe => {
-                            let (read, write) = nix::unistd::pipe()
-                                .map_err(|e| CommandExecError::CommandFailed { err: e.into() })?;
+                            let (read, write) = match nix::unistd::pipe() {
+                                Ok(pipe) => pipe,
+                                Err(err) => {
+                                    return WaitableProcess::empty_error(
+                                        CommandExecError::CommandFailed { err: err.into() },
+                                    );
+                                }
+                            };
                             child_stderr = Some(read);
                             Some(write)
                         }
@@ -605,12 +707,12 @@ impl ShellContext {
                                 }
                             }
 
-                            Ok(WaitableProcess::reentrant_nightmare(
+                            WaitableProcess::reentrant_nightmare(
                                 child,
                                 child_stdin,
                                 child_stdout,
                                 child_stderr,
-                            ))
+                            )
                         }
                         Ok(ForkResult::Child) => {
                             // If any of this setup fails, exit immediately with the OSERR exitcode.
@@ -649,13 +751,13 @@ impl ShellContext {
                             // resume_unwind so as to not invoke the panic hook.
                             std::panic::resume_unwind(Box::new(recursive_context));
                         }
-                        Err(e) => Err(CommandExecError::CommandFailed {
-                            err: std::io::Error::from_raw_os_error(e as i32),
+                        Err(e) => WaitableProcess::empty_error(CommandExecError::CommandFailed {
+                            err: e.into(),
                         }),
                     }
                 }
                 _ => {
-                    let mut child = Command::new(&command_words[0])
+                    let mut child = match Command::new(&command_words[0])
                         .args(&command_words[1..])
                         .envs(&self.env)
                         .envs(env_remaps)
@@ -664,7 +766,14 @@ impl ShellContext {
                         .stderr(stderr)
                         .current_dir(self.working_directory.clone())
                         .spawn()
-                        .map_err(|e| CommandExecError::CommandFailed { err: e })?;
+                    {
+                        Ok(child) => child,
+                        Err(err) => {
+                            return WaitableProcess::empty_error(CommandExecError::CommandFailed {
+                                err,
+                            });
+                        }
+                    };
 
                     if let Some(stdin) = stdin_buffer {
                         // This approach can cause a deadlock if the following conditions are true:
@@ -676,7 +785,7 @@ impl ShellContext {
                         let _ = child.stdin.take().unwrap().write_all(&stdin); //TODO: Do I need to worry about an error here?
                     }
 
-                    Ok(child.into())
+                    WaitableProcess::from(child)
                 }
             }
         } else {
@@ -689,7 +798,7 @@ impl ShellContext {
                 self.vars.insert(key, value);
             }
 
-            Ok(WaitableProcess::empty_success())
+            WaitableProcess::empty_success()
         }
     }
 
@@ -697,7 +806,7 @@ impl ShellContext {
         &mut self,
         word: &ComplexWord,
         config: &ExecConfig,
-    ) -> Result<Vec<String>, CommandExecError> {
+    ) -> Result<Vec<String>, ProcessExit> {
         match word {
             ComplexWord::Concat(words) => {
                 let words = words
@@ -723,13 +832,15 @@ impl ShellContext {
                         }))
                         .join("");
                     let matches = glob_with(&stringified_glob, MatchOptions::new())
-                        .map_err(|e| CommandExecError::InvalidGlob {
-                            glob: stringified_glob.clone(),
-                            err: e,
+                        .map_err(|e| {
+                            ProcessExit::ExecError(CommandExecError::InvalidGlob {
+                                glob: stringified_glob.clone(),
+                                err: e,
+                            })
                         })?
                         .filter_map(|path| {
                             if let Ok(path) = path {
-                                //TODO: This is literally the worst way to handle paths.
+                                //TODO: This is not a good way to handle paths.
                                 let owned = path.to_string_lossy().into_owned();
                                 if let Some(stripped) = owned.strip_prefix(&working_dir_path) {
                                     Some(stripped.to_owned())
@@ -742,9 +853,9 @@ impl ShellContext {
                         })
                         .collect::<Vec<_>>();
                     if matches.is_empty() {
-                        Err(CommandExecError::NoGlobMatches {
+                        Err(ProcessExit::ExecError(CommandExecError::NoGlobMatches {
                             glob: stringified_glob,
-                        })
+                        }))
                     } else {
                         Ok(matches)
                     }
@@ -761,11 +872,7 @@ impl ShellContext {
         }
     }
 
-    fn evaluate_word(
-        &mut self,
-        word: &Word,
-        config: &ExecConfig,
-    ) -> Result<GlobPart, CommandExecError> {
+    fn evaluate_word(&mut self, word: &Word, config: &ExecConfig) -> Result<GlobPart, ProcessExit> {
         match word {
             Word::SingleQuoted(literal) => Ok(vec![literal.clone()].into()),
             Word::DoubleQuoted(words) => Ok(vec![words
@@ -785,7 +892,7 @@ impl ShellContext {
         &mut self,
         word: &SimpleWord,
         config: &ExecConfig,
-    ) -> Result<GlobPart, CommandExecError> {
+    ) -> Result<GlobPart, ProcessExit> {
         match word {
             SimpleWord::Literal(s) => Ok(vec![s.clone()].into()),
             SimpleWord::Escaped(s) => Ok(vec![s.clone()].into()),
@@ -804,18 +911,19 @@ impl ShellContext {
         &mut self,
         param: &ParameterSubstitution,
         config: &ExecConfig,
-    ) -> Result<Vec<String>, CommandExecError> {
+    ) -> Result<Vec<String>, ProcessExit> {
         Ok(match param {
-            ParameterSubstitution::Command(commands) => self
-                .exec_command_group(commands, config)
-                .map(|output| {
-                    Ok(vec![String::from_utf8(output.wait().stdout).map_err(
-                        |e| CommandExecError::UnhandledOsString {
-                            err: e.utf8_error(),
-                        },
-                    )?])
-                })
-                .and_then(std::convert::identity)?,
+            ParameterSubstitution::Command(commands) => {
+                let output = self.exec_command_group(commands, config).wait();
+                if !output.status.success() {
+                    return Err(output.status);
+                }
+                vec![String::from_utf8(output.stdout).map_err(|e| {
+                    ProcessExit::ExecError(CommandExecError::UnhandledOsString {
+                        err: e.utf8_error(),
+                    })
+                })?]
+            }
             ParameterSubstitution::Len(p) => vec![format!(
                 "{}",
                 match p {

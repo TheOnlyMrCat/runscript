@@ -2,6 +2,7 @@
 run args
 run chain
 run default
+run dir
 run params
 run exit
 run recursive
@@ -21,6 +22,10 @@ echo Build!
 
 [default:run]
 echo Run!
+
+[dir]
+cd subdir
+cat file.txt
 
 [params]
 FOO='bar' echo ${FOO-No foo}
