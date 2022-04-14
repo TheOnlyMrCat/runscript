@@ -1,6 +1,3 @@
-#![warn(clippy::print_stdout)]
-#![warn(clippy::print_stderr)]
-
 use std::env;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -145,7 +142,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         .no_binary_name(true)
         .trailing_var_arg(true)
         .setting(clap::AppSettings::DeriveDisplayOrder)
-        .override_usage("run [OPTIONS] [TARGET:PHASE] [--] [ARGS]")
+        .override_usage("run [OPTIONS] [TARGET:PHASE] [-- ARGS]")
         .arg(arg!([target] "Target to run in the script").hide(true))
         .arg(
             arg!([args] ... "Arguments to pass to the script")
@@ -329,7 +326,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 let mut shell_context = ShellContext::new(&exec_cfg);
                 shell_context
                     .exec_command_group(&[command], &exec_cfg)
-                    .unwrap() //TODO: Handle errors here
                     .wait()
                     .status
                     .coerced_code()
@@ -369,7 +365,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             .unwrap_or_else(|_| script.to_owned());
 
         let exec_cfg = ExecConfig {
-            output_stream: Some(output_stream),
+            output_stream: Some(output_stream.clone()),
             colour_choice,
             working_directory: &cwd,
             script_path: Some(script_path),
@@ -383,10 +379,9 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         let mut shell_context = ShellContext::new(&exec_cfg);
         let status = shell_context
             .exec_command_group(&parsed_script, &exec_cfg)
-            .unwrap() //TODO: Handle errors here
             .wait()
             .status;
-        out::process_finish(&status);
+        out::process_finish(&output_stream, &status);
         status.coerced_code()
     } else {
         let runfile = match select_file(
@@ -511,10 +506,9 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                             .collect::<Vec<_>>(),
                                         &exec_cfg,
                                     )
-                                    .unwrap() //TODO: Handle errors here
                                     .wait()
                                     .status;
-                                out::process_finish(&status);
+                                out::process_finish(&output_stream, &status);
                                 exit_code = status.coerced_code();
                                 if exitcode::is_error(exit_code) {
                                     break;

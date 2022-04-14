@@ -7,27 +7,11 @@ use glob::PatternError;
 
 #[derive(Debug)]
 pub enum CommandExecError {
-    InvalidGlob {
-        glob: String,
-        err: PatternError,
-        // loc: RunscriptLocation,
-    },
-    NoGlobMatches {
-        glob: String,
-        // loc: RunscriptLocation,
-    },
-    CommandFailed {
-        err: std::io::Error,
-        // loc: RunscriptLocation,
-    },
-    UnhandledOsString {
-        err: Utf8Error,
-        // loc: RunscriptLocation,
-    },
-    BadRedirect {
-        err: std::io::Error,
-        // loc: RunscriptLocation,
-    },
+    InvalidGlob { glob: String, err: PatternError },
+    NoGlobMatches { glob: String },
+    CommandFailed { err: std::io::Error },
+    UnhandledOsString { err: Utf8Error },
+    BadRedirect { err: std::io::Error },
     UnsupportedRedirect,
 }
 
@@ -35,6 +19,7 @@ pub enum CommandExecError {
 pub enum ProcessExit {
     Bool(bool),
     StdStatus(ExitStatus),
+    ExecError(CommandExecError),
     #[cfg(unix)]
     NixStatus(nix::sys::wait::WaitStatus),
 }
@@ -54,6 +39,7 @@ impl ProcessExit {
         match self {
             ProcessExit::Bool(b) => *b,
             ProcessExit::StdStatus(s) => s.success(),
+            ProcessExit::ExecError(_) => false,
             #[cfg(unix)]
             ProcessExit::NixStatus(s) => matches!(s, nix::sys::wait::WaitStatus::Exited(_, 0)),
         }
@@ -63,6 +49,7 @@ impl ProcessExit {
     ///
     /// Coerces the `Bool` variant into `true = 0`, `false = 1`
     /// Signals are converted to an exit code of `128 + signal`
+    /// Execution errors are converted to an exit code of `127`
     pub fn coerced_code(&self) -> i32 {
         match self {
             ProcessExit::Bool(b) => !b as i32,
@@ -78,6 +65,7 @@ impl ProcessExit {
                     unreachable!()
                 }
             }),
+            ProcessExit::ExecError(_) => 127,
             #[cfg(unix)]
             ProcessExit::NixStatus(s) => match s {
                 nix::sys::wait::WaitStatus::Exited(_, code) => *code,
@@ -142,6 +130,28 @@ impl WaitableProcess {
         WaitableProcess {
             process: OngoingProcess::Finished(FinishedProcess {
                 status: ProcessExit::Bool(true),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            associated_jobs: vec![],
+        }
+    }
+
+    pub fn empty_error(error: CommandExecError) -> WaitableProcess {
+        WaitableProcess {
+            process: OngoingProcess::Finished(FinishedProcess {
+                status: ProcessExit::ExecError(error),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            associated_jobs: vec![],
+        }
+    }
+
+    pub fn empty_status(status: ProcessExit) -> WaitableProcess {
+        WaitableProcess {
+            process: OngoingProcess::Finished(FinishedProcess {
+                status,
                 stdout: vec![],
                 stderr: vec![],
             }),

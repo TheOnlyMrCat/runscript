@@ -4,7 +4,7 @@ use crate::parser::ast::{
     AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, RedirectOrCmdWord,
     SimpleCommand, SimpleWord, Word,
 };
-use crate::process::ProcessExit;
+use crate::process::{CommandExecError, ProcessExit};
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 use crate::config::Config;
@@ -210,6 +210,7 @@ pub fn command_prompt(
     }
 }
 
+//TODO: Don't print from these functions
 fn print_tl_word(lock: &mut StandardStreamLock, word: &AtomicTopLevelWord) -> String {
     match word {
         ComplexWord::Concat(words) => {
@@ -322,7 +323,7 @@ pub fn env_remaps(output_stream: &StandardStream, remaps: &[(String, String)]) {
     }
 }
 
-pub fn process_finish(status: &ProcessExit) {
+pub fn process_finish(output_stream: &StandardStream, status: &ProcessExit) {
     extern "C" {
         fn strsignal(sig: std::os::raw::c_int) -> *const std::os::raw::c_char;
     }
@@ -352,13 +353,14 @@ pub fn process_finish(status: &ProcessExit) {
     fn signal(signal: i32, core: bool) -> String {
         use std::ffi::CStr;
 
-        // SAFETY: No input is invalid.
+        // SAFETY: No input to `strsignal` is invalid.
         let sigstr_ptr = unsafe { strsignal(signal as std::os::raw::c_int) };
 
         if sigstr_ptr.is_null() {
             format!("signal {}", signal)
         } else {
-            // SAFETY: The returned string is valid until the next call to strsignal, and has been verified to be non-null.
+            // SAFETY: The string returned from `strsignal` is valid until the next call to strsignal
+            // and has been verified to be non-null. The string returned by `strsignal` is null-terminated.
             let sigstr = unsafe { CStr::from_ptr(sigstr_ptr) };
             format!(
                 "signal {signal} ({}){}",
@@ -368,44 +370,73 @@ pub fn process_finish(status: &ProcessExit) {
         }
     }
 
+    fn exec_error(error: &CommandExecError) -> String {
+        match error {
+            CommandExecError::CommandFailed { err } => format!("{}", err),
+            CommandExecError::InvalidGlob { glob, err } => {
+                format!("Invalid glob pattern: {}: {}", glob, err)
+            }
+            CommandExecError::NoGlobMatches { glob } => {
+                format!("No matches for glob pattern: {}", glob)
+            }
+            CommandExecError::UnhandledOsString { .. } => {
+                "Command substitution outputted non-UTF-8 data".to_owned()
+            } //TODO: Which parameter in particular?
+            CommandExecError::BadRedirect { err } => {
+                format!("Failed to open redirect file: {}", err)
+            }
+            CommandExecError::UnsupportedRedirect => {
+                "Unsupported operation for redirect".to_owned()
+            }
+        }
+    }
+
+    let mut lock = output_stream.lock();
     match status {
         ProcessExit::Bool(b) => {
             if !*b {
-                println!("=> exit 1");
+                writeln!(lock, "=> exit 1").unwrap();
             }
         }
         ProcessExit::StdStatus(status) => {
             if !status.success() {
                 if let Some(c) = status.code() {
-                    println!("=> {}", code(c));
+                    writeln!(lock, "=> {}", code(c)).unwrap();
                 } else {
                     #[cfg(unix)]
                     {
                         use std::os::unix::process::ExitStatusExt;
 
-                        println!(
+                        writeln!(
+                            lock,
                             "=> {}",
                             signal(status.signal().unwrap(), status.core_dumped())
-                        );
+                        )
+                        .unwrap();
                     }
                     #[cfg(not(unix))]
                     {
-                        println!("=> exit ?");
+                        // Probably unreachable, but just in case. The documentation doesn't guarantee that
+                        // it will always return `Some` on non-unix platforms.
+                        writeln!(lock, "=> exit ?").unwrap();
                     }
                 }
             }
+        }
+        ProcessExit::ExecError(error) => {
+            writeln!(lock, "=> run: {}", exec_error(error)).unwrap();
         }
         #[cfg(unix)]
         ProcessExit::NixStatus(status) => match status {
             nix::sys::wait::WaitStatus::Exited(_, c) => {
                 if *c != 0 {
-                    println!("=> {}", code(*c));
+                    writeln!(lock, "=> {}", code(*c)).unwrap();
                 }
             }
             nix::sys::wait::WaitStatus::Signaled(_, sig, core) => {
-                signal((*sig) as i32, *core);
+                writeln!(lock, "=> {}", signal((*sig) as i32, *core)).unwrap();
             }
-            _ => println!("=> exit ?"),
+            _ => writeln!(lock, "=> exit ?").unwrap(),
         },
     }
 }
