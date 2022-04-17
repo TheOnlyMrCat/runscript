@@ -355,8 +355,7 @@ impl From<StdioRepr> for Stdio {
             StdioRepr::Fd(fd) => {
                 use std::os::unix::io::FromRawFd;
                 unsafe {
-                    // SAFETY: Umm, not sure how to enforce this, to be honest.
-                    //         I'll deal with it later
+                    // SAFETY: Not currently enforced. Replace with OwnedFd and OwnedHandle when #87074 is stable
                     Stdio::from_raw_fd(fd)
                 }
             }

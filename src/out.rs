@@ -357,13 +357,18 @@ pub fn process_finish(output_stream: &StandardStream, status: &ProcessExit) {
         let sigstr_ptr = unsafe { strsignal(signal as std::os::raw::c_int) };
 
         if sigstr_ptr.is_null() {
-            format!("signal {}", signal)
+            format!(
+                "signal {}{}",
+                signal,
+                if core { " - core dumped" } else { "" }
+            )
         } else {
-            // SAFETY: The string returned from `strsignal` is valid until the next call to strsignal
+            // SAFETY: The string returned from `strsignal` is valid until our next call to strsignal
             // and has been verified to be non-null. The string returned by `strsignal` is null-terminated.
             let sigstr = unsafe { CStr::from_ptr(sigstr_ptr) };
             format!(
-                "signal {signal} ({}){}",
+                "signal {} ({}){}",
+                signal,
                 sigstr.to_string_lossy(),
                 if core { " - core dumped" } else { "" }
             )
