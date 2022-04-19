@@ -105,6 +105,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
         command_option: bool,
     }
 
+    let mut default_shell: Option<String> = None;
     let mut current_script: Option<CurrentScript> = None;
     while let Some(tk) = iterator.peek().copied() {
         match tk {
@@ -131,9 +132,8 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                     (name, phase)
                 };
                 let execution_type = {
-                    let (mut execution_type, _) = consume_line(&mut iterator);
-                    execution_type.retain(|c| !c.is_whitespace());
-                    execution_type
+                    let (execution_type, _) = consume_line(&mut iterator);
+                    execution_type.trim().to_owned()
                 };
 
                 // Clean up the previous script if there was one
@@ -159,9 +159,16 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                 current_script = Some(CurrentScript {
                     script: Script {
                         commands: if execution_type.is_empty() {
-                            ScriptExecution::Internal {
-                                commands: Vec::new(),
-                                options: ScriptOptions::default(),
+                            if let Some(default_shell) = &default_shell {
+                                ScriptExecution::ExternalPosix {
+                                    path: default_shell.clone(),
+                                    commands: String::new(),
+                                }
+                            } else {
+                                ScriptExecution::Internal {
+                                    commands: Vec::new(),
+                                    options: ScriptOptions::default(),
+                                }
                             }
                         } else {
                             ScriptExecution::ExternalPosix {
@@ -254,6 +261,10 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                         "no-default-script" => {
                             runscript.options.default_target.merge(SetNone).unwrap();
                         }
+                        "default-shell" => {
+                            let (shell_name, _) = consume_line(&mut iterator);
+                            default_shell = Some(shell_name.trim().to_owned());
+                        }
                         _ => {
                             return Err(RunscriptParseError::NonexistentOption {
                                 line: line_index!(i),
@@ -287,7 +298,8 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                 if let Some(current_script) = &mut current_script {
                     match &mut current_script.script.commands {
                         ScriptExecution::ExternalPosix { commands, .. } => {
-                            commands.push(c);
+                            commands.push(c); //TODO: Consume full line here so it doesn't try to parse options and script headers?
+                            iterator.next();
                         }
                         ScriptExecution::Internal { commands, .. } => {
                             let command_pos = line_index!(i);
