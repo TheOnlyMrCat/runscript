@@ -18,7 +18,7 @@ mod parser;
 mod process;
 mod script;
 
-use script::{Overrideable, Runscript, Target};
+use script::{Overrideable, Runscript, ScriptExecution, Target};
 
 use crate::exec::{ExecConfig, ShellContext};
 
@@ -495,19 +495,35 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         for phase in phases {
                             if let Some(script) = target.scripts.get(&phase) {
                                 out::phase_message(&output_stream, &config, &phase, name);
-                                let mut shell_context = ShellContext::new(&exec_cfg);
-                                let status = shell_context
-                                    .exec_command_group(
-                                        &script
-                                            .commands
-                                            .clone() //TODO: Don't clone
-                                            .into_iter()
-                                            .map(|sc| sc.command)
-                                            .collect::<Vec<_>>(),
-                                        &exec_cfg,
-                                    )
-                                    .wait()
-                                    .status;
+                                let status = match &script.commands {
+                                    ScriptExecution::Internal { commands, .. } => {
+                                        let mut shell_context = ShellContext::new(&exec_cfg);
+                                        shell_context
+                                            .exec_command_group(
+                                                &commands
+                                                    .clone() //TODO: Don't clone
+                                                    .into_iter()
+                                                    .map(|sc| sc.command)
+                                                    .collect::<Vec<_>>(),
+                                                &exec_cfg,
+                                            )
+                                            .wait()
+                                            .status
+                                    }
+                                    ScriptExecution::ExternalPosix { path, commands } => {
+                                        let mut file = tempfile::NamedTempFile::new().unwrap();
+                                        file.write_all(commands.as_bytes()).unwrap();
+
+                                        process::ProcessExit::StdStatus(
+                                            std::process::Command::new(&path)
+                                                .arg(file.path())
+                                                .args(&exec_cfg.positional_args[1..])
+                                                .current_dir(&exec_cfg.working_directory)
+                                                .status()
+                                                .unwrap(),
+                                        )
+                                    }
+                                };
                                 out::process_finish(&output_stream, &status);
                                 exit_code = status.coerced_code();
                                 if exitcode::is_error(exit_code) {

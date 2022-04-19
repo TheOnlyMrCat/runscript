@@ -114,6 +114,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
             }
             // Script
             (i, '[') => {
+                // Get script name, phase, and the (optional) executing shell.
                 let (name, phase) = {
                     iterator.next();
                     let mut name = (&mut iterator)
@@ -129,7 +130,13 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                         .unwrap_or_else(|| "run".to_owned());
                     (name, phase)
                 };
+                let execution_type = {
+                    let (mut execution_type, _) = consume_line(&mut iterator);
+                    execution_type.retain(|c| !c.is_whitespace());
+                    execution_type
+                };
 
+                // Clean up the previous script if there was one
                 if let Some(current_script) = current_script {
                     let target = runscript.scripts.entry(current_script.target).or_default();
                     target
@@ -138,6 +145,7 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                     target.options.merge(current_script.target_options).unwrap();
                 }
 
+                // Ensure the new script is unique
                 let new_target = runscript.scripts.entry(name.clone()).or_default();
                 if let Some(script) = new_target.scripts.get(&phase) {
                     return Err(RunscriptParseError::DuplicateScript {
@@ -147,11 +155,21 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                     });
                 }
 
+                // Set up parsing context for new script
                 current_script = Some(CurrentScript {
                     script: Script {
-                        commands: Vec::new(),
+                        commands: if execution_type.is_empty() {
+                            ScriptExecution::Internal {
+                                commands: Vec::new(),
+                                options: ScriptOptions::default(),
+                            }
+                        } else {
+                            ScriptExecution::ExternalPosix {
+                                path: execution_type,
+                                commands: String::new(),
+                            }
+                        },
                         line: line_index!(i),
-                        options: ScriptOptions::default(),
                     },
                     target: name,
                     phase,
@@ -200,6 +218,12 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                                 })
                             }
                         }
+                    } else if let ScriptExecution::ExternalPosix { commands, .. } =
+                        &mut current_script.script.commands
+                    {
+                        // Target-specific options can still exist in externally-executed scripts,
+                        // but we still need to give the `:` back if we're not using it
+                        commands.push(':');
                     } else {
                         // Command-specific option. This must be given to the command parser, but
                         // we've already consumed the `:`, so we must pass it through with a state
@@ -244,30 +268,48 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
                 }
             }
             // Whitespace
-            (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => {
+            (_, c @ (' ' | '\n' | '\r' | '\t')) => {
+                if let Some(CurrentScript {
+                    script:
+                        Script {
+                            commands: ScriptExecution::ExternalPosix { commands, .. },
+                            ..
+                        },
+                    ..
+                }) = &mut current_script
+                {
+                    commands.push(c);
+                }
                 iterator.next();
             }
             // Everything else is probably a command
-            (i, _) => {
-                if let Some(ref mut current_script) = current_script {
-                    let command_pos = line_index!(i);
+            (i, c) => {
+                if let Some(current_script) = &mut current_script {
+                    match &mut current_script.script.commands {
+                        ScriptExecution::ExternalPosix { commands, .. } => {
+                            commands.push(c);
+                        }
+                        ScriptExecution::Internal { commands, .. } => {
+                            let command_pos = line_index!(i);
 
-                    current_script.command_option = false;
+                            current_script.command_option = false;
 
-                    let lexer = Lexer::new((&mut iterator).map(|(_, ch)| ch));
-                    let mut parser = Parser::<_>::new(lexer);
-                    let command = parser
-                        .complete_command()
-                        .map_err(|e| RunscriptParseError::CommandParseError {
-                            line: command_pos,
-                            error: e,
-                        })?
-                        .unwrap(); // The only error that can occur is EOF before any word, but we already skip whitespace
+                            let lexer = Lexer::new((&mut iterator).map(|(_, ch)| ch));
+                            let mut parser = Parser::<_>::new(lexer);
+                            let command = parser
+                                .complete_command()
+                                .map_err(|e| RunscriptParseError::CommandParseError {
+                                    line: command_pos,
+                                    error: e,
+                                })?
+                                .unwrap(); // The only error that can occur is EOF before any word, but we already skip whitespace
 
-                    current_script.script.commands.push(ScriptCommand {
-                        command,
-                        options: CommandOptions::default(),
-                    });
+                            commands.push(ScriptCommand {
+                                command,
+                                options: CommandOptions::default(),
+                            });
+                        }
+                    }
                 } else {
                     return Err(RunscriptParseError::IllegalCommandLocation {
                         line: line_index!(i),
