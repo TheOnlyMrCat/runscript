@@ -92,8 +92,10 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .unwrap_or(context.line_indices.len());
                 let script = Script {
                     line,
-                    commands: parse_commands(context)?,
-                    options: ScriptOptions::default(),
+                    commands: ScriptExecution::Internal {
+                        commands: parse_commands(context)?,
+                        options: ScriptOptions::default(),
+                    },
                 };
 
                 if name == "-" {

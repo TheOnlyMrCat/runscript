@@ -20,9 +20,20 @@ pub struct Target {
 
 #[derive(Clone, Debug)]
 pub struct Script {
-    pub commands: Vec<ScriptCommand>,
+    pub commands: ScriptExecution,
     pub line: usize,
-    pub options: ScriptOptions,
+}
+
+#[derive(Clone, Debug)]
+pub enum ScriptExecution {
+    Internal {
+        commands: Vec<ScriptCommand>,
+        options: ScriptOptions,
+    },
+    ExternalPosix {
+        path: String,
+        commands: String,
+    },
 }
 
 #[derive(Clone, Debug)]
