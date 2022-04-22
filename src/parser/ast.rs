@@ -21,7 +21,7 @@ pub enum Parameter {
     /// $!
     Bang,
     /// $0, $1, ..., $9, ${100}
-    Positional(u32),
+    Positional(usize),
     /// $foo
     Var(String),
 }
@@ -218,7 +218,7 @@ pub enum PipeableCommand {
     Compound(Box<CompoundCommand>),
     /// A function definition, associating a name with a group of commands,
     /// e.g. `function foo() { echo foo function; }`.
-    FunctionDef(String, Arc<CompoundCommand>),
+    FunctionDef(String, Arc<CompoundCommand>), //TODO: Probably doesn't need to be an Arc...
 }
 
 /// A class of commands where redirection is applied to a command group.

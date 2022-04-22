@@ -33,7 +33,7 @@ pub struct ExecConfig<'a> {
     pub target_name: Option<&'a str>,
     /// Positional arguments to pass to the script.
     ///
-    ///The first argument replaces `$1`, the second replaces `$2`, etc.
+    ///The first argument replaces `$0`, the second replaces `$1`, etc.
     pub positional_args: Vec<String>,
 }
 
@@ -65,6 +65,8 @@ pub struct ShellContext {
     env: HashMap<String, String>,
     /// Function definitions
     functions: HashMap<String, Arc<CompoundCommand>>,
+    /// Stack of function arguments
+    function_args: Vec<Vec<String>>,
     /// PID of most recent job
     pid: i32,
     /// Exit code of most recent top-level command
@@ -78,6 +80,7 @@ impl ShellContext {
             vars: HashMap::new(),
             env: HashMap::new(),
             functions: HashMap::new(),
+            function_args: Vec::new(),
             pid: -1,
             exit_code: 0,
         }
@@ -234,116 +237,124 @@ impl ShellContext {
     ) -> WaitableProcess {
         match command {
             PipeableCommand::Simple(command) => self.exec_simple_command(command, pipe, config),
-            PipeableCommand::Compound(command) => match &command.kind {
-                CompoundCommandKind::Brace(commands) => self.exec_command_group(commands, config),
-                CompoundCommandKind::Subshell(commands) => {
-                    let mut context = self.clone();
-                    context.exec_command_group(commands, config)
-                }
-                CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
-                    while self
-                        .exec_command_group(guard, config)
-                        .wait()
-                        .status
-                        .success()
-                    {
-                        self.exec_command_group(body, config).wait();
-                    }
-
-                    WaitableProcess::empty_success()
-                }
-                CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
-                    while !self
-                        .exec_command_group(guard, config)
-                        .wait()
-                        .status
-                        .success()
-                    {
-                        self.exec_command_group(body, config).wait();
-                    }
-
-                    WaitableProcess::empty_success()
-                }
-                CompoundCommandKind::If {
-                    conditionals,
-                    else_branch,
-                } => {
-                    let mut last_proc = WaitableProcess::empty_success();
-                    for GuardBodyPair { guard, body } in conditionals {
-                        if self
-                            .exec_command_group(guard, config)
-                            .wait()
-                            .status
-                            .success()
-                        {
-                            last_proc = self.exec_command_group(body, config);
-                        }
-                    }
-
-                    if let Some(else_branch) = else_branch {
-                        last_proc = self.exec_command_group(else_branch, config);
-                    }
-
-                    last_proc
-                }
-                CompoundCommandKind::For { var, words, body } => {
-                    let mut last_proc = WaitableProcess::empty_success();
-                    for word in match words
-                        .as_ref()
-                        .map(|words| -> Result<_, _> {
-                            words
-                                .iter()
-                                .map(|word| self.evaluate_tl_word(word, config))
-                                .flatten_ok()
-                                .collect::<Result<Vec<_>, _>>()
-                        })
-                        .transpose()
-                    {
-                        Ok(words) => words.unwrap_or_else(|| config.positional_args.clone()),
-                        Err(status) => {
-                            return WaitableProcess::empty_status(status);
-                        }
-                    } {
-                        self.vars.insert(var.clone(), word.clone());
-                        last_proc = self.exec_command_group(body, config);
-                    }
-
-                    last_proc
-                }
-                CompoundCommandKind::Case { word, arms } => {
-                    let mut last_proc = WaitableProcess::empty_success();
-                    let word = match self.evaluate_tl_word(word, config) {
-                        Ok(word) => word,
-                        Err(status) => {
-                            return WaitableProcess::empty_status(status);
-                        }
-                    };
-                    for PatternBodyPair { patterns, body } in arms {
-                        let mut pattern_matches = false;
-                        for pattern in patterns {
-                            let pattern = match self.evaluate_tl_word(pattern, config) {
-                                Ok(pattern) => pattern,
-                                Err(status) => {
-                                    return WaitableProcess::empty_status(status);
-                                }
-                            };
-                            if pattern == word {
-                                pattern_matches = true;
-                            }
-                        }
-
-                        if pattern_matches {
-                            last_proc = self.exec_command_group(body, config);
-                            break;
-                        }
-                    }
-
-                    last_proc
-                }
-            },
+            PipeableCommand::Compound(command) => self.exec_compound_command(command, config),
             PipeableCommand::FunctionDef(name, body) => {
                 self.functions.insert(name.clone(), body.clone());
                 WaitableProcess::empty_success()
+            }
+        }
+    }
+
+    fn exec_compound_command(
+        &mut self,
+        command: &CompoundCommand,
+        config: &ExecConfig,
+    ) -> WaitableProcess {
+        match &command.kind {
+            CompoundCommandKind::Brace(commands) => self.exec_command_group(commands, config),
+            CompoundCommandKind::Subshell(commands) => {
+                let mut context = self.clone();
+                context.exec_command_group(commands, config)
+            }
+            CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
+                while self
+                    .exec_command_group(guard, config)
+                    .wait()
+                    .status
+                    .success()
+                {
+                    self.exec_command_group(body, config).wait();
+                }
+
+                WaitableProcess::empty_success()
+            }
+            CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
+                while !self
+                    .exec_command_group(guard, config)
+                    .wait()
+                    .status
+                    .success()
+                {
+                    self.exec_command_group(body, config).wait();
+                }
+
+                WaitableProcess::empty_success()
+            }
+            CompoundCommandKind::If {
+                conditionals,
+                else_branch,
+            } => {
+                let mut last_proc = WaitableProcess::empty_success();
+                for GuardBodyPair { guard, body } in conditionals {
+                    if self
+                        .exec_command_group(guard, config)
+                        .wait()
+                        .status
+                        .success()
+                    {
+                        last_proc = self.exec_command_group(body, config);
+                    }
+                }
+
+                if let Some(else_branch) = else_branch {
+                    last_proc = self.exec_command_group(else_branch, config);
+                }
+
+                last_proc
+            }
+            CompoundCommandKind::For { var, words, body } => {
+                let mut last_proc = WaitableProcess::empty_success();
+                for word in match words
+                    .as_ref()
+                    .map(|words| -> Result<_, _> {
+                        words
+                            .iter()
+                            .map(|word| self.evaluate_tl_word(word, config))
+                            .flatten_ok()
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()
+                {
+                    Ok(words) => words.unwrap_or_else(|| config.positional_args.clone()),
+                    Err(status) => {
+                        return WaitableProcess::empty_status(status);
+                    }
+                } {
+                    self.vars.insert(var.clone(), word.clone());
+                    last_proc = self.exec_command_group(body, config);
+                }
+
+                last_proc
+            }
+            CompoundCommandKind::Case { word, arms } => {
+                let mut last_proc = WaitableProcess::empty_success();
+                let word = match self.evaluate_tl_word(word, config) {
+                    Ok(word) => word,
+                    Err(status) => {
+                        return WaitableProcess::empty_status(status);
+                    }
+                };
+                for PatternBodyPair { patterns, body } in arms {
+                    let mut pattern_matches = false;
+                    for pattern in patterns {
+                        let pattern = match self.evaluate_tl_word(pattern, config) {
+                            Ok(pattern) => pattern,
+                            Err(status) => {
+                                return WaitableProcess::empty_status(status);
+                            }
+                        };
+                        if pattern == word {
+                            pattern_matches = true;
+                        }
+                    }
+
+                    if pattern_matches {
+                        last_proc = self.exec_command_group(body, config);
+                        break;
+                    }
+                }
+
+                last_proc
             }
         }
     }
@@ -757,35 +768,43 @@ impl ShellContext {
                     }
                 }
                 _ => {
-                    let mut child = match Command::new(&command_words[0])
-                        .args(&command_words[1..])
-                        .envs(&self.env)
-                        .envs(env_remaps)
-                        .stdin(stdin)
-                        .stdout(stdout)
-                        .stderr(stderr)
-                        .current_dir(self.working_directory.clone())
-                        .spawn()
-                    {
-                        Ok(child) => child,
-                        Err(err) => {
-                            return WaitableProcess::empty_error(CommandExecError::CommandFailed {
-                                err,
-                            });
+                    if let Some(commands) = self.functions.get(&command_words[0]).cloned() {
+                        self.function_args.push(command_words);
+                        let process = self.exec_compound_command(&commands, config);
+                        self.function_args.pop();
+                        process
+                    } else {
+                        let mut child = match Command::new(&command_words[0])
+                            .args(&command_words[1..])
+                            .envs(&self.env)
+                            .envs(env_remaps)
+                            .stdin(stdin)
+                            .stdout(stdout)
+                            .stderr(stderr)
+                            .current_dir(self.working_directory.clone())
+                            .spawn()
+                        {
+                            Ok(child) => child,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::CommandFailed { err },
+                                );
+                            }
+                        };
+
+                        if let Some(stdin) = stdin_buffer {
+                            // This approach can cause a deadlock if the following conditions are true:
+                            // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
+                            // - The stdin buffer is larger than the pipe buffer
+                            // - The child writes more than one pipe buffer of data without reading enough of stdin
+                            //? Could run this on separate thread to mitigate this, if necessary.
+                            //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
+                            let _ = child.stdin.take().unwrap().write_all(&stdin);
+                            //TODO: Do I need to worry about an error here?
                         }
-                    };
 
-                    if let Some(stdin) = stdin_buffer {
-                        // This approach can cause a deadlock if the following conditions are true:
-                        // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
-                        // - The stdin buffer is larger than the pipe buffer
-                        // - The child writes more than one pipe buffer of data without reading enough of stdin
-                        //? Could run this on separate thread to mitigate this, if necessary.
-                        //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
-                        let _ = child.stdin.take().unwrap().write_all(&stdin); //TODO: Do I need to worry about an error here?
+                        WaitableProcess::from(child)
                     }
-
-                    WaitableProcess::from(child)
                 }
             }
         } else {
@@ -963,12 +982,15 @@ impl ShellContext {
 
     fn evaluate_parameter(&mut self, parameter: &Parameter, config: &ExecConfig) -> Vec<String> {
         match parameter {
-            Parameter::Positional(n) => config
-                .positional_args
-                .get(*n as usize)
-                .cloned()
-                .into_iter()
-                .collect(),
+            Parameter::Positional(n) => match self.function_args.last() {
+                Some(args) => args.get(*n).cloned().into_iter().collect(),
+                None => config
+                    .positional_args
+                    .get(*n)
+                    .cloned()
+                    .into_iter()
+                    .collect(),
+            },
             Parameter::Var(name) => self
                 .vars
                 .get(name)
@@ -976,8 +998,16 @@ impl ShellContext {
                 .or_else(|| std::env::var(name).ok())
                 .into_iter()
                 .collect(),
-            Parameter::At => config.positional_args.clone(),
-            Parameter::Pound => vec![format!("{}", config.positional_args.len())],
+            Parameter::At => match self.function_args.last() {
+                Some(args) => args,
+                None => &config.positional_args,
+            }
+            .get(1..)
+            .into_iter()
+            .flatten()
+            .cloned()
+            .collect(),
+            Parameter::Pound => vec![format!("{}", config.positional_args.len() - 1)],
             Parameter::Dollar => vec![format!("{}", std::process::id())],
             Parameter::Question => vec![format!("{}", self.exit_code)],
             Parameter::Bang => vec![format!("{}", self.pid)],
