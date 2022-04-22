@@ -12,6 +12,7 @@ For an example of a useful runscript, see [the runfile for this repository](run)
 - Multiple 'phases' per target, so you can chose to build, run, or test a target. If those options aren't enough, you can name your phases whatever you want!
 - Fancy output while running scripts
 - Properly emulates a shell, with `export`able variables, `source`ing shell scripts, `cd`ing.
+- If runscript's builtin shell doesn't have everything you need, you can execute a script with an external shell (e.g. `bash`). You can also apply this to an entire runscript.
 
 ### Still to do
 
@@ -19,9 +20,10 @@ For an example of a useful runscript, see [the runfile for this repository](run)
   - [ ] Functions
   - [ ] A few shell builtin commands (e.g. `exit`, `nohup`)
   - [ ] Arithmetic and a number of parameter substitutions
+  - [ ] Here-documents
+- [ ] Fix race conditions in output
 - [ ] Remove most sources of panicking (fuzz testing?)
-- [ ] Support windows properly
-- [ ] Execute a script with an external shell (e.g. `bash`)
+- [ ] Support Windows properly
 
 ### Non-goals
 
