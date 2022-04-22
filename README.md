@@ -17,10 +17,11 @@ For an example of a useful runscript, see [the runfile for this repository](run)
 ### Still to do
 
 - [ ] A number of more advanced shell features, including:
-  - [ ] Functions
   - [ ] A few shell builtin commands (e.g. `exit`, `nohup`)
+  - [ ] Local variables (?)
   - [ ] Arithmetic and a number of parameter substitutions
   - [ ] Here-documents
+- [ ] Replace manual SIGHUP'ing with `setpgid`
 - [ ] Fix race conditions in output
 - [ ] Remove most sources of panicking (fuzz testing?)
 - [ ] Support Windows properly

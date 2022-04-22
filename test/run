@@ -3,8 +3,9 @@ run args
 run chain
 run default
 run dir
-run params
 run exit
+run fn
+run params
 run recursive
 run redir
 
@@ -27,6 +28,22 @@ echo Run!
 cd subdir
 cat file.txt
 
+[exit]
+run nonexistent-target 2>/dev/null || :
+
+[fn]
+foo () {
+    echo 'Keywordless'
+}
+function bar (echo 'Subshell' $1)
+function qux () {
+    echo 'Braces' $2
+    echo $@
+}
+foo
+bar baz
+qux quux corge grault
+
 [params]
 FOO='bar' echo ${FOO-No foo}
 FOO='bar' printenv FOO
@@ -37,9 +54,6 @@ export FOO
 printenv FOO
 source source.sh
 printenv ENV_VAR
-
-[exit]
-run nonexistent-target 2>/dev/null || :
 
 [recursive]
 run :alt

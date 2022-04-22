@@ -1190,7 +1190,9 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     fn parameter_raw(&mut self) -> ParseResult<ast::SimpleWord> {
         let start_pos = self.iter.pos();
         match self.iter.next() {
-            Some(ParamPositional(p)) => Ok(ast::SimpleWord::Param(Parameter::Positional(p as u32))),
+            Some(ParamPositional(p)) => {
+                Ok(ast::SimpleWord::Param(Parameter::Positional(p as usize)))
+            }
 
             Some(Dollar) => match self.iter.peek() {
                 Some(&Star) | Some(&Pound) | Some(&Question) | Some(&Dollar) | Some(&Bang)
@@ -1489,7 +1491,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             Some(At) => Parameter::At,
 
             Some(Name(n)) => Parameter::Var(n),
-            Some(Literal(s)) => match u32::from_str(&s) {
+            Some(Literal(s)) => match usize::from_str(&s) {
                 Ok(n) => Parameter::Positional(n),
                 Err(_) => return Err(ParseError::BadSubst(Literal(s))),
             },
