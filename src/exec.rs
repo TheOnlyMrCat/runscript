@@ -646,129 +646,7 @@ impl ShellContext {
                 }
                 #[cfg(unix)]
                 "run" => {
-                    let mut child_stdin = None;
-                    let stdin_fd = match stdin {
-                        StdioRepr::Inherit => Some(0),
-                        StdioRepr::Null => None,
-                        StdioRepr::MakePipe => {
-                            let (read, write) = match nix::unistd::pipe() {
-                                Ok(pipe) => pipe,
-                                Err(err) => {
-                                    return WaitableProcess::empty_error(
-                                        CommandExecError::CommandFailed { err: err.into() },
-                                    );
-                                }
-                            };
-                            child_stdin = Some(write);
-                            Some(read)
-                        }
-                        StdioRepr::Fd(n) => Some(n),
-                    };
-                    let mut child_stdout = None;
-                    let stdout_fd = match stdout {
-                        StdioRepr::Inherit => Some(1),
-                        StdioRepr::Null => None,
-                        StdioRepr::MakePipe => {
-                            let (read, write) = match nix::unistd::pipe() {
-                                Ok(pipe) => pipe,
-                                Err(err) => {
-                                    return WaitableProcess::empty_error(
-                                        CommandExecError::CommandFailed { err: err.into() },
-                                    );
-                                }
-                            };
-                            child_stdout = Some(read);
-                            Some(write)
-                        }
-                        StdioRepr::Fd(n) => Some(n),
-                    };
-                    let mut child_stderr = None;
-                    let stderr_fd = match stderr {
-                        StdioRepr::Inherit => Some(2),
-                        StdioRepr::Null => None,
-                        StdioRepr::MakePipe => {
-                            let (read, write) = match nix::unistd::pipe() {
-                                Ok(pipe) => pipe,
-                                Err(err) => {
-                                    return WaitableProcess::empty_error(
-                                        CommandExecError::CommandFailed { err: err.into() },
-                                    );
-                                }
-                            };
-                            child_stderr = Some(read);
-                            Some(write)
-                        }
-                        StdioRepr::Fd(n) => Some(n),
-                    };
-
-                    use nix::unistd::ForkResult;
-                    match unsafe { nix::unistd::fork() } {
-                        Ok(ForkResult::Parent { child }) => {
-                            if let Some(buffer) = stdin_buffer {
-                                if let Some(write_fd) = child_stdin.take() {
-                                    use std::os::unix::prelude::FromRawFd;
-
-                                    // This approach can cause a deadlock if the following conditions are true:
-                                    // - The child is using a piped stdout
-                                    // - The stdin buffer is larger than the pipe buffer
-                                    // - The child writes more than one pipe buffer of data without reading enough of stdin
-                                    //? Could run this on separate thread to mitigate this, if necessary.
-                                    let _ = unsafe {
-                                        // SAFETY: child_stdin has been take()n, so no other code might assume it exists.
-                                        File::from_raw_fd(write_fd)
-                                    }
-                                    .write_all(&buffer); //TODO: Do I need to worry about an error here?
-                                }
-                            }
-
-                            WaitableProcess::reentrant_nightmare(
-                                child,
-                                child_stdin,
-                                child_stdout,
-                                child_stderr,
-                            )
-                        }
-                        Ok(ForkResult::Child) => {
-                            // If any of this setup fails, exit immediately with the OSERR exitcode.
-                            fn bail() -> ! {
-                                std::process::exit(exitcode::OSERR);
-                            }
-                            fn bail_a<T, U>(_: T) -> U {
-                                bail()
-                            }
-
-                            // Set up standard I/O streams
-                            (nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap_or_else(bail_a) == -1)
-                                .then(bail);
-                            (nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap_or_else(bail_a) == -1)
-                                .then(bail);
-                            (nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap_or_else(bail_a) == -1)
-                                .then(bail);
-
-                            // Set up remainder of environment
-                            std::env::set_current_dir(&self.working_directory)
-                                .unwrap_or_else(bail_a);
-                            for (k, v) in &self.env {
-                                std::env::set_var(k, v);
-                            }
-
-                            let mut args = command_words;
-                            args.remove(0);
-                            //TODO: This recusrive context only makes sense if we haven't changed directory.
-                            // If we have, the script might be assuming `run` will run the script in that directory.
-                            let recursive_context = BaseExecContext {
-                                args,
-                                current_file: config.script_path.to_owned(),
-                                current_target: config.target_name.map(ToOwned::to_owned),
-                                colour_choice: config.colour_choice,
-                            };
-                            // resume_unwind so as to not invoke the panic hook.
-                            std::panic::resume_unwind(Box::new(recursive_context));
-                        }
-                        Err(e) => WaitableProcess::empty_error(CommandExecError::CommandFailed {
-                            err: e.into(),
-                        }),
-                    }
+                    todo!();
                 }
                 _ => {
                     if let Some(commands) = self.functions.get(&command_words[0]).cloned() {
@@ -949,7 +827,7 @@ impl ShellContext {
             ParameterSubstitution::Len(p) => vec![format!(
                 "{}",
                 match p {
-                    Parameter::At | Parameter::Star => config.positional_args.len(),
+                    Parameter::At | Parameter::Star => config.positional_args.len() - 1,
                     p => self
                         .evaluate_parameter(p, config)
                         .into_iter()

@@ -1,9 +1,13 @@
+use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
 
 use glob::PatternError;
+
+use crate::exec::BaseExecContext;
 
 #[derive(Debug)]
 pub enum CommandExecError {
@@ -332,6 +336,197 @@ impl WaitableProcess {
 impl From<Child> for WaitableProcess {
     fn from(process: Child) -> WaitableProcess {
         WaitableProcess::new(process)
+    }
+}
+
+pub enum SpawnableProcess {
+    StdProcess(std::process::Command),
+    Builtin(BuiltinCommand),
+    Finished(FinishedProcess),
+    #[cfg(unix)]
+    Reentrant {
+        stdin: StdioRepr,
+        stdout: StdioRepr,
+        stderr: StdioRepr,
+        env: Vec<(OsString, OsString)>,
+        cwd: Option<PathBuf>,
+        recursive_context: BaseExecContext,
+    },
+}
+
+impl SpawnableProcess {
+    pub fn new_std(cmd: std::process::Command) -> SpawnableProcess {
+        SpawnableProcess::StdProcess(cmd)
+    }
+
+    #[cfg(unix)]
+    pub fn new_reentrant(
+        stdin: StdioRepr,
+        stdout: StdioRepr,
+        stderr: StdioRepr,
+        env: Vec<(OsString, OsString)>,
+        cwd: Option<PathBuf>,
+        recursive_context: BaseExecContext,
+    ) -> SpawnableProcess {
+        SpawnableProcess::Reentrant {
+            stdin,
+            stdout,
+            stderr,
+            env,
+            cwd,
+            recursive_context,
+        }
+    }
+
+    pub fn finished(process: FinishedProcess) -> SpawnableProcess {
+        SpawnableProcess::Finished(process)
+    }
+
+    pub fn spawn(self) -> WaitableProcess {
+        match self {
+            SpawnableProcess::StdProcess(mut cmd) => {
+                let process = cmd.spawn().unwrap();
+                WaitableProcess::new(process)
+            }
+            SpawnableProcess::Builtin(builtin) => builtin.spawn(),
+            #[cfg(unix)]
+            SpawnableProcess::Reentrant {
+                stdin,
+                stdout,
+                stderr,
+                env,
+                cwd,
+                recursive_context,
+            } => {
+                let mut child_stdin = None;
+                let stdin_fd = match stdin {
+                    StdioRepr::Inherit => Some(0),
+                    StdioRepr::Null => None,
+                    StdioRepr::MakePipe => {
+                        let (read, write) = match nix::unistd::pipe() {
+                            Ok(pipe) => pipe,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::CommandFailed { err: err.into() },
+                                );
+                            }
+                        };
+                        child_stdin = Some(write);
+                        Some(read)
+                    }
+                    StdioRepr::Fd(n) => Some(n),
+                };
+                let mut child_stdout = None;
+                let stdout_fd = match stdout {
+                    StdioRepr::Inherit => Some(1),
+                    StdioRepr::Null => None,
+                    StdioRepr::MakePipe => {
+                        let (read, write) = match nix::unistd::pipe() {
+                            Ok(pipe) => pipe,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::CommandFailed { err: err.into() },
+                                );
+                            }
+                        };
+                        child_stdout = Some(read);
+                        Some(write)
+                    }
+                    StdioRepr::Fd(n) => Some(n),
+                };
+                let mut child_stderr = None;
+                let stderr_fd = match stderr {
+                    StdioRepr::Inherit => Some(2),
+                    StdioRepr::Null => None,
+                    StdioRepr::MakePipe => {
+                        let (read, write) = match nix::unistd::pipe() {
+                            Ok(pipe) => pipe,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::CommandFailed { err: err.into() },
+                                );
+                            }
+                        };
+                        child_stderr = Some(read);
+                        Some(write)
+                    }
+                    StdioRepr::Fd(n) => Some(n),
+                };
+
+                use nix::unistd::ForkResult;
+                match unsafe { nix::unistd::fork() } {
+                    Ok(ForkResult::Parent { child }) => WaitableProcess::reentrant_nightmare(
+                        child,
+                        child_stdin,
+                        child_stdout,
+                        child_stderr,
+                    ),
+                    Ok(ForkResult::Child) => {
+                        // If any of this setup fails, exit immediately with the OSERR exitcode.
+                        fn bail() -> ! {
+                            std::process::exit(exitcode::OSERR);
+                        }
+                        fn bail_a<T, U>(_: T) -> U {
+                            bail()
+                        }
+
+                        // Set up standard I/O streams
+                        (nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap_or_else(bail_a) == -1)
+                            .then(bail);
+                        (nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap_or_else(bail_a) == -1)
+                            .then(bail);
+                        (nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap_or_else(bail_a) == -1)
+                            .then(bail);
+
+                        // Set up remainder of environment
+                        if let Some(cwd) = cwd {
+                            std::env::set_current_dir(&cwd).unwrap_or_else(bail_a);
+                        }
+                        for (k, v) in &env {
+                            std::env::set_var(k, v);
+                        }
+                        // resume_unwind so as to not invoke the panic hook.
+                        std::panic::resume_unwind(Box::new(recursive_context));
+                    }
+                    Err(e) => WaitableProcess::empty_error(CommandExecError::CommandFailed {
+                        err: e.into(),
+                    }),
+                }
+            }
+            SpawnableProcess::Finished(process) => WaitableProcess::finished(process),
+        }
+    }
+}
+
+pub enum BuiltinCommand {
+    True,
+    False,
+    #[cfg(feature = "dev-panic")]
+    Panic,
+    Cd {
+        path: PathBuf,
+    },
+    Export {
+        key: OsString,
+        value: OsString,
+    },
+    Unset {
+        key: OsString,
+    },
+    Source {
+        path: PathBuf,
+    },
+}
+
+impl BuiltinCommand {
+    fn spawn(self) -> WaitableProcess {
+        match self {
+            BuiltinCommand::True => WaitableProcess::empty_success(),
+            BuiltinCommand::False => WaitableProcess::empty_status(ProcessExit::Bool(false)),
+            #[cfg(feature = "dev-panic")]
+            BuiltinCommand::Panic => panic!("Explicit command panic"),
+            _ => todo!(),
+        }
     }
 }
 
