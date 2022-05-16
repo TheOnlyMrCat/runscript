@@ -1,9 +1,16 @@
 use std::fs::File;
 use std::io::Read;
+use std::path::PathBuf;
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
+use std::sync::Arc;
 
 use glob::PatternError;
+
+use crate::exec::{BaseExecContext, ShellContext};
+use crate::parser::ast::CompoundCommand;
+use crate::parser::RunscriptSource;
+use crate::ptr::Ref;
 
 #[derive(Debug)]
 pub enum CommandExecError {
@@ -22,13 +29,6 @@ pub enum ProcessExit {
     ExecError(CommandExecError),
     #[cfg(unix)]
     NixStatus(nix::sys::wait::WaitStatus),
-}
-
-#[derive(Debug)]
-pub struct FinishedProcess {
-    pub status: ProcessExit,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 impl ProcessExit {
@@ -74,6 +74,14 @@ impl ProcessExit {
             },
         }
     }
+}
+
+#[derive(Debug)]
+pub struct FinishedProcess {
+    pub status: ProcessExit,
+    //TODO: Get rid of these?
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 
 enum OngoingProcess {
@@ -159,32 +167,17 @@ impl WaitableProcess {
         }
     }
 
-    pub fn pid(&self) -> i32 {
+    pub fn pid(&self) -> Option<i32> {
         match &self.process {
-            OngoingProcess::Concurrent(p) => p.id() as i32,
+            OngoingProcess::Concurrent(p) => Some(p.id() as i32),
             #[cfg(unix)]
-            OngoingProcess::Reentrant { pid, .. } => pid.as_raw(),
-            OngoingProcess::Finished(_) => 0,
+            OngoingProcess::Reentrant { pid, .. } => Some(pid.as_raw()),
+            OngoingProcess::Finished(_) => None,
         }
     }
 
     pub fn set_jobs(&mut self, jobs: Vec<WaitableProcess>) {
         self.associated_jobs = jobs;
-    }
-
-    pub fn pipe_out(&mut self) -> PipeInput {
-        match self.process {
-            OngoingProcess::Concurrent(ref mut p) => match p.stdout.take() {
-                Some(stdout) => PipeInput::Pipe(stdout.into()),
-                None => PipeInput::None,
-            },
-            #[cfg(unix)]
-            OngoingProcess::Reentrant { stdout, .. } => match stdout {
-                Some(stdout) => PipeInput::Pipe((stdout).into()),
-                None => PipeInput::None,
-            },
-            OngoingProcess::Finished(ref p) => PipeInput::Buffer(p.stdout.clone()),
-        }
     }
 
     #[cfg(unix)]
@@ -329,126 +322,6 @@ impl WaitableProcess {
     }
 }
 
-impl From<Child> for WaitableProcess {
-    fn from(process: Child) -> WaitableProcess {
-        WaitableProcess::new(process)
-    }
-}
-
-pub enum StdioRepr {
-    Inherit,
-    Null,
-    MakePipe,
-    #[cfg(unix)]
-    Fd(std::os::unix::io::RawFd),
-    #[cfg(windows)]
-    Fd(std::os::windows::prelude::RawHandle),
-}
-
-impl From<StdioRepr> for Stdio {
-    fn from(repr: StdioRepr) -> Stdio {
-        match repr {
-            StdioRepr::Inherit => Stdio::inherit(),
-            StdioRepr::Null => Stdio::null(),
-            StdioRepr::MakePipe => Stdio::piped(),
-            #[cfg(unix)]
-            StdioRepr::Fd(fd) => {
-                use std::os::unix::io::FromRawFd;
-                unsafe {
-                    // SAFETY: Not currently enforced. Replace with OwnedFd and OwnedHandle when #87074 is stable
-                    Stdio::from_raw_fd(fd)
-                }
-            }
-            #[cfg(windows)]
-            StdioRepr::Fd(handle) => {
-                use std::os::windows::io::FromRawHandle;
-                unsafe { Stdio::from_raw_handle(handle) }
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-impl<T> From<T> for StdioRepr
-where
-    T: std::os::unix::io::IntoRawFd,
-{
-    fn from(file: T) -> StdioRepr {
-        StdioRepr::Fd(file.into_raw_fd())
-    }
-}
-
-#[cfg(windows)]
-impl<T> From<T> for StdioRepr
-where
-    T: std::os::windows::io::IntoRawHandle,
-{
-    fn from(file: T) -> StdioRepr {
-        StdioRepr::Fd(file.into_raw_handle())
-    }
-}
-
-pub struct Pipe {
-    pub stdin: PipeInput,
-    pub stdout: bool,
-}
-
-impl Pipe {
-    pub fn no_pipe() -> Pipe {
-        Pipe {
-            stdin: PipeInput::Inherit,
-            stdout: false,
-        }
-    }
-
-    pub fn null_pipe_out() -> Pipe {
-        Pipe {
-            stdin: PipeInput::None,
-            stdout: true,
-        }
-    }
-
-    pub fn inherit_pipe_out() -> Pipe {
-        Pipe {
-            stdin: PipeInput::Inherit,
-            stdout: true,
-        }
-    }
-
-    pub fn pipe_in(stdin: impl Into<PipeInput>) -> Pipe {
-        Pipe {
-            stdin: stdin.into(),
-            stdout: false,
-        }
-    }
-
-    pub fn pipe_in_out(stdin: impl Into<PipeInput>) -> Pipe {
-        Pipe {
-            stdin: stdin.into(),
-            stdout: true,
-        }
-    }
-}
-
-pub enum PipeInput {
-    None,
-    Inherit,
-    Pipe(StdioRepr),
-    Buffer(Vec<u8>),
-}
-
-impl From<StdioRepr> for PipeInput {
-    fn from(stdin: StdioRepr) -> PipeInput {
-        PipeInput::Pipe(stdin)
-    }
-}
-
-impl From<Vec<u8>> for PipeInput {
-    fn from(stdin: Vec<u8>) -> PipeInput {
-        PipeInput::Buffer(stdin)
-    }
-}
-
 impl From<Output> for FinishedProcess {
     fn from(o: Output) -> Self {
         FinishedProcess {
@@ -456,5 +329,499 @@ impl From<Output> for FinishedProcess {
             stdout: o.stdout,
             stderr: o.stderr,
         }
+    }
+}
+
+impl From<Child> for WaitableProcess {
+    fn from(process: Child) -> WaitableProcess {
+        WaitableProcess::new(process)
+    }
+}
+
+pub struct SpawnableProcess<'a> {
+    ty: SpawnableProcessType<'a>,
+    redir: RedirectConfig,
+}
+
+pub enum SpawnableProcessType<'a> {
+    StdProcess(std::process::Command),
+    Builtin(BuiltinCommand),
+    Compound(&'a CompoundCommand),
+    Function(Arc<CompoundCommand>, Vec<String>),
+    Finished(FinishedProcess),
+    #[cfg(unix)]
+    Reentrant {
+        env: Vec<(String, String)>,
+        cwd: Option<PathBuf>,
+        recursive_context: BaseExecContext,
+    },
+}
+
+impl SpawnableProcess<'_> {
+    pub fn new(ty: SpawnableProcessType<'_>, redir: RedirectConfig) -> SpawnableProcess<'_> {
+        SpawnableProcess { ty, redir }
+    }
+
+    pub fn empty_success() -> Self {
+        Self::new(
+            SpawnableProcessType::Finished(FinishedProcess {
+                status: ProcessExit::Bool(true),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            RedirectConfig::default_bg(),
+        )
+    }
+
+    pub fn empty_error(error: CommandExecError) -> Self {
+        Self::new(
+            SpawnableProcessType::Finished(FinishedProcess {
+                status: ProcessExit::ExecError(error),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            RedirectConfig::default_bg(),
+        )
+    }
+
+    pub fn empty_status(status: ProcessExit) -> Self {
+        Self::new(
+            SpawnableProcessType::Finished(FinishedProcess {
+                status,
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            RedirectConfig::default_bg(),
+        )
+    }
+
+    pub fn process(process: std::process::Command, redir: RedirectConfig) -> Self {
+        Self::new(SpawnableProcessType::StdProcess(process), redir)
+    }
+
+    pub fn builtin(builtin: BuiltinCommand, redir: RedirectConfig) -> Self {
+        Self::new(SpawnableProcessType::Builtin(builtin), redir)
+    }
+
+    pub fn compound(compound: &CompoundCommand, redir: RedirectConfig) -> SpawnableProcess<'_> {
+        Self::new(SpawnableProcessType::Compound(compound), redir)
+    }
+
+    pub fn function(
+        function: Arc<CompoundCommand>,
+        args: Vec<String>,
+        redir: RedirectConfig,
+    ) -> Self {
+        Self::new(SpawnableProcessType::Function(function, args), redir)
+    }
+
+    pub fn reentrant(
+        env: Vec<(String, String)>,
+        cwd: Option<PathBuf>,
+        recursive_context: BaseExecContext,
+        redir: RedirectConfig,
+    ) -> Self {
+        Self::new(
+            SpawnableProcessType::Reentrant {
+                env,
+                cwd,
+                recursive_context,
+            },
+            redir,
+        )
+    }
+
+    pub fn spawn(mut self, mut context: SpawnContext) -> WaitableProcess {
+        self.redir.apply_context(&context);
+        match self.ty {
+            SpawnableProcessType::StdProcess(mut cmd) => {
+                cmd.stdin(self.redir.stdin)
+                    .stdout(self.redir.stdout)
+                    .stderr(self.redir.stderr);
+                let process = cmd.spawn().unwrap();
+                // if let StdinRedirect::Buffer(stdin_buffer) = self.stdin {
+                //     if let Some(mut child_stdin) = process.stdin.as_ref() {
+                //         use std::io::Write;
+                //         // This approach can cause a deadlock if the following conditions are true:
+                //         // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
+                //         // - The stdin buffer is larger than the pipe buffer
+                //         // - The child writes more than one pipe buffer of data without reading enough of stdin
+                //         //? Could run this on separate thread to mitigate this, if necessary.
+                //         //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
+                //         let _ = child_stdin.write_all(&stdin_buffer);
+                //         //TODO: Do I need to worry about an error here?
+                //     }
+                // }
+                WaitableProcess::new(process)
+            }
+            SpawnableProcessType::Function(command, args) => {
+                Ref::into_unique(context.shell_context())
+                    .exec_as_function(command, args, self.redir)
+            }
+            SpawnableProcessType::Compound(command) => ShellContext::exec_compound_command_unique(
+                Ref::into_unique(context.shell_context()),
+                command,
+                self.redir,
+            ),
+            SpawnableProcessType::Builtin(builtin) => builtin.spawn(context),
+            SpawnableProcessType::Finished(process) => WaitableProcess::finished(process),
+            #[cfg(unix)]
+            SpawnableProcessType::Reentrant {
+                env,
+                cwd,
+                recursive_context,
+            } => {
+                use nix::unistd::ForkResult;
+                match unsafe { nix::unistd::fork() } {
+                    Ok(ForkResult::Parent { child }) => {
+                        WaitableProcess::reentrant_nightmare(child, None, None, None)
+                    }
+                    Ok(ForkResult::Child) => {
+                        // If any of this setup fails, exit immediately with the OSERR exitcode.
+                        fn bail() -> ! {
+                            std::process::exit(exitcode::OSERR);
+                        }
+                        fn bail_a<T, U>(_: T) -> U {
+                            bail()
+                        }
+
+                        cfg_if::cfg_if! {
+                            if #[cfg(target_os = "fuchsia")] {
+                                // fuchsia doesn't have /dev/null
+                            } else if #[cfg(target_os = "redox")] {
+                                const DEV_NULL: &str = "null:\0";
+                            } else if #[cfg(target_os = "vxworks")] {
+                                const DEV_NULL: &str = "/null\0";
+                            } else {
+                                const DEV_NULL: &str = "/dev/null\0";
+                            }
+                        }
+
+                        // Set up standard I/O streams
+                        match self.redir.stdin {
+                            StdinRedirect::Null => {
+                                (nix::unistd::dup2(
+                                    nix::fcntl::open(
+                                        DEV_NULL,
+                                        nix::fcntl::OFlag::O_WRONLY | nix::fcntl::OFlag::O_CLOEXEC,
+                                        nix::sys::stat::Mode::from_bits_truncate(0o666),
+                                    )
+                                    .unwrap_or_else(bail_a),
+                                    0,
+                                )
+                                .unwrap_or_else(bail_a)
+                                    == -1)
+                                    .then(bail);
+                            }
+                            StdinRedirect::Inherit => {} // Nothing to do
+                            StdinRedirect::Fd(fd) => {
+                                (nix::unistd::dup2(fd, 0).unwrap_or_else(bail_a) == -1).then(bail);
+                            }
+                            StdinRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                        }
+                        match self.redir.stdout {
+                            StdoutRedirect::Null => {
+                                (nix::unistd::dup2(
+                                    nix::fcntl::open(
+                                        DEV_NULL,
+                                        nix::fcntl::OFlag::O_WRONLY | nix::fcntl::OFlag::O_CLOEXEC,
+                                        nix::sys::stat::Mode::from_bits_truncate(0o666),
+                                    )
+                                    .unwrap_or_else(bail_a),
+                                    1,
+                                )
+                                .unwrap_or_else(bail_a)
+                                    == -1)
+                                    .then(bail);
+                            }
+                            StdoutRedirect::Inherit => {} // Nothing to do
+                            StdoutRedirect::Fd(fd) => {
+                                (nix::unistd::dup2(fd, 1).unwrap_or_else(bail_a) == -1).then(bail);
+                            }
+                            StdoutRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                        }
+                        match self.redir.stderr {
+                            StdoutRedirect::Null => {
+                                (nix::unistd::dup2(
+                                    nix::fcntl::open(
+                                        DEV_NULL,
+                                        nix::fcntl::OFlag::O_WRONLY | nix::fcntl::OFlag::O_CLOEXEC,
+                                        nix::sys::stat::Mode::from_bits_truncate(0o666),
+                                    )
+                                    .unwrap_or_else(bail_a),
+                                    2,
+                                )
+                                .unwrap_or_else(bail_a)
+                                    == -1)
+                                    .then(bail);
+                            }
+                            StdoutRedirect::Inherit => {} // Nothing to do
+                            StdoutRedirect::Fd(fd) => {
+                                (nix::unistd::dup2(fd, 2).unwrap_or_else(bail_a) == -1).then(bail);
+                            }
+                            StdoutRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                        }
+
+                        // Set up remainder of environment
+                        if let Some(cwd) = cwd {
+                            std::env::set_current_dir(&cwd).unwrap_or_else(bail_a);
+                        }
+                        for (k, v) in &env {
+                            std::env::set_var(k, v);
+                        }
+                        // resume_unwind so as to not invoke the panic hook.
+                        std::panic::resume_unwind(Box::new(recursive_context));
+                    }
+                    Err(e) => WaitableProcess::empty_error(CommandExecError::CommandFailed {
+                        err: e.into(),
+                    }),
+                }
+            }
+        }
+    }
+}
+
+pub enum BuiltinCommand {
+    True,
+    False,
+    #[cfg(feature = "dev-panic")]
+    Panic,
+    Cd {
+        /// Path should be `join`ed with `context.working_directory` already
+        path: PathBuf,
+    },
+    Export {
+        key: String,
+        value: String,
+    },
+    Unset {
+        key: String,
+    },
+    Source {
+        /// Path should be `join`ed with `context.working_directory` already
+        path: PathBuf,
+        cwd: PathBuf,
+    },
+}
+
+impl BuiltinCommand {
+    fn spawn(self, mut context: SpawnContext) -> WaitableProcess {
+        match self {
+            BuiltinCommand::True => WaitableProcess::empty_success(),
+            BuiltinCommand::False => WaitableProcess::empty_status(ProcessExit::Bool(false)),
+            #[cfg(feature = "dev-panic")]
+            BuiltinCommand::Panic => panic!("Explicit command panic"),
+            BuiltinCommand::Cd { path } => {
+                if let SpawnContext::PipelineEnd { context, .. } = context {
+                    context.working_directory = path;
+                }
+                WaitableProcess::empty_success()
+            }
+            BuiltinCommand::Export { key, value } => {
+                if let SpawnContext::PipelineEnd { context, .. } = context {
+                    context.env.insert(key, value);
+                }
+                WaitableProcess::empty_success()
+            }
+            BuiltinCommand::Unset { key } => {
+                if let SpawnContext::PipelineEnd { context, .. } = context {
+                    context.vars.remove(&key);
+                    context.env.remove(&key);
+                }
+                WaitableProcess::empty_success()
+            }
+            BuiltinCommand::Source { path, cwd } => {
+                let source = RunscriptSource {
+                    source: match std::fs::read_to_string(&path) {
+                        Ok(source) => source,
+                        Err(err) => {
+                            return WaitableProcess::empty_error(CommandExecError::CommandFailed {
+                                err,
+                            });
+                        }
+                    },
+                    path,
+                    dir: cwd,
+                };
+
+                let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
+                Ref::into_unique(context.shell_context()).exec_command_group(&shell_file)
+            }
+        }
+    }
+}
+
+pub enum SpawnContext<'a, 'ctx_a, 'ctx_b> {
+    PipelineIntermediate {
+        context: &'a ShellContext<'ctx_a, 'ctx_b>,
+        input: StdinRedirect,
+        #[cfg(unix)]
+        output: Option<std::os::unix::io::RawFd>,
+        #[cfg(windows)]
+        output: Option<std::os::windows::prelude::RawHandle>,
+    },
+    PipelineEnd {
+        context: &'a mut ShellContext<'ctx_a, 'ctx_b>,
+        input: StdinRedirect,
+    },
+}
+
+impl<'a, 'ctx_a, 'ctx_b> SpawnContext<'a, 'ctx_a, 'ctx_b> {
+    fn stdin(&self) -> StdinRedirect {
+        match self {
+            SpawnContext::PipelineIntermediate { input, .. } => *input,
+            SpawnContext::PipelineEnd { input, .. } => *input,
+        }
+    }
+
+    #[cfg(unix)]
+    fn stdout(&self) -> Option<std::os::unix::io::RawFd> {
+        match self {
+            SpawnContext::PipelineIntermediate { output, .. } => *output,
+            SpawnContext::PipelineEnd { .. } => None,
+        }
+    }
+
+    fn shell_context<'b>(&'b mut self) -> Ref<'b, ShellContext<'ctx_a, 'ctx_b>> {
+        match self {
+            SpawnContext::PipelineIntermediate { context, .. } => (*context).into(),
+            SpawnContext::PipelineEnd { context, .. } => Ref::Unique(*context),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct RedirectConfig {
+    pub stdin: StdinRedirect,
+    pub stdout: StdoutRedirect,
+    pub stderr: StdoutRedirect,
+}
+
+impl RedirectConfig {
+    pub fn default_fg() -> RedirectConfig {
+        RedirectConfig {
+            stdin: StdinRedirect::Inherit,
+            stdout: StdoutRedirect::Inherit,
+            stderr: StdoutRedirect::Inherit,
+        }
+    }
+
+    pub fn default_bg() -> RedirectConfig {
+        RedirectConfig {
+            stdin: StdinRedirect::Null,
+            stdout: StdoutRedirect::Null,
+            stderr: StdoutRedirect::Null,
+        }
+    }
+
+    fn apply_context(&mut self, context: &SpawnContext) {
+        self.stdin = match self.stdin {
+            StdinRedirect::Null | StdinRedirect::Inherit => context.stdin(),
+            stdin => stdin,
+        };
+        self.stdout = match self.stdout {
+            stdout @ (StdoutRedirect::Null | StdoutRedirect::Inherit) => {
+                context.stdout().map(StdoutRedirect::Fd).unwrap_or(stdout)
+            }
+            stdout => stdout,
+        };
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum StdinRedirect {
+    Null,
+    Inherit,
+    #[cfg(unix)]
+    Dup(std::os::unix::io::RawFd),
+    #[cfg(unix)]
+    Fd(std::os::unix::io::RawFd),
+    #[cfg(windows)]
+    Fd(std::os::windows::prelude::RawHandle),
+}
+
+impl From<StdinRedirect> for Stdio {
+    fn from(redir: StdinRedirect) -> Self {
+        match redir {
+            StdinRedirect::Null => Stdio::null(),
+            StdinRedirect::Inherit => Stdio::inherit(),
+            #[cfg(unix)]
+            StdinRedirect::Dup(_) => todo!(),
+            #[cfg(unix)]
+            StdinRedirect::Fd(fd) => {
+                use std::os::unix::io::FromRawFd;
+                // SAFETY: Not currently enforced...
+                unsafe { Stdio::from_raw_fd(fd) }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<T> From<T> for StdinRedirect
+where
+    T: std::os::unix::io::IntoRawFd,
+{
+    fn from(file: T) -> StdinRedirect {
+        StdinRedirect::Fd(file.into_raw_fd())
+    }
+}
+
+#[cfg(windows)]
+impl<T> From<T> for StdinRedirect
+where
+    T: std::os::windows::io::IntoRawHandle,
+{
+    fn from(file: T) -> StdinRedirect {
+        StdinRedirect::Fd(file.into_raw_handle())
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum StdoutRedirect {
+    Null,
+    Inherit,
+    #[cfg(unix)]
+    Dup(std::os::unix::io::RawFd),
+    #[cfg(unix)]
+    Fd(std::os::unix::io::RawFd),
+    #[cfg(windows)]
+    Fd(std::os::windows::prelude::RawHandle),
+}
+
+impl From<StdoutRedirect> for Stdio {
+    fn from(redir: StdoutRedirect) -> Self {
+        match redir {
+            StdoutRedirect::Null => Stdio::null(),
+            StdoutRedirect::Inherit => Stdio::inherit(),
+            #[cfg(unix)]
+            StdoutRedirect::Dup(_) => todo!(),
+            #[cfg(unix)]
+            StdoutRedirect::Fd(fd) => {
+                use std::os::unix::io::FromRawFd;
+                // SAFETY: Not currently enforced...
+                unsafe { Stdio::from_raw_fd(fd) }
+            }
+        }
+    }
+}
+
+#[cfg(unix)]
+impl<T> From<T> for StdoutRedirect
+where
+    T: std::os::unix::io::IntoRawFd,
+{
+    fn from(file: T) -> StdoutRedirect {
+        StdoutRedirect::Fd(file.into_raw_fd())
+    }
+}
+
+#[cfg(windows)]
+impl<T> From<T> for StdoutRedirect
+where
+    T: std::os::windows::io::IntoRawHandle,
+{
+    fn from(file: T) -> StdoutRedirect {
+        StdoutRedirect::Fd(file.into_raw_handle())
     }
 }
