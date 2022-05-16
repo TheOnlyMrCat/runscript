@@ -19,6 +19,7 @@ dev-panic = []
 
 [dependencies]
 atty = "0.2"
+cfg-if = "1.0.0"
 clap = { version = "3.1", features = ["derive"] }
 exitcode = "1.1"
 glob = "0.3.0"
