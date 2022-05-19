@@ -53,7 +53,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
             }
             // Annotation
             (_, '$') => {
-                // The only thing that it would be is `$opt default_positionals`. In practise, `$include`s weren't used.
+                // The only thing that it would be is `$opt default_positionals`. In practice, `$include`s weren't used.
                 consume_line(&mut context.iterator);
             }
             // Script
@@ -76,7 +76,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                             Some((i, '\n')) => ("run", BreakCondition::Newline(i)),
                             _ => ("run", BreakCondition::Parse),
                         },
-                        _ => unimplemented!(),
+                        _ => return Err(()),
                     },
                 };
 
@@ -117,7 +117,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                 }
             }
             (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => continue,
-            _ => unimplemented!(),
+            _ => return Err(()),
         }
     }
 
