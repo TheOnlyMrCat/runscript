@@ -285,6 +285,7 @@ impl ShellContext {
                 else_branch,
             } => {
                 let mut last_proc = WaitableProcess::empty_success();
+                //FIXME: Break out of control flow on first branch that matches?????
                 for GuardBodyPair { guard, body } in conditionals {
                     if self
                         .exec_command_group(guard, config)
