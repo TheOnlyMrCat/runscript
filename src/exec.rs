@@ -284,8 +284,8 @@ impl ShellContext {
                 conditionals,
                 else_branch,
             } => {
-                let mut last_proc = WaitableProcess::empty_success();
-                //FIXME: Break out of control flow on first branch that matches?????
+                let mut branch = None;
+
                 for GuardBodyPair { guard, body } in conditionals {
                     if self
                         .exec_command_group(guard, config)
@@ -293,15 +293,17 @@ impl ShellContext {
                         .status
                         .success()
                     {
-                        last_proc = self.exec_command_group(body, config);
+                        branch = Some(self.exec_command_group(body, config));
+                        break;
                     }
                 }
 
-                if let Some(else_branch) = else_branch {
-                    last_proc = self.exec_command_group(else_branch, config);
-                }
-
-                last_proc
+                branch.unwrap_or_else(|| {
+                    else_branch
+                        .as_ref()
+                        .map(|b| self.exec_command_group(b, config))
+                        .unwrap_or_else(WaitableProcess::empty_success)
+                })
             }
             CompoundCommandKind::For { var, words, body } => {
                 let mut last_proc = WaitableProcess::empty_success();
@@ -1003,9 +1005,8 @@ impl ShellContext {
                 Some(args) => args,
                 None => &config.positional_args,
             }
-            .get(1..)
-            .into_iter()
-            .flatten()
+            .iter()
+            .skip(1)
             .cloned()
             .collect(),
             Parameter::Pound => vec![format!("{}", config.positional_args.len() - 1)],
