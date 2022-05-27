@@ -345,7 +345,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 };
                 let mut shell_context = ShellContext::new(&exec_cfg);
                 shell_context
-                    .exec_command_group(&[command], &exec_cfg)
+                    .exec_command_group(&[command])
                     .wait()
                     .status
                     .coerced_code()
@@ -396,7 +396,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
 
             let mut shell_context = ShellContext::new(&exec_cfg);
             let status = shell_context
-                .exec_command_group(&parsed_script, &exec_cfg)
+                .exec_command_group(&parsed_script)
                 .wait()
                 .status;
             out::process_finish(&output_stream, &status);
@@ -568,7 +568,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                                         .into_iter()
                                                         .map(|sc| sc.command)
                                                         .collect::<Vec<_>>(),
-                                                    &exec_cfg,
                                                 )
                                                 .wait()
                                                 .status

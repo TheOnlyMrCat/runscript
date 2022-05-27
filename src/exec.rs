@@ -37,6 +37,16 @@ pub struct ExecConfig<'a> {
     pub positional_args: Vec<String>,
 }
 
+impl std::fmt::Debug for ExecConfig<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "ExecConfig {{ colour_choice: {:?}, working_directory: {:?}, script_path: {:?}, target_name: {:?}, positional_args: {:?} }}",
+            self.colour_choice, self.working_directory, self.script_path, self.target_name, self.positional_args
+        )
+    }
+}
+
 pub struct BaseExecContext {
     pub current_file: Option<PathBuf>,
     pub current_target: Option<String>,
@@ -56,13 +66,13 @@ pub enum EvaluatedRedirect {
 }
 
 #[derive(Debug, Clone)]
-pub struct ShellContext {
+pub struct ShellContext<'a, 'b> {
     /// The current working directory
-    working_directory: PathBuf,
+    pub working_directory: PathBuf,
     /// The current shell variables
-    vars: HashMap<String, String>,
+    pub vars: HashMap<String, String>,
     /// Exported varables
-    env: HashMap<String, String>,
+    pub env: HashMap<String, String>,
     /// Function definitions
     functions: HashMap<String, Arc<CompoundCommand>>,
     /// Stack of function arguments
@@ -71,11 +81,13 @@ pub struct ShellContext {
     pid: i32,
     /// Exit code of most recent top-level command
     exit_code: i32, //TODO: This will always be 0. Perhaps an option to have the script keep going even after errors?
+    /// Immutable config
+    config: &'a ExecConfig<'b>,
 }
 
-impl ShellContext {
-    pub fn new(config: &ExecConfig) -> ShellContext {
-        ShellContext {
+impl<'a, 'b> ShellContext<'a, 'b> {
+    pub fn new(config: &'a ExecConfig<'b>) -> Self {
+        Self {
             working_directory: config.working_directory.to_owned(),
             vars: HashMap::new(),
             env: HashMap::new(),
@@ -83,14 +95,13 @@ impl ShellContext {
             function_args: Vec::new(),
             pid: -1,
             exit_code: 0,
+            config,
         }
     }
+}
 
-    pub fn exec_command_group(
-        &mut self,
-        script: &[AtomicTopLevelCommand],
-        config: &ExecConfig,
-    ) -> WaitableProcess {
+impl ShellContext<'_, '_> {
+    pub fn exec_command_group(&mut self, script: &[AtomicTopLevelCommand]) -> WaitableProcess {
         use crate::parser::ast::Command;
 
         let mut jobs = vec![];
@@ -102,7 +113,7 @@ impl ShellContext {
                     Command::List(list) => (list, false),
                 };
 
-                let proc = self.exec_andor_list(command, config, is_job);
+                let proc = self.exec_andor_list(command, is_job);
                 if is_job {
                     self.pid = proc.pid();
                     jobs.push(proc);
@@ -118,14 +129,14 @@ impl ShellContext {
         if !script.is_empty() {
             match &script.last().unwrap() {
                 Command::Job(list) => {
-                    let proc = self.exec_andor_list(list, config, true);
+                    let proc = self.exec_andor_list(list, true);
                     let mut last_proc = WaitableProcess::empty_success();
                     jobs.push(proc);
                     last_proc.set_jobs(jobs);
                     last_proc
                 }
                 Command::List(list) => {
-                    let mut last_proc = self.exec_andor_list(list, config, false);
+                    let mut last_proc = self.exec_andor_list(list, false);
                     last_proc.set_jobs(jobs);
                     last_proc
                 }
@@ -135,24 +146,19 @@ impl ShellContext {
         }
     }
 
-    fn exec_andor_list(
-        &mut self,
-        command: &AndOrList,
-        config: &ExecConfig,
-        is_job: bool,
-    ) -> WaitableProcess {
-        let mut previous_output = self.exec_listable_command(&command.first, config, is_job);
+    fn exec_andor_list(&mut self, command: &AndOrList, is_job: bool) -> WaitableProcess {
+        let mut previous_output = self.exec_listable_command(&command.first, is_job);
         for chain in &command.rest {
             match chain {
                 AndOr::And(command) => {
                     let finished = previous_output.wait();
                     if !is_job {
-                        if let Some(output_stream) = &config.output_stream {
+                        if let Some(output_stream) = &self.config.output_stream {
                             out::process_finish(output_stream, &finished.status);
                         }
                     }
                     if finished.status.success() {
-                        previous_output = self.exec_listable_command(command, config, is_job);
+                        previous_output = self.exec_listable_command(command, is_job);
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -161,12 +167,12 @@ impl ShellContext {
                 AndOr::Or(command) => {
                     let finished = previous_output.wait();
                     if !is_job {
-                        if let Some(output_stream) = &config.output_stream {
+                        if let Some(output_stream) = &self.config.output_stream {
                             out::process_finish(output_stream, &finished.status);
                         }
                     }
                     if !finished.status.success() {
-                        previous_output = self.exec_listable_command(command, config, is_job);
+                        previous_output = self.exec_listable_command(command, is_job);
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -180,10 +186,9 @@ impl ShellContext {
     fn exec_listable_command(
         &mut self,
         command: &ListableCommand,
-        config: &ExecConfig,
         is_job: bool,
     ) -> WaitableProcess {
-        if let Some(ref out) = config.output_stream {
+        if let Some(ref out) = self.config.output_stream {
             write!(out.lock(), "{}> ", if is_job { "&" } else { "" }).expect("Failed to write");
         }
         let rt = match command {
@@ -195,49 +200,39 @@ impl ShellContext {
                     } else {
                         Pipe::inherit_pipe_out()
                     },
-                    config,
                 );
-                if let Some(ref out) = config.output_stream {
+                if let Some(ref out) = self.config.output_stream {
                     //TODO: Do stuff with cursor position?
                     write!(out.lock(), "| ").expect("Failed to write");
                 }
                 for command in &commands[1..commands.len() - 1] {
-                    let next_proc = self.exec_pipeable_command(
-                        command,
-                        Pipe::pipe_in_out(proc.pipe_out()),
-                        config,
-                    );
+                    let next_proc =
+                        self.exec_pipeable_command(command, Pipe::pipe_in_out(proc.pipe_out()));
                     proc = next_proc;
-                    if let Some(ref out) = config.output_stream {
+                    if let Some(ref out) = self.config.output_stream {
                         write!(out.lock(), "| ").expect("Failed to write");
                     }
                 }
                 let last_proc = self.exec_pipeable_command(
                     commands.last().unwrap(),
                     Pipe::pipe_in(proc.pipe_out()),
-                    config,
                 );
                 last_proc //TODO: Negate?
             }
             ListableCommand::Single(command) => {
-                self.exec_pipeable_command(command, Pipe::no_pipe(), config)
+                self.exec_pipeable_command(command, Pipe::no_pipe())
             }
         };
-        if let Some(ref out) = config.output_stream {
+        if let Some(ref out) = self.config.output_stream {
             writeln!(out.lock()).expect("Failed to write");
         }
         rt
     }
 
-    fn exec_pipeable_command(
-        &mut self,
-        command: &PipeableCommand,
-        pipe: Pipe,
-        config: &ExecConfig,
-    ) -> WaitableProcess {
+    fn exec_pipeable_command(&mut self, command: &PipeableCommand, pipe: Pipe) -> WaitableProcess {
         match command {
-            PipeableCommand::Simple(command) => self.exec_simple_command(command, pipe, config),
-            PipeableCommand::Compound(command) => self.exec_compound_command(command, config),
+            PipeableCommand::Simple(command) => self.exec_simple_command(command, pipe),
+            PipeableCommand::Compound(command) => self.exec_compound_command(command),
             PipeableCommand::FunctionDef(name, body) => {
                 self.functions.insert(name.clone(), body.clone());
                 WaitableProcess::empty_success()
@@ -245,37 +240,23 @@ impl ShellContext {
         }
     }
 
-    fn exec_compound_command(
-        &mut self,
-        command: &CompoundCommand,
-        config: &ExecConfig,
-    ) -> WaitableProcess {
+    fn exec_compound_command(&mut self, command: &CompoundCommand) -> WaitableProcess {
         match &command.kind {
-            CompoundCommandKind::Brace(commands) => self.exec_command_group(commands, config),
+            CompoundCommandKind::Brace(commands) => self.exec_command_group(commands),
             CompoundCommandKind::Subshell(commands) => {
                 let mut context = self.clone();
-                context.exec_command_group(commands, config)
+                context.exec_command_group(commands)
             }
             CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
-                while self
-                    .exec_command_group(guard, config)
-                    .wait()
-                    .status
-                    .success()
-                {
-                    self.exec_command_group(body, config).wait();
+                while self.exec_command_group(guard).wait().status.success() {
+                    self.exec_command_group(body).wait();
                 }
 
                 WaitableProcess::empty_success()
             }
             CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
-                while !self
-                    .exec_command_group(guard, config)
-                    .wait()
-                    .status
-                    .success()
-                {
-                    self.exec_command_group(body, config).wait();
+                while !self.exec_command_group(guard).wait().status.success() {
+                    self.exec_command_group(body).wait();
                 }
 
                 WaitableProcess::empty_success()
@@ -287,13 +268,8 @@ impl ShellContext {
                 let mut branch = None;
 
                 for GuardBodyPair { guard, body } in conditionals {
-                    if self
-                        .exec_command_group(guard, config)
-                        .wait()
-                        .status
-                        .success()
-                    {
-                        branch = Some(self.exec_command_group(body, config));
+                    if self.exec_command_group(guard).wait().status.success() {
+                        branch = Some(self.exec_command_group(body));
                         break;
                     }
                 }
@@ -301,7 +277,7 @@ impl ShellContext {
                 branch.unwrap_or_else(|| {
                     else_branch
                         .as_ref()
-                        .map(|b| self.exec_command_group(b, config))
+                        .map(|b| self.exec_command_group(b))
                         .unwrap_or_else(WaitableProcess::empty_success)
                 })
             }
@@ -312,26 +288,26 @@ impl ShellContext {
                     .map(|words| -> Result<_, _> {
                         words
                             .iter()
-                            .map(|word| self.evaluate_tl_word(word, config))
+                            .map(|word| self.evaluate_tl_word(word))
                             .flatten_ok()
                             .collect::<Result<Vec<_>, _>>()
                     })
                     .transpose()
                 {
-                    Ok(words) => words.unwrap_or_else(|| config.positional_args.clone()),
+                    Ok(words) => words.unwrap_or_else(|| self.config.positional_args.clone()),
                     Err(status) => {
                         return WaitableProcess::empty_status(status);
                     }
                 } {
                     self.vars.insert(var.clone(), word.clone());
-                    last_proc = self.exec_command_group(body, config);
+                    last_proc = self.exec_command_group(body);
                 }
 
                 last_proc
             }
             CompoundCommandKind::Case { word, arms } => {
                 let mut last_proc = WaitableProcess::empty_success();
-                let word = match self.evaluate_tl_word(word, config) {
+                let word = match self.evaluate_tl_word(word) {
                     Ok(word) => word,
                     Err(status) => {
                         return WaitableProcess::empty_status(status);
@@ -340,7 +316,7 @@ impl ShellContext {
                 for PatternBodyPair { patterns, body } in arms {
                     let mut pattern_matches = false;
                     for pattern in patterns {
-                        let pattern = match self.evaluate_tl_word(pattern, config) {
+                        let pattern = match self.evaluate_tl_word(pattern) {
                             Ok(pattern) => pattern,
                             Err(status) => {
                                 return WaitableProcess::empty_status(status);
@@ -352,7 +328,7 @@ impl ShellContext {
                     }
 
                     if pattern_matches {
-                        last_proc = self.exec_command_group(body, config);
+                        last_proc = self.exec_command_group(body);
                         break;
                     }
                 }
@@ -362,12 +338,7 @@ impl ShellContext {
         }
     }
 
-    fn exec_simple_command(
-        &mut self,
-        command: &SimpleCommand,
-        pipe: Pipe,
-        config: &ExecConfig,
-    ) -> WaitableProcess {
+    fn exec_simple_command(&mut self, command: &SimpleCommand, pipe: Pipe) -> WaitableProcess {
         use std::process::Command;
 
         let mut redirects = vec![];
@@ -378,7 +349,7 @@ impl ShellContext {
             .filter_map(|r| match r {
                 RedirectOrEnvVar::EnvVar(key, word) => Some(
                     word.as_ref()
-                        .map(|word| self.evaluate_tl_word(word, config))
+                        .map(|word| self.evaluate_tl_word(word))
                         .transpose()
                         .map(|word| {
                             (
@@ -402,7 +373,7 @@ impl ShellContext {
             .redirects_or_cmd_words
             .iter()
             .filter_map(|r| match r {
-                RedirectOrCmdWord::CmdWord(w) => Some(self.evaluate_tl_word(w, config)),
+                RedirectOrCmdWord::CmdWord(w) => Some(self.evaluate_tl_word(w)),
                 RedirectOrCmdWord::Redirect(redirect) => {
                     redirects.push(redirect);
                     None
@@ -421,7 +392,7 @@ impl ShellContext {
                     macro_rules! map_redirect {
                         ($($t:ident),*) => {
                             match redirect {
-                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word, config)?),)*
+                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word)?),)*
                             }
                         }
                     }
@@ -433,7 +404,7 @@ impl ShellContext {
                 Err(status) => return WaitableProcess::empty_status(status),
             };
 
-            if let Some(ref output_stream) = config.output_stream {
+            if let Some(ref output_stream) = self.config.output_stream {
                 out::command_prompt(
                     output_stream,
                     command,
@@ -624,7 +595,7 @@ impl ShellContext {
                     }
                 }
                 "source" => {
-                    let file = config.working_directory.join(&command_words[1]);
+                    let file = self.working_directory.join(&command_words[1]);
                     let source = RunscriptSource {
                         source: match std::fs::read_to_string(&file) {
                             Ok(source) => source,
@@ -635,14 +606,14 @@ impl ShellContext {
                             }
                         },
                         path: file,
-                        dir: config.working_directory.to_owned(),
+                        dir: self.working_directory.to_owned(),
                     };
 
                     let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
-                    if let Some(ref output_stream) = config.output_stream {
+                    if let Some(ref output_stream) = self.config.output_stream {
                         writeln!(output_stream.lock()).unwrap();
                     }
-                    self.exec_command_group(&shell_file, config)
+                    self.exec_command_group(&shell_file)
                 }
                 #[cfg(unix)]
                 "run" => {
@@ -651,7 +622,7 @@ impl ShellContext {
                 _ => {
                     if let Some(commands) = self.functions.get(&command_words[0]).cloned() {
                         self.function_args.push(command_words);
-                        let process = self.exec_compound_command(&commands, config);
+                        let process = self.exec_compound_command(&commands);
                         self.function_args.pop();
                         process
                     } else {
@@ -689,7 +660,7 @@ impl ShellContext {
                 }
             }
         } else {
-            if let Some(ref output_stream) = config.output_stream {
+            if let Some(ref output_stream) = self.config.output_stream {
                 out::env_remaps(output_stream, &env_remaps);
             }
 
@@ -702,21 +673,17 @@ impl ShellContext {
         }
     }
 
-    fn evaluate_tl_word(
-        &mut self,
-        word: &ComplexWord,
-        config: &ExecConfig,
-    ) -> Result<Vec<String>, ProcessExit> {
+    fn evaluate_tl_word(&mut self, word: &ComplexWord) -> Result<Vec<String>, ProcessExit> {
         match word {
             ComplexWord::Concat(words) => {
                 let words = words
                     .iter()
-                    .map(|w| self.evaluate_word(w, config))
+                    .map(|w| self.evaluate_word(w))
                     .collect::<Result<Vec<_>, _>>()?;
                 let is_glob = words.iter().any(|w| !matches!(w, GlobPart::Words(_)));
                 if is_glob {
                     let working_dir_path = {
-                        let mut path = Pattern::escape(&config.working_directory.to_string_lossy());
+                        let mut path = Pattern::escape(&self.working_directory.to_string_lossy());
                         path.push('/');
                         path
                     };
@@ -766,38 +733,29 @@ impl ShellContext {
                         .join("")])
                 }
             }
-            ComplexWord::Single(word) => {
-                self.evaluate_word(word, config).map(GlobPart::into_string)
-            }
+            ComplexWord::Single(word) => self.evaluate_word(word).map(GlobPart::into_string),
         }
     }
 
-    fn evaluate_word(&mut self, word: &Word, config: &ExecConfig) -> Result<GlobPart, ProcessExit> {
+    fn evaluate_word(&mut self, word: &Word) -> Result<GlobPart, ProcessExit> {
         match word {
             Word::SingleQuoted(literal) => Ok(vec![literal.clone()].into()),
             Word::DoubleQuoted(words) => Ok(vec![words
                 .iter()
-                .map(|w| {
-                    self.evaluate_simple_word(w, config)
-                        .map(GlobPart::into_string)
-                })
+                .map(|w| self.evaluate_simple_word(w).map(GlobPart::into_string))
                 .flatten_ok()
                 .collect::<Result<String, _>>()?]
             .into()),
-            Word::Simple(word) => self.evaluate_simple_word(word, config),
+            Word::Simple(word) => self.evaluate_simple_word(word),
         }
     }
 
-    fn evaluate_simple_word(
-        &mut self,
-        word: &SimpleWord,
-        config: &ExecConfig,
-    ) -> Result<GlobPart, ProcessExit> {
+    fn evaluate_simple_word(&mut self, word: &SimpleWord) -> Result<GlobPart, ProcessExit> {
         match word {
             SimpleWord::Literal(s) => Ok(vec![s.clone()].into()),
             SimpleWord::Escaped(s) => Ok(vec![s.clone()].into()),
-            SimpleWord::Param(p) => Ok(self.evaluate_parameter(p, config).into()),
-            SimpleWord::Subst(p) => Ok(self.evaluate_param_subst(p, config)?.into()),
+            SimpleWord::Param(p) => Ok(self.evaluate_parameter(p).into()),
+            SimpleWord::Subst(p) => Ok(self.evaluate_param_subst(p)?.into()),
             SimpleWord::Star => Ok(GlobPart::Star),
             SimpleWord::Question => Ok(GlobPart::Question),
             SimpleWord::SquareOpen => Ok(GlobPart::SquareOpen),
@@ -810,11 +768,10 @@ impl ShellContext {
     fn evaluate_param_subst(
         &mut self,
         param: &ParameterSubstitution,
-        config: &ExecConfig,
     ) -> Result<Vec<String>, ProcessExit> {
         Ok(match param {
             ParameterSubstitution::Command(commands) => {
-                let output = self.exec_command_group(commands, config).wait();
+                let output = self.exec_command_group(commands).wait();
                 if !output.status.success() {
                     return Err(output.status);
                 }
@@ -827,9 +784,9 @@ impl ShellContext {
             ParameterSubstitution::Len(p) => vec![format!(
                 "{}",
                 match p {
-                    Parameter::At | Parameter::Star => config.positional_args.len() - 1,
+                    Parameter::At | Parameter::Star => self.config.positional_args.len() - 1,
                     p => self
-                        .evaluate_parameter(p, config)
+                        .evaluate_parameter(p)
                         .into_iter()
                         .map(|s| s.len())
                         .reduce(|acc, s| acc + s + 1)
@@ -838,12 +795,12 @@ impl ShellContext {
             )],
             ParameterSubstitution::Arith(_) => todo!(),
             ParameterSubstitution::Default(null_is_unset, parameter, default) => {
-                let parameter = self.evaluate_parameter(parameter, config);
+                let parameter = self.evaluate_parameter(parameter);
                 if parameter.is_empty()
                     || (*null_is_unset && parameter.len() == 1 && parameter[0].is_empty())
                 {
                     if let Some(word) = default {
-                        self.evaluate_tl_word(word, config)?
+                        self.evaluate_tl_word(word)?
                     } else {
                         vec![]
                     }
@@ -861,11 +818,12 @@ impl ShellContext {
         })
     }
 
-    fn evaluate_parameter(&mut self, parameter: &Parameter, config: &ExecConfig) -> Vec<String> {
+    fn evaluate_parameter(&mut self, parameter: &Parameter) -> Vec<String> {
         match parameter {
             Parameter::Positional(n) => match self.function_args.last() {
                 Some(args) => args.get(*n).cloned().into_iter().collect(),
-                None => config
+                None => self
+                    .config
                     .positional_args
                     .get(*n)
                     .cloned()
@@ -881,13 +839,13 @@ impl ShellContext {
                 .collect(),
             Parameter::At => match self.function_args.last() {
                 Some(args) => args,
-                None => &config.positional_args,
+                None => &self.config.positional_args,
             }
             .iter()
             .skip(1)
             .cloned()
             .collect(),
-            Parameter::Pound => vec![format!("{}", config.positional_args.len() - 1)],
+            Parameter::Pound => vec![format!("{}", self.config.positional_args.len() - 1)],
             Parameter::Dollar => vec![format!("{}", std::process::id())],
             Parameter::Question => vec![format!("{}", self.exit_code)],
             Parameter::Bang => vec![format!("{}", self.pid)],
