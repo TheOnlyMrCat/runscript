@@ -393,6 +393,9 @@ pub fn process_finish(output_stream: &StandardStream, status: &ProcessExit) {
             CommandExecError::UnsupportedRedirect => {
                 "Unsupported operation for redirect".to_owned()
             }
+            CommandExecError::UnsupportedIntermediatePipelineCommand => {
+                "Unsupported command within pipeline".to_owned()
+            }
         }
     }
 

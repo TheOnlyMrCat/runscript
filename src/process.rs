@@ -7,7 +7,8 @@ use std::str::Utf8Error;
 
 use glob::PatternError;
 
-use crate::exec::BaseExecContext;
+use crate::exec::{BaseExecContext, ShellContext};
+use crate::parser::RunscriptSource;
 
 #[derive(Debug)]
 pub enum CommandExecError {
@@ -17,6 +18,7 @@ pub enum CommandExecError {
     UnhandledOsString { err: Utf8Error },
     BadRedirect { err: std::io::Error },
     UnsupportedRedirect,
+    UnsupportedIntermediatePipelineCommand,
 }
 
 #[derive(Debug)]
@@ -378,17 +380,25 @@ impl SpawnableProcess {
         }
     }
 
+    pub fn error(error: CommandExecError) -> SpawnableProcess {
+        SpawnableProcess::finished(FinishedProcess {
+            status: ProcessExit::ExecError(error),
+            stdout: vec![],
+            stderr: vec![],
+        })
+    }
+
     pub fn finished(process: FinishedProcess) -> SpawnableProcess {
         SpawnableProcess::Finished(process)
     }
 
-    pub fn spawn(self) -> WaitableProcess {
+    pub fn spawn(self, context: Option<&mut ShellContext>) -> WaitableProcess {
         match self {
             SpawnableProcess::StdProcess(mut cmd) => {
                 let process = cmd.spawn().unwrap();
                 WaitableProcess::new(process)
             }
-            SpawnableProcess::Builtin(builtin) => builtin.spawn(),
+            SpawnableProcess::Builtin(builtin) => builtin.spawn(context),
             #[cfg(unix)]
             SpawnableProcess::Reentrant {
                 stdin,
@@ -507,25 +517,67 @@ pub enum BuiltinCommand {
         path: PathBuf,
     },
     Export {
-        key: OsString,
-        value: OsString,
+        key: String,
+        value: String,
     },
     Unset {
-        key: OsString,
+        key: String,
     },
     Source {
+        /// Path should be `join`ed with `context.working_directory` already
         path: PathBuf,
     },
 }
 
 impl BuiltinCommand {
-    fn spawn(self) -> WaitableProcess {
+    fn spawn(self, context: Option<&mut ShellContext>) -> WaitableProcess {
         match self {
             BuiltinCommand::True => WaitableProcess::empty_success(),
             BuiltinCommand::False => WaitableProcess::empty_status(ProcessExit::Bool(false)),
             #[cfg(feature = "dev-panic")]
             BuiltinCommand::Panic => panic!("Explicit command panic"),
-            _ => todo!(),
+            BuiltinCommand::Cd { path } => {
+                if let Some(context) = context {
+                    context.working_directory = path;
+                }
+                WaitableProcess::empty_success()
+            }
+            BuiltinCommand::Export { key, value } => {
+                if let Some(context) = context {
+                    context.env.insert(key, value);
+                }
+                WaitableProcess::empty_success()
+            }
+            BuiltinCommand::Unset { key } => {
+                if let Some(context) = context {
+                    context.vars.remove(&key);
+                    context.env.remove(&key);
+                }
+                WaitableProcess::empty_success()
+            }
+            BuiltinCommand::Source { path } => {
+                if let Some(context) = context {
+                    let source = RunscriptSource {
+                        source: match std::fs::read_to_string(&path) {
+                            Ok(source) => source,
+                            Err(err) => {
+                                return WaitableProcess::empty_error(
+                                    CommandExecError::CommandFailed { err },
+                                );
+                            }
+                        },
+                        path,
+                        dir: context.working_directory.to_owned(),
+                    };
+
+                    let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
+                    context.exec_command_group(&shell_file)
+                } else {
+                    WaitableProcess::empty_error(
+                        CommandExecError::UnsupportedIntermediatePipelineCommand,
+                    )
+                }
+            }
         }
     }
 }
