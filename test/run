@@ -1,6 +1,7 @@
 [all:test]
 run args
 run chain
+run conditional
 run default
 run dir
 run exit
@@ -16,6 +17,19 @@ echo 'globs:' ../src/*.rs
 
 [chain]
 yes | head -n 2
+
+[conditional]
+if test -f run; then
+    echo 'test successful'
+else 
+    echo 'test failed'
+fi
+
+if test -f nonexistent; then
+    echo 'test successful'
+elif test -f also_nonexistent; then
+    echo 'alt test successful'
+fi
 
 [default:build]
 ::default-phase build run
