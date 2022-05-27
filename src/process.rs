@@ -1,13 +1,14 @@
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
+use std::sync::Arc;
 
 use glob::PatternError;
 
 use crate::exec::{BaseExecContext, ShellContext};
+use crate::parser::ast::CompoundCommand;
 use crate::parser::RunscriptSource;
 
 #[derive(Debug)]
@@ -165,12 +166,12 @@ impl WaitableProcess {
         }
     }
 
-    pub fn pid(&self) -> i32 {
+    pub fn pid(&self) -> Option<i32> {
         match &self.process {
-            OngoingProcess::Concurrent(p) => p.id() as i32,
+            OngoingProcess::Concurrent(p) => Some(p.id() as i32),
             #[cfg(unix)]
-            OngoingProcess::Reentrant { pid, .. } => pid.as_raw(),
-            OngoingProcess::Finished(_) => 0,
+            OngoingProcess::Reentrant { pid, .. } => Some(pid.as_raw()),
+            OngoingProcess::Finished(_) => None,
         }
     }
 
@@ -342,63 +343,77 @@ impl From<Child> for WaitableProcess {
 }
 
 pub enum SpawnableProcess {
-    StdProcess(std::process::Command),
+    StdProcess(std::process::Command, Option<Vec<u8>>),
     Builtin(BuiltinCommand),
+    Function(Arc<CompoundCommand>, Vec<String>),
     Finished(FinishedProcess),
     #[cfg(unix)]
     Reentrant {
         stdin: StdioRepr,
         stdout: StdioRepr,
         stderr: StdioRepr,
-        env: Vec<(OsString, OsString)>,
+        env: Vec<(String, String)>,
         cwd: Option<PathBuf>,
         recursive_context: BaseExecContext,
     },
 }
 
 impl SpawnableProcess {
-    pub fn new_std(cmd: std::process::Command) -> SpawnableProcess {
-        SpawnableProcess::StdProcess(cmd)
+    pub fn empty_success() -> SpawnableProcess {
+        SpawnableProcess::Finished(FinishedProcess {
+            status: ProcessExit::Bool(true),
+            stdout: vec![],
+            stderr: vec![],
+        })
     }
 
-    #[cfg(unix)]
-    pub fn new_reentrant(
-        stdin: StdioRepr,
-        stdout: StdioRepr,
-        stderr: StdioRepr,
-        env: Vec<(OsString, OsString)>,
-        cwd: Option<PathBuf>,
-        recursive_context: BaseExecContext,
-    ) -> SpawnableProcess {
-        SpawnableProcess::Reentrant {
-            stdin,
-            stdout,
-            stderr,
-            env,
-            cwd,
-            recursive_context,
-        }
-    }
-
-    pub fn error(error: CommandExecError) -> SpawnableProcess {
-        SpawnableProcess::finished(FinishedProcess {
+    pub fn empty_error(error: CommandExecError) -> SpawnableProcess {
+        SpawnableProcess::Finished(FinishedProcess {
             status: ProcessExit::ExecError(error),
             stdout: vec![],
             stderr: vec![],
         })
     }
 
-    pub fn finished(process: FinishedProcess) -> SpawnableProcess {
-        SpawnableProcess::Finished(process)
+    pub fn status(status: ProcessExit) -> SpawnableProcess {
+        SpawnableProcess::Finished(FinishedProcess {
+            status,
+            stdout: vec![],
+            stderr: vec![],
+        })
     }
 
     pub fn spawn(self, context: Option<&mut ShellContext>) -> WaitableProcess {
         match self {
-            SpawnableProcess::StdProcess(mut cmd) => {
+            SpawnableProcess::StdProcess(mut cmd, stdin_buffer) => {
                 let process = cmd.spawn().unwrap();
+                if let Some(stdin_buffer) = stdin_buffer {
+                    if let Some(mut child_stdin) = process.stdin.as_ref() {
+                        use std::io::Write;
+                        // This approach can cause a deadlock if the following conditions are true:
+                        // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
+                        // - The stdin buffer is larger than the pipe buffer
+                        // - The child writes more than one pipe buffer of data without reading enough of stdin
+                        //? Could run this on separate thread to mitigate this, if necessary.
+                        //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
+                        let _ = child_stdin.write_all(&stdin_buffer);
+                        //TODO: Do I need to worry about an error here?
+                    }
+                }
                 WaitableProcess::new(process)
             }
+            SpawnableProcess::Function(command, args) => {
+                //TODO: Clone shell context if not mutable
+                if let Some(context) = context {
+                    context.exec_as_function(command, args)
+                } else {
+                    WaitableProcess::empty_error(
+                        CommandExecError::UnsupportedIntermediatePipelineCommand,
+                    )
+                }
+            }
             SpawnableProcess::Builtin(builtin) => builtin.spawn(context),
+            SpawnableProcess::Finished(process) => WaitableProcess::finished(process),
             #[cfg(unix)]
             SpawnableProcess::Reentrant {
                 stdin,
@@ -503,7 +518,6 @@ impl SpawnableProcess {
                     }),
                 }
             }
-            SpawnableProcess::Finished(process) => WaitableProcess::finished(process),
         }
     }
 }
@@ -514,6 +528,7 @@ pub enum BuiltinCommand {
     #[cfg(feature = "dev-panic")]
     Panic,
     Cd {
+        /// Path should be `join`ed with `context.working_directory` already
         path: PathBuf,
     },
     Export {
