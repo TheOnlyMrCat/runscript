@@ -1,14 +1,14 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, ExitStatus, Output, Stdio};
+use std::process::{Child, ExitStatus, Output};
 use std::str::Utf8Error;
 use std::sync::Arc;
 
 use glob::PatternError;
 
 use crate::exec::{BaseExecContext, ShellContext};
-use crate::parser::ast::CompoundCommand;
+use crate::parser::ast::{self, CompoundCommand};
 use crate::parser::RunscriptSource;
 
 #[derive(Debug)]
@@ -29,13 +29,6 @@ pub enum ProcessExit {
     ExecError(CommandExecError),
     #[cfg(unix)]
     NixStatus(nix::sys::wait::WaitStatus),
-}
-
-#[derive(Debug)]
-pub struct FinishedProcess {
-    pub status: ProcessExit,
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
 }
 
 impl ProcessExit {
@@ -81,6 +74,13 @@ impl ProcessExit {
             },
         }
     }
+}
+
+#[derive(Debug)]
+pub struct FinishedProcess {
+    pub status: ProcessExit,
+    pub stdout: Vec<u8>,
+    pub stderr: Vec<u8>,
 }
 
 enum OngoingProcess {
@@ -177,21 +177,6 @@ impl WaitableProcess {
 
     pub fn set_jobs(&mut self, jobs: Vec<WaitableProcess>) {
         self.associated_jobs = jobs;
-    }
-
-    pub fn pipe_out(&mut self) -> PipeInput {
-        match self.process {
-            OngoingProcess::Concurrent(ref mut p) => match p.stdout.take() {
-                Some(stdout) => PipeInput::Pipe(stdout.into()),
-                None => PipeInput::None,
-            },
-            #[cfg(unix)]
-            OngoingProcess::Reentrant { stdout, .. } => match stdout {
-                Some(stdout) => PipeInput::Pipe((stdout).into()),
-                None => PipeInput::None,
-            },
-            OngoingProcess::Finished(ref p) => PipeInput::Buffer(p.stdout.clone()),
-        }
     }
 
     #[cfg(unix)]
@@ -336,58 +321,115 @@ impl WaitableProcess {
     }
 }
 
+impl From<Output> for FinishedProcess {
+    fn from(o: Output) -> Self {
+        FinishedProcess {
+            status: ProcessExit::StdStatus(o.status),
+            stdout: o.stdout,
+            stderr: o.stderr,
+        }
+    }
+}
+
 impl From<Child> for WaitableProcess {
     fn from(process: Child) -> WaitableProcess {
         WaitableProcess::new(process)
     }
 }
 
-pub enum SpawnableProcess {
-    StdProcess(std::process::Command, Option<Vec<u8>>),
+pub struct SpawnableProcess<'a> {
+    ty: SpawnableProcessType<'a>,
+    pub stdin: StdinRedirect,
+    pub stdout: StdoutRedirect,
+    pub stderr: StdoutRedirect,
+}
+
+pub enum SpawnableProcessType<'a> {
+    StdProcess(std::process::Command),
     Builtin(BuiltinCommand),
+    Group(&'a [ast::Command]),
+    SubshellGroup(&'a [ast::Command]),
     Function(Arc<CompoundCommand>, Vec<String>),
     Finished(FinishedProcess),
     #[cfg(unix)]
     Reentrant {
-        stdin: StdioRepr,
-        stdout: StdioRepr,
-        stderr: StdioRepr,
         env: Vec<(String, String)>,
         cwd: Option<PathBuf>,
         recursive_context: BaseExecContext,
     },
 }
 
-impl SpawnableProcess {
-    pub fn empty_success() -> SpawnableProcess {
-        SpawnableProcess::Finished(FinishedProcess {
+impl SpawnableProcess<'_> {
+    pub fn new(ty: SpawnableProcessType<'_>) -> SpawnableProcess<'_> {
+        SpawnableProcess {
+            ty,
+            stdin: StdinRedirect::None,
+            stdout: StdoutRedirect::None,
+            stderr: StdoutRedirect::None,
+        }
+    }
+
+    pub fn empty_success() -> Self {
+        Self::new(SpawnableProcessType::Finished(FinishedProcess {
             status: ProcessExit::Bool(true),
             stdout: vec![],
             stderr: vec![],
-        })
+        }))
     }
 
-    pub fn empty_error(error: CommandExecError) -> SpawnableProcess {
-        SpawnableProcess::Finished(FinishedProcess {
+    pub fn empty_error(error: CommandExecError) -> Self {
+        Self::new(SpawnableProcessType::Finished(FinishedProcess {
             status: ProcessExit::ExecError(error),
             stdout: vec![],
             stderr: vec![],
-        })
+        }))
     }
 
-    pub fn status(status: ProcessExit) -> SpawnableProcess {
-        SpawnableProcess::Finished(FinishedProcess {
+    pub fn empty_status(status: ProcessExit) -> Self {
+        Self::new(SpawnableProcessType::Finished(FinishedProcess {
             status,
             stdout: vec![],
             stderr: vec![],
+        }))
+    }
+
+    pub fn process(process: std::process::Command) -> Self {
+        Self::new(SpawnableProcessType::StdProcess(process))
+    }
+
+    pub fn builtin(builtin: BuiltinCommand) -> Self {
+        Self::new(SpawnableProcessType::Builtin(builtin))
+    }
+
+    pub fn group(group: &[ast::Command]) -> SpawnableProcess<'_> {
+        Self::new(SpawnableProcessType::Group(group))
+    }
+
+    pub fn subshell(group: &[ast::Command]) -> SpawnableProcess<'_> {
+        Self::new(SpawnableProcessType::SubshellGroup(group))
+    }
+
+    pub fn function(function: Arc<CompoundCommand>, args: Vec<String>) -> Self {
+        Self::new(SpawnableProcessType::Function(function, args))
+    }
+
+    pub fn reentrant(
+        env: Vec<(String, String)>,
+        cwd: Option<PathBuf>,
+        recursive_context: BaseExecContext,
+    ) -> Self {
+        Self::new(SpawnableProcessType::Reentrant {
+            env,
+            cwd,
+            recursive_context,
         })
     }
 
-    pub fn spawn(self, context: Option<&mut ShellContext>) -> WaitableProcess {
-        match self {
-            SpawnableProcess::StdProcess(mut cmd, stdin_buffer) => {
+    pub fn spawn(self, context: SpawnContext) -> WaitableProcess {
+        match self.ty {
+            SpawnableProcessType::StdProcess(mut cmd) => {
                 let process = cmd.spawn().unwrap();
-                if let Some(stdin_buffer) = stdin_buffer {
+                if let StdinRedirect::Buffer(stdin_buffer) = self.stdin {
                     if let Some(mut child_stdin) = process.stdin.as_ref() {
                         use std::io::Write;
                         // This approach can cause a deadlock if the following conditions are true:
@@ -402,80 +444,57 @@ impl SpawnableProcess {
                 }
                 WaitableProcess::new(process)
             }
-            SpawnableProcess::Function(command, args) => {
-                //TODO: Clone shell context if not mutable
-                if let Some(context) = context {
+            SpawnableProcessType::Function(command, args) => match context {
+                SpawnContext::PipelineEnd { context, .. } => {
                     context.exec_as_function(command, args)
-                } else {
-                    WaitableProcess::empty_error(
-                        CommandExecError::UnsupportedIntermediatePipelineCommand,
-                    )
                 }
+                SpawnContext::PipelineIntermediate { context, .. } => {
+                    let mut context = context.clone();
+                    context.exec_as_function(command, args)
+                }
+            },
+            SpawnableProcessType::Group(commands) => match context {
+                SpawnContext::PipelineEnd { context, .. } => context.exec_command_group(commands),
+                SpawnContext::PipelineIntermediate { context, .. } => {
+                    let mut context = context.clone();
+                    context.exec_command_group(commands)
+                }
+            },
+            SpawnableProcessType::SubshellGroup(commands) => {
+                let mut context = match context {
+                    SpawnContext::PipelineEnd { context, .. } => context.clone(),
+                    SpawnContext::PipelineIntermediate { context, .. } => context.clone(),
+                };
+                context.exec_command_group(&commands)
             }
-            SpawnableProcess::Builtin(builtin) => builtin.spawn(context),
-            SpawnableProcess::Finished(process) => WaitableProcess::finished(process),
+            SpawnableProcessType::Builtin(builtin) => builtin.spawn(context),
+            SpawnableProcessType::Finished(process) => WaitableProcess::finished(process),
             #[cfg(unix)]
-            SpawnableProcess::Reentrant {
-                stdin,
-                stdout,
-                stderr,
+            SpawnableProcessType::Reentrant {
                 env,
                 cwd,
                 recursive_context,
             } => {
                 let mut child_stdin = None;
-                let stdin_fd = match stdin {
-                    StdioRepr::Inherit => Some(0),
-                    StdioRepr::Null => None,
-                    StdioRepr::MakePipe => {
-                        let (read, write) = match nix::unistd::pipe() {
-                            Ok(pipe) => pipe,
-                            Err(err) => {
-                                return WaitableProcess::empty_error(
-                                    CommandExecError::CommandFailed { err: err.into() },
-                                );
-                            }
-                        };
-                        child_stdin = Some(write);
-                        Some(read)
+                let stdin_fd = match self.stdin {
+                    StdinRedirect::None => None,
+                    StdinRedirect::Inherit => Some(0),
+                    StdinRedirect::Buffer(ref stdin_buffer) => {
+                        todo!();
                     }
-                    StdioRepr::Fd(n) => Some(n),
+                    StdinRedirect::Dup(fd) | StdinRedirect::Fd(fd) => Some(fd),
                 };
                 let mut child_stdout = None;
-                let stdout_fd = match stdout {
-                    StdioRepr::Inherit => Some(1),
-                    StdioRepr::Null => None,
-                    StdioRepr::MakePipe => {
-                        let (read, write) = match nix::unistd::pipe() {
-                            Ok(pipe) => pipe,
-                            Err(err) => {
-                                return WaitableProcess::empty_error(
-                                    CommandExecError::CommandFailed { err: err.into() },
-                                );
-                            }
-                        };
-                        child_stdout = Some(read);
-                        Some(write)
-                    }
-                    StdioRepr::Fd(n) => Some(n),
+                let stdout_fd = match self.stdout {
+                    StdoutRedirect::None => None,
+                    StdoutRedirect::Inherit => Some(1),
+                    StdoutRedirect::Dup(fd) | StdoutRedirect::Fd(fd) => Some(fd),
                 };
                 let mut child_stderr = None;
-                let stderr_fd = match stderr {
-                    StdioRepr::Inherit => Some(2),
-                    StdioRepr::Null => None,
-                    StdioRepr::MakePipe => {
-                        let (read, write) = match nix::unistd::pipe() {
-                            Ok(pipe) => pipe,
-                            Err(err) => {
-                                return WaitableProcess::empty_error(
-                                    CommandExecError::CommandFailed { err: err.into() },
-                                );
-                            }
-                        };
-                        child_stderr = Some(read);
-                        Some(write)
-                    }
-                    StdioRepr::Fd(n) => Some(n),
+                let stderr_fd = match self.stderr {
+                    StdoutRedirect::None => None,
+                    StdoutRedirect::Inherit => Some(2),
+                    StdoutRedirect::Dup(fd) | StdoutRedirect::Fd(fd) => Some(fd),
                 };
 
                 use nix::unistd::ForkResult;
@@ -496,12 +515,12 @@ impl SpawnableProcess {
                         }
 
                         // Set up standard I/O streams
-                        (nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap_or_else(bail_a) == -1)
-                            .then(bail);
-                        (nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap_or_else(bail_a) == -1)
-                            .then(bail);
-                        (nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap_or_else(bail_a) == -1)
-                            .then(bail);
+                        // (nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap_or_else(bail_a) == -1)
+                        //     .then(bail);
+                        // (nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap_or_else(bail_a) == -1)
+                        //     .then(bail);
+                        // (nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap_or_else(bail_a) == -1)
+                        //     .then(bail);
 
                         // Set up remainder of environment
                         if let Some(cwd) = cwd {
@@ -541,182 +560,138 @@ pub enum BuiltinCommand {
     Source {
         /// Path should be `join`ed with `context.working_directory` already
         path: PathBuf,
+        cwd: PathBuf,
     },
 }
 
 impl BuiltinCommand {
-    fn spawn(self, context: Option<&mut ShellContext>) -> WaitableProcess {
+    fn spawn(self, context: SpawnContext) -> WaitableProcess {
         match self {
             BuiltinCommand::True => WaitableProcess::empty_success(),
             BuiltinCommand::False => WaitableProcess::empty_status(ProcessExit::Bool(false)),
             #[cfg(feature = "dev-panic")]
             BuiltinCommand::Panic => panic!("Explicit command panic"),
             BuiltinCommand::Cd { path } => {
-                if let Some(context) = context {
+                if let SpawnContext::PipelineEnd { context, .. } = context {
                     context.working_directory = path;
                 }
                 WaitableProcess::empty_success()
             }
             BuiltinCommand::Export { key, value } => {
-                if let Some(context) = context {
+                if let SpawnContext::PipelineEnd { context, .. } = context {
                     context.env.insert(key, value);
                 }
                 WaitableProcess::empty_success()
             }
             BuiltinCommand::Unset { key } => {
-                if let Some(context) = context {
+                if let SpawnContext::PipelineEnd { context, .. } = context {
                     context.vars.remove(&key);
                     context.env.remove(&key);
                 }
                 WaitableProcess::empty_success()
             }
-            BuiltinCommand::Source { path } => {
-                if let Some(context) = context {
-                    let source = RunscriptSource {
-                        source: match std::fs::read_to_string(&path) {
-                            Ok(source) => source,
-                            Err(err) => {
-                                return WaitableProcess::empty_error(
-                                    CommandExecError::CommandFailed { err },
-                                );
-                            }
-                        },
-                        path,
-                        dir: context.working_directory.to_owned(),
-                    };
+            BuiltinCommand::Source { path, cwd } => {
+                let source = RunscriptSource {
+                    source: match std::fs::read_to_string(&path) {
+                        Ok(source) => source,
+                        Err(err) => {
+                            return WaitableProcess::empty_error(CommandExecError::CommandFailed {
+                                err,
+                            });
+                        }
+                    },
+                    path,
+                    dir: cwd,
+                };
 
-                    let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
-                    context.exec_command_group(&shell_file)
-                } else {
-                    WaitableProcess::empty_error(
-                        CommandExecError::UnsupportedIntermediatePipelineCommand,
-                    )
+                let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
+                match context {
+                    SpawnContext::PipelineEnd { context, .. } => {
+                        context.exec_command_group(&shell_file)
+                    }
+                    SpawnContext::PipelineIntermediate { context, .. } => {
+                        context.clone().exec_command_group(&shell_file)
+                    }
                 }
             }
         }
     }
 }
 
-pub enum StdioRepr {
+pub enum SpawnContext<'a, 'ctx_a, 'ctx_b> {
+    PipelineIntermediate {
+        context: &'a ShellContext<'ctx_a, 'ctx_b>,
+        input: StdinRedirect,
+        #[cfg(unix)]
+        output: Option<std::os::unix::io::RawFd>,
+        #[cfg(windows)]
+        output: Option<std::os::windows::prelude::RawHandle>,
+    },
+    PipelineEnd {
+        context: &'a mut ShellContext<'ctx_a, 'ctx_b>,
+        input: StdinRedirect,
+    },
+}
+
+pub enum StdinRedirect {
+    None,
     Inherit,
-    Null,
-    MakePipe,
+    Buffer(Vec<u8>),
+    #[cfg(unix)]
+    Dup(std::os::unix::io::RawFd),
     #[cfg(unix)]
     Fd(std::os::unix::io::RawFd),
     #[cfg(windows)]
     Fd(std::os::windows::prelude::RawHandle),
 }
 
-impl From<StdioRepr> for Stdio {
-    fn from(repr: StdioRepr) -> Stdio {
-        match repr {
-            StdioRepr::Inherit => Stdio::inherit(),
-            StdioRepr::Null => Stdio::null(),
-            StdioRepr::MakePipe => Stdio::piped(),
-            #[cfg(unix)]
-            StdioRepr::Fd(fd) => {
-                use std::os::unix::io::FromRawFd;
-                unsafe {
-                    // SAFETY: Not currently enforced. Replace with OwnedFd and OwnedHandle when #87074 is stable
-                    Stdio::from_raw_fd(fd)
-                }
-            }
-            #[cfg(windows)]
-            StdioRepr::Fd(handle) => {
-                use std::os::windows::io::FromRawHandle;
-                unsafe { Stdio::from_raw_handle(handle) }
-            }
-        }
-    }
-}
-
 #[cfg(unix)]
-impl<T> From<T> for StdioRepr
+impl<T> From<T> for StdinRedirect
 where
     T: std::os::unix::io::IntoRawFd,
 {
-    fn from(file: T) -> StdioRepr {
-        StdioRepr::Fd(file.into_raw_fd())
+    fn from(file: T) -> StdinRedirect {
+        StdinRedirect::Fd(file.into_raw_fd())
     }
 }
 
 #[cfg(windows)]
-impl<T> From<T> for StdioRepr
+impl<T> From<T> for StdinRedirect
 where
     T: std::os::windows::io::IntoRawHandle,
 {
-    fn from(file: T) -> StdioRepr {
-        StdioRepr::Fd(file.into_raw_handle())
+    fn from(file: T) -> StdinRedirect {
+        StdinRedirect::Fd(file.into_raw_handle())
     }
 }
 
-pub struct Pipe {
-    pub stdin: PipeInput,
-    pub stdout: bool,
-}
-
-impl Pipe {
-    pub fn no_pipe() -> Pipe {
-        Pipe {
-            stdin: PipeInput::Inherit,
-            stdout: false,
-        }
-    }
-
-    pub fn null_pipe_out() -> Pipe {
-        Pipe {
-            stdin: PipeInput::None,
-            stdout: true,
-        }
-    }
-
-    pub fn inherit_pipe_out() -> Pipe {
-        Pipe {
-            stdin: PipeInput::Inherit,
-            stdout: true,
-        }
-    }
-
-    pub fn pipe_in(stdin: impl Into<PipeInput>) -> Pipe {
-        Pipe {
-            stdin: stdin.into(),
-            stdout: false,
-        }
-    }
-
-    pub fn pipe_in_out(stdin: impl Into<PipeInput>) -> Pipe {
-        Pipe {
-            stdin: stdin.into(),
-            stdout: true,
-        }
-    }
-}
-
-pub enum PipeInput {
+pub enum StdoutRedirect {
     None,
     Inherit,
-    Pipe(StdioRepr),
-    Buffer(Vec<u8>),
+    #[cfg(unix)]
+    Dup(std::os::unix::io::RawFd),
+    #[cfg(unix)]
+    Fd(std::os::unix::io::RawFd),
+    #[cfg(windows)]
+    Fd(std::os::windows::prelude::RawHandle),
 }
 
-impl From<StdioRepr> for PipeInput {
-    fn from(stdin: StdioRepr) -> PipeInput {
-        PipeInput::Pipe(stdin)
+#[cfg(unix)]
+impl<T> From<T> for StdoutRedirect
+where
+    T: std::os::unix::io::IntoRawFd,
+{
+    fn from(file: T) -> StdoutRedirect {
+        StdoutRedirect::Fd(file.into_raw_fd())
     }
 }
 
-impl From<Vec<u8>> for PipeInput {
-    fn from(stdin: Vec<u8>) -> PipeInput {
-        PipeInput::Buffer(stdin)
-    }
-}
-
-impl From<Output> for FinishedProcess {
-    fn from(o: Output) -> Self {
-        FinishedProcess {
-            status: ProcessExit::StdStatus(o.status),
-            stdout: o.stdout,
-            stderr: o.stderr,
-        }
+#[cfg(windows)]
+impl<T> From<T> for StdoutRedirect
+where
+    T: std::os::windows::io::IntoRawHandle,
+{
+    fn from(file: T) -> StdoutRedirect {
+        StdoutRedirect::Fd(file.into_raw_handle())
     }
 }

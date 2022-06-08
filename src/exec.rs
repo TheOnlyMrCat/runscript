@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::process::{
-    BuiltinCommand, CommandExecError, Pipe, PipeInput, ProcessExit, SpawnableProcess, StdioRepr,
-    WaitableProcess,
+    BuiltinCommand, CommandExecError, ProcessExit, SpawnContext, SpawnableProcess, StdinRedirect,
+    StdoutRedirect, WaitableProcess,
 };
 
 use crate::parser::ast::{
@@ -154,7 +154,13 @@ impl ShellContext<'_, '_> {
         args: Vec<String>,
     ) -> WaitableProcess {
         self.function_args.push(args);
-        let process = self.exec_compound_command(&commands);
+        //TODO: input redirection
+        let process = self
+            .eval_compound_command(&commands)
+            .spawn(SpawnContext::PipelineEnd {
+                context: self,
+                input: StdinRedirect::Inherit,
+            });
         self.function_args.pop();
         process
     }
@@ -201,80 +207,79 @@ impl ShellContext<'_, '_> {
         command: &ListableCommand,
         is_job: bool,
     ) -> WaitableProcess {
-        if let Some(ref out) = self.config.output_stream {
-            write!(out.lock(), "{}> ", if is_job { "&" } else { "" }).expect("Failed to write");
-        }
-        let rt = match command {
+        let commands = match command {
             ListableCommand::Pipe(_negate, commands) => {
-                let mut proc = self.exec_pipeable_command(
-                    commands.first().unwrap(),
-                    if is_job {
-                        Pipe::null_pipe_out()
-                    } else {
-                        Pipe::inherit_pipe_out()
-                    },
-                );
-                if let Some(ref out) = self.config.output_stream {
-                    //TODO: Do stuff with cursor position?
-                    write!(out.lock(), "| ").expect("Failed to write");
-                }
-                for command in &commands[1..commands.len() - 1] {
-                    let next_proc =
-                        self.exec_pipeable_command(command, Pipe::pipe_in_out(proc.pipe_out()));
-                    proc = next_proc;
-                    if let Some(ref out) = self.config.output_stream {
-                        write!(out.lock(), "| ").expect("Failed to write");
-                    }
-                }
-                let last_proc = self.exec_pipeable_command(
-                    commands.last().unwrap(),
-                    Pipe::pipe_in(proc.pipe_out()),
-                );
-                last_proc //TODO: Negate?
+                commands
+                    .iter()
+                    .map(|command| self.eval_pipeable_command(command))
+                    .collect() //TODO: negate?
             }
             ListableCommand::Single(command) => {
-                self.exec_pipeable_command(command, Pipe::no_pipe())
+                vec![self.eval_pipeable_command(command)]
             }
         };
-        if let Some(ref out) = self.config.output_stream {
-            writeln!(out.lock()).expect("Failed to write");
+        let last_command = commands.len() - 1;
+        let mut next_input = if is_job {
+            StdinRedirect::None
+        } else {
+            StdinRedirect::Inherit
+        };
+        for (i, command) in commands.into_iter().enumerate() {
+            if i == last_command {
+                return command.spawn(SpawnContext::PipelineEnd {
+                    context: self,
+                    input: next_input,
+                });
+            } else {
+                let input;
+                let output;
+                #[cfg(unix)]
+                {
+                    //TODO: O_NONBLOCK, if necessary
+                    let (read, write) = nix::unistd::pipe().unwrap();
+                    input = std::mem::replace(&mut next_input, StdinRedirect::Fd(read));
+                    output = write;
+                }
+                command.spawn(SpawnContext::PipelineIntermediate {
+                    context: &*self,
+                    input,
+                    output: Some(output),
+                });
+            }
         }
-        rt
+        unreachable!()
     }
 
-    fn exec_pipeable_command(&mut self, command: &PipeableCommand, pipe: Pipe) -> WaitableProcess {
+    fn eval_pipeable_command<'a>(&mut self, command: &'a PipeableCommand) -> SpawnableProcess<'a> {
         match command {
-            PipeableCommand::Simple(command) => {
-                self.eval_simple_command(command, pipe).spawn(Some(self))
-            }
-            PipeableCommand::Compound(command) => self.exec_compound_command(command),
+            PipeableCommand::Simple(command) => self.eval_simple_command(command),
+            PipeableCommand::Compound(command) => self.eval_compound_command(command),
             PipeableCommand::FunctionDef(name, body) => {
+                //TODO: Delay registration with context
                 self.functions.insert(name.clone(), body.clone());
-                WaitableProcess::empty_success()
+                SpawnableProcess::empty_success()
             }
         }
     }
 
-    fn exec_compound_command(&mut self, command: &CompoundCommand) -> WaitableProcess {
+    fn eval_compound_command<'a>(&mut self, command: &'a CompoundCommand) -> SpawnableProcess<'a> {
         match &command.kind {
-            CompoundCommandKind::Brace(commands) => self.exec_command_group(commands),
-            CompoundCommandKind::Subshell(commands) => {
-                let mut context = self.clone();
-                context.exec_command_group(commands)
-            }
+            CompoundCommandKind::Brace(commands) => SpawnableProcess::group(commands),
+            CompoundCommandKind::Subshell(commands) => SpawnableProcess::subshell(commands),
+            //TODO: Evaluate lazily!
             CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
                 while self.exec_command_group(guard).wait().status.success() {
                     self.exec_command_group(body).wait();
                 }
 
-                WaitableProcess::empty_success()
+                SpawnableProcess::empty_success()
             }
             CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
                 while !self.exec_command_group(guard).wait().status.success() {
                     self.exec_command_group(body).wait();
                 }
 
-                WaitableProcess::empty_success()
+                SpawnableProcess::empty_success()
             }
             CompoundCommandKind::If {
                 conditionals,
@@ -284,16 +289,16 @@ impl ShellContext<'_, '_> {
 
                 for GuardBodyPair { guard, body } in conditionals {
                     if self.exec_command_group(guard).wait().status.success() {
-                        branch = Some(self.exec_command_group(body));
+                        branch = Some(SpawnableProcess::group(body));
                         break;
                     }
                 }
 
                 branch.unwrap_or_else(|| {
                     else_branch
-                        .as_ref()
-                        .map(|b| self.exec_command_group(b))
-                        .unwrap_or_else(WaitableProcess::empty_success)
+                        .as_deref()
+                        .map(SpawnableProcess::group)
+                        .unwrap_or_else(SpawnableProcess::empty_success)
                 })
             }
             CompoundCommandKind::For { var, words, body } => {
@@ -311,21 +316,21 @@ impl ShellContext<'_, '_> {
                 {
                     Ok(words) => words.unwrap_or_else(|| self.config.positional_args.clone()),
                     Err(status) => {
-                        return WaitableProcess::empty_status(status);
+                        return SpawnableProcess::empty_status(status);
                     }
                 } {
                     self.vars.insert(var.clone(), word.clone());
                     last_proc = self.exec_command_group(body);
                 }
 
-                last_proc
+                todo!()
             }
             CompoundCommandKind::Case { word, arms } => {
                 let mut last_proc = WaitableProcess::empty_success();
                 let word = match self.evaluate_tl_word(word) {
                     Ok(word) => word,
                     Err(status) => {
-                        return WaitableProcess::empty_status(status);
+                        return SpawnableProcess::empty_status(status);
                     }
                 };
                 for PatternBodyPair { patterns, body } in arms {
@@ -334,7 +339,7 @@ impl ShellContext<'_, '_> {
                         let pattern = match self.evaluate_tl_word(pattern) {
                             Ok(pattern) => pattern,
                             Err(status) => {
-                                return WaitableProcess::empty_status(status);
+                                return SpawnableProcess::empty_status(status);
                             }
                         };
                         if pattern == word {
@@ -348,12 +353,12 @@ impl ShellContext<'_, '_> {
                     }
                 }
 
-                last_proc
+                todo!()
             }
         }
     }
 
-    fn eval_simple_command(&mut self, command: &SimpleCommand, pipe: Pipe) -> SpawnableProcess {
+    fn eval_simple_command<'a>(&mut self, command: &'a SimpleCommand) -> SpawnableProcess<'a> {
         use std::process::Command;
 
         let mut redirects = vec![];
@@ -381,7 +386,7 @@ impl ShellContext<'_, '_> {
             .collect::<Result<Vec<_>, _>>()
         {
             Ok(remaps) => remaps,
-            Err(status) => return SpawnableProcess::status(status),
+            Err(status) => return SpawnableProcess::empty_status(status),
         };
 
         let command_words = match command
@@ -397,7 +402,7 @@ impl ShellContext<'_, '_> {
             .collect::<Result<Vec<_>, _>>()
         {
             Ok(words) => words,
-            Err(status) => return SpawnableProcess::status(status),
+            Err(status) => return SpawnableProcess::empty_status(status),
         };
 
         if !command_words.is_empty() {
@@ -416,7 +421,7 @@ impl ShellContext<'_, '_> {
                 .collect::<Result<Vec<_>, _>>()
             {
                 Ok(redirects) => redirects,
-                Err(status) => return SpawnableProcess::status(status),
+                Err(status) => return SpawnableProcess::empty_status(status),
             };
 
             if let Some(ref output_stream) = self.config.output_stream {
@@ -432,22 +437,9 @@ impl ShellContext<'_, '_> {
             //TODO: I don't think flatten()ing is correct. The internal Vec<String>s should instead be joined.
             let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
 
-            let mut stdin_buffer = None;
-            let mut stdin = match pipe.stdin {
-                PipeInput::None => StdioRepr::Null,
-                PipeInput::Inherit => StdioRepr::Inherit,
-                PipeInput::Pipe(stdio) => stdio,
-                PipeInput::Buffer(v) => {
-                    stdin_buffer = Some(v);
-                    StdioRepr::MakePipe
-                }
-            };
-            let mut stdout = if pipe.stdout {
-                StdioRepr::MakePipe
-            } else {
-                StdioRepr::Inherit
-            };
-            let mut stderr = StdioRepr::Inherit;
+            let mut stdin = StdinRedirect::None;
+            let mut stdout = StdoutRedirect::None;
+            let mut stderr = StdoutRedirect::None;
 
             for redirect in redirects {
                 match redirect {
@@ -464,9 +456,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            None | Some(0) => stdin = StdioRepr::from(file),
-                            Some(1) => stdout = StdioRepr::from(file),
-                            Some(2) => stderr = StdioRepr::from(file),
+                            None | Some(0) => stdin = StdinRedirect::from(file),
+                            Some(1) => stdout = StdoutRedirect::from(file),
+                            Some(2) => stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -484,9 +476,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            Some(0) => stdin = StdioRepr::from(file),
-                            None | Some(1) => stdout = StdioRepr::from(file),
-                            Some(2) => stderr = StdioRepr::from(file),
+                            Some(0) => stdin = StdinRedirect::from(file),
+                            None | Some(1) => stdout = StdoutRedirect::from(file),
+                            Some(2) => stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -505,9 +497,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            None | Some(0) => stdin = StdioRepr::from(file),
-                            Some(1) => stdout = StdioRepr::from(file),
-                            Some(2) => stderr = StdioRepr::from(file),
+                            None | Some(0) => stdin = StdinRedirect::from(file),
+                            Some(1) => stdout = StdoutRedirect::from(file),
+                            Some(2) => stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -526,9 +518,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            Some(0) => stdin = StdioRepr::from(file),
-                            None | Some(1) => stdout = StdioRepr::from(file),
-                            Some(2) => stderr = StdioRepr::from(file),
+                            Some(0) => stdin = StdinRedirect::from(file),
+                            None | Some(1) => stdout = StdoutRedirect::from(file),
+                            Some(2) => stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -546,9 +538,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            None | Some(0) => stdin = StdioRepr::from(file),
-                            Some(1) => stdout = StdioRepr::from(file),
-                            Some(2) => stderr = StdioRepr::from(file),
+                            None | Some(0) => stdin = StdinRedirect::from(file),
+                            Some(1) => stdout = StdoutRedirect::from(file),
+                            Some(2) => stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -572,9 +564,9 @@ impl ShellContext<'_, '_> {
                             }
                         }
                         match fd {
-                            None | Some(0) => stdin = StdioRepr::from(file),
-                            Some(1) => stdout = StdioRepr::from(file),
-                            Some(2) => stderr = StdioRepr::from(file),
+                            None | Some(0) => stdin = StdinRedirect::from(file),
+                            Some(1) => stdout = StdoutRedirect::from(file),
+                            Some(2) => stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -588,25 +580,25 @@ impl ShellContext<'_, '_> {
             }
 
             match command_words[0].as_str() {
-                ":" | "true" => SpawnableProcess::Builtin(BuiltinCommand::True),
-                "false" => SpawnableProcess::Builtin(BuiltinCommand::False),
+                ":" | "true" => SpawnableProcess::builtin(BuiltinCommand::True),
+                "false" => SpawnableProcess::builtin(BuiltinCommand::False),
                 #[cfg(feature = "dev-panic")]
-                "__run_panic" => SpawnableProcess::Builtin(BuiltinCommand::Panic),
+                "__run_panic" => SpawnableProcess::builtin(BuiltinCommand::Panic),
                 "cd" => {
                     //TODO: Extended cd options
-                    SpawnableProcess::Builtin(BuiltinCommand::Cd {
+                    SpawnableProcess::builtin(BuiltinCommand::Cd {
                         path: self.working_directory.join(&command_words[1]),
                     })
                 }
                 "export" => {
                     let name = &command_words[1];
                     if let Some((name, value)) = name.split_once('=') {
-                        SpawnableProcess::Builtin(BuiltinCommand::Export {
+                        SpawnableProcess::builtin(BuiltinCommand::Export {
                             key: name.to_string(),
                             value: value.to_string(),
                         })
                     } else {
-                        SpawnableProcess::Builtin(BuiltinCommand::Export {
+                        SpawnableProcess::builtin(BuiltinCommand::Export {
                             key: name.to_string(),
                             value: self.vars[name].clone(),
                         })
@@ -614,25 +606,22 @@ impl ShellContext<'_, '_> {
                 }
                 "unset" => {
                     let name = &command_words[1];
-                    SpawnableProcess::Builtin(BuiltinCommand::Unset {
+                    SpawnableProcess::builtin(BuiltinCommand::Unset {
                         key: name.to_string(),
                     })
                 }
-                "source" => SpawnableProcess::Builtin(BuiltinCommand::Source {
+                "source" => SpawnableProcess::builtin(BuiltinCommand::Source {
                     path: self.working_directory.join(&command_words[1]),
+                    cwd: self.working_directory.clone(),
                 }),
                 #[cfg(unix)]
-                "run" => SpawnableProcess::Reentrant {
-                    stdin,
-                    stdout,
-                    stderr,
-                    env: self
-                        .env
+                "run" => SpawnableProcess::reentrant(
+                    self.env
                         .iter()
                         .map(|(k, v)| (k.clone(), v.clone()))
                         .collect(),
-                    cwd: Some(self.working_directory.clone()),
-                    recursive_context: BaseExecContext {
+                    Some(self.working_directory.clone()),
+                    BaseExecContext {
                         current_file: self.config.script_path.clone(),
                         current_target: self.config.target_name.map(ToOwned::to_owned),
                         args: {
@@ -642,25 +631,23 @@ impl ShellContext<'_, '_> {
                         },
                         colour_choice: self.config.colour_choice,
                     },
-                },
+                ),
                 _ => {
                     if let Some(commands) = self.functions.get(&command_words[0]).cloned() {
-                        SpawnableProcess::Function(commands, command_words)
+                        SpawnableProcess::function(commands, command_words)
                     } else {
                         let mut command = Command::new(&command_words[0]);
                         command
                             .args(&command_words[1..])
                             .envs(&self.env)
                             .envs(env_remaps)
-                            .stdin(stdin)
-                            .stdout(stdout)
-                            .stderr(stderr)
                             .current_dir(self.working_directory.clone());
-                        SpawnableProcess::StdProcess(command, stdin_buffer)
+                        SpawnableProcess::process(command)
                     }
                 }
             }
         } else {
+            //TODO: Evaluate lazily, to allow this method to take &self, and to restore correct behaviour.
             if let Some(ref output_stream) = self.config.output_stream {
                 out::env_remaps(output_stream, &env_remaps);
             }
