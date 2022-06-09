@@ -1,14 +1,14 @@
 [all:test]
 run args
-# run chain
+run chain
 # run conditional
 run default
 run dir
 run exit
-# run fn
+run fn
 run params
 run recursive
-# run redir
+run redir
 
 [args]
 echo Test 'basic command' "with textual" arguments

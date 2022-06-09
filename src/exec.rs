@@ -211,11 +211,11 @@ impl ShellContext<'_, '_> {
             ListableCommand::Pipe(_negate, commands) => {
                 commands
                     .iter()
-                    .map(|command| self.eval_pipeable_command(command))
+                    .map(|command| self.eval_pipeable_command(command, is_job))
                     .collect() //TODO: negate?
             }
             ListableCommand::Single(command) => {
-                vec![self.eval_pipeable_command(command)]
+                vec![self.eval_pipeable_command(command, is_job)]
             }
         };
         let last_command = commands.len() - 1;
@@ -250,9 +250,13 @@ impl ShellContext<'_, '_> {
         unreachable!()
     }
 
-    fn eval_pipeable_command<'a>(&mut self, command: &'a PipeableCommand) -> SpawnableProcess<'a> {
+    fn eval_pipeable_command<'a>(
+        &mut self,
+        command: &'a PipeableCommand,
+        is_job: bool,
+    ) -> SpawnableProcess<'a> {
         match command {
-            PipeableCommand::Simple(command) => self.eval_simple_command(command),
+            PipeableCommand::Simple(command) => self.eval_simple_command(command, is_job),
             PipeableCommand::Compound(command) => self.eval_compound_command(command),
             PipeableCommand::FunctionDef(name, body) => {
                 //TODO: Delay registration with context
@@ -358,7 +362,11 @@ impl ShellContext<'_, '_> {
         }
     }
 
-    fn eval_simple_command<'a>(&mut self, command: &'a SimpleCommand) -> SpawnableProcess<'a> {
+    fn eval_simple_command<'a>(
+        &mut self,
+        command: &'a SimpleCommand,
+        is_job: bool,
+    ) -> SpawnableProcess<'a> {
         use std::process::Command;
 
         let mut redirects = vec![];
@@ -437,9 +445,21 @@ impl ShellContext<'_, '_> {
             //TODO: I don't think flatten()ing is correct. The internal Vec<String>s should instead be joined.
             let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
 
-            let mut stdin = StdinRedirect::None;
-            let mut stdout = StdoutRedirect::None;
-            let mut stderr = StdoutRedirect::None;
+            let mut stdin = if is_job {
+                StdinRedirect::None
+            } else {
+                StdinRedirect::Inherit
+            };
+            let mut stdout = if is_job {
+                StdoutRedirect::None
+            } else {
+                StdoutRedirect::Inherit
+            };
+            let mut stderr = if is_job {
+                StdoutRedirect::None
+            } else {
+                StdoutRedirect::Inherit
+            };
 
             for redirect in redirects {
                 match redirect {
@@ -579,7 +599,7 @@ impl ShellContext<'_, '_> {
                 }
             }
 
-            match command_words[0].as_str() {
+            let mut process = match command_words[0].as_str() {
                 ":" | "true" => SpawnableProcess::builtin(BuiltinCommand::True),
                 "false" => SpawnableProcess::builtin(BuiltinCommand::False),
                 #[cfg(feature = "dev-panic")]
@@ -645,7 +665,11 @@ impl ShellContext<'_, '_> {
                         SpawnableProcess::process(command)
                     }
                 }
-            }
+            };
+            process.stdin = stdin;
+            process.stdout = stdout;
+            process.stderr = stderr;
+            process
         } else {
             //TODO: Evaluate lazily, to allow this method to take &self, and to restore correct behaviour.
             if let Some(ref output_stream) = self.config.output_stream {

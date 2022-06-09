@@ -1,7 +1,7 @@
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Child, ExitStatus, Output};
+use std::process::{Child, ExitStatus, Output, Stdio};
 use std::str::Utf8Error;
 use std::sync::Arc;
 
@@ -428,20 +428,33 @@ impl SpawnableProcess<'_> {
     pub fn spawn(self, context: SpawnContext) -> WaitableProcess {
         match self.ty {
             SpawnableProcessType::StdProcess(mut cmd) => {
-                let process = cmd.spawn().unwrap();
-                if let StdinRedirect::Buffer(stdin_buffer) = self.stdin {
-                    if let Some(mut child_stdin) = process.stdin.as_ref() {
-                        use std::io::Write;
-                        // This approach can cause a deadlock if the following conditions are true:
-                        // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
-                        // - The stdin buffer is larger than the pipe buffer
-                        // - The child writes more than one pipe buffer of data without reading enough of stdin
-                        //? Could run this on separate thread to mitigate this, if necessary.
-                        //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
-                        let _ = child_stdin.write_all(&stdin_buffer);
-                        //TODO: Do I need to worry about an error here?
+                let resolved_stdin = match self.stdin {
+                    StdinRedirect::None | StdinRedirect::Inherit => context.stdin(),
+                    stdin => stdin,
+                };
+                let resolved_stdout = match self.stdout {
+                    stdout @ (StdoutRedirect::None | StdoutRedirect::Inherit) => {
+                        context.stdout().map(StdoutRedirect::Fd).unwrap_or(stdout)
                     }
-                }
+                    stdout => stdout,
+                };
+                cmd.stdin(resolved_stdin)
+                    .stdout(resolved_stdout)
+                    .stderr(self.stderr);
+                let process = cmd.spawn().unwrap();
+                // if let StdinRedirect::Buffer(stdin_buffer) = self.stdin {
+                //     if let Some(mut child_stdin) = process.stdin.as_ref() {
+                //         use std::io::Write;
+                //         // This approach can cause a deadlock if the following conditions are true:
+                //         // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
+                //         // - The stdin buffer is larger than the pipe buffer
+                //         // - The child writes more than one pipe buffer of data without reading enough of stdin
+                //         //? Could run this on separate thread to mitigate this, if necessary.
+                //         //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
+                //         let _ = child_stdin.write_all(&stdin_buffer);
+                //         //TODO: Do I need to worry about an error here?
+                //     }
+                // }
                 WaitableProcess::new(process)
             }
             SpawnableProcessType::Function(command, args) => match context {
@@ -465,7 +478,7 @@ impl SpawnableProcess<'_> {
                     SpawnContext::PipelineEnd { context, .. } => context.clone(),
                     SpawnContext::PipelineIntermediate { context, .. } => context.clone(),
                 };
-                context.exec_command_group(&commands)
+                context.exec_command_group(commands)
             }
             SpawnableProcessType::Builtin(builtin) => builtin.spawn(context),
             SpawnableProcessType::Finished(process) => WaitableProcess::finished(process),
@@ -479,9 +492,6 @@ impl SpawnableProcess<'_> {
                 let stdin_fd = match self.stdin {
                     StdinRedirect::None => None,
                     StdinRedirect::Inherit => Some(0),
-                    StdinRedirect::Buffer(ref stdin_buffer) => {
-                        todo!();
-                    }
                     StdinRedirect::Dup(fd) | StdinRedirect::Fd(fd) => Some(fd),
                 };
                 let mut child_stdout = None;
@@ -633,16 +643,50 @@ pub enum SpawnContext<'a, 'ctx_a, 'ctx_b> {
     },
 }
 
+impl SpawnContext<'_, '_, '_> {
+    fn stdin(&self) -> StdinRedirect {
+        match self {
+            SpawnContext::PipelineIntermediate { input, .. } => *input,
+            SpawnContext::PipelineEnd { input, .. } => *input,
+        }
+    }
+
+    #[cfg(unix)]
+    fn stdout(&self) -> Option<std::os::unix::io::RawFd> {
+        match self {
+            SpawnContext::PipelineIntermediate { output, .. } => *output,
+            SpawnContext::PipelineEnd { .. } => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
 pub enum StdinRedirect {
     None,
     Inherit,
-    Buffer(Vec<u8>),
     #[cfg(unix)]
     Dup(std::os::unix::io::RawFd),
     #[cfg(unix)]
     Fd(std::os::unix::io::RawFd),
     #[cfg(windows)]
     Fd(std::os::windows::prelude::RawHandle),
+}
+
+impl From<StdinRedirect> for Stdio {
+    fn from(redir: StdinRedirect) -> Self {
+        match redir {
+            StdinRedirect::None => Stdio::null(),
+            StdinRedirect::Inherit => Stdio::inherit(),
+            #[cfg(unix)]
+            StdinRedirect::Dup(_) => todo!(),
+            #[cfg(unix)]
+            StdinRedirect::Fd(fd) => {
+                use std::os::unix::io::FromRawFd;
+                // SAFETY: Not currently enforced...
+                unsafe { Stdio::from_raw_fd(fd) }
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -674,6 +718,23 @@ pub enum StdoutRedirect {
     Fd(std::os::unix::io::RawFd),
     #[cfg(windows)]
     Fd(std::os::windows::prelude::RawHandle),
+}
+
+impl From<StdoutRedirect> for Stdio {
+    fn from(redir: StdoutRedirect) -> Self {
+        match redir {
+            StdoutRedirect::None => Stdio::null(),
+            StdoutRedirect::Inherit => Stdio::inherit(),
+            #[cfg(unix)]
+            StdoutRedirect::Dup(_) => todo!(),
+            #[cfg(unix)]
+            StdoutRedirect::Fd(fd) => {
+                use std::os::unix::io::FromRawFd;
+                // SAFETY: Not currently enforced...
+                unsafe { Stdio::from_raw_fd(fd) }
+            }
+        }
+    }
 }
 
 #[cfg(unix)]
