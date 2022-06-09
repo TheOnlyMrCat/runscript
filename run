@@ -11,16 +11,18 @@ cargo run --all-features -- $@
 __run_panic
 
 [pkg]
-run pkg-nowin
+run pkg-linux
+run pkg-mac
 run pkg-win
 
 [pkg-win]
 cargo build --release --target x86_64-pc-windows-gnu
 tar czf runscript-windows-x86_64.tar.gz -C target/x86_64-pc-windows-gnu/release run.exe
 
-[pkg-nowin]
+[pkg-mac]
 cargo build --release --target x86_64-apple-darwin
 tar czf runscript-macos-x86_64.tar.gz -C target/x86_64-apple-darwin/release run
 
+[pkg-linux]
 cargo build --release --target x86_64-unknown-linux-musl
 tar czf runscript-linux-x86_64.tar.gz -C target/x86_64-unknown-linux-musl/release run
