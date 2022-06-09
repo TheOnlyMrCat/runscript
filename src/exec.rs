@@ -825,7 +825,7 @@ impl ShellContext {
     }
 
     fn evaluate_tl_word(
-        &mut self,
+        &self,
         word: &ComplexWord,
         config: &ExecConfig,
     ) -> Result<Vec<String>, ProcessExit> {
@@ -894,7 +894,7 @@ impl ShellContext {
         }
     }
 
-    fn evaluate_word(&mut self, word: &Word, config: &ExecConfig) -> Result<GlobPart, ProcessExit> {
+    fn evaluate_word(&self, word: &Word, config: &ExecConfig) -> Result<GlobPart, ProcessExit> {
         match word {
             Word::SingleQuoted(literal) => Ok(vec![literal.clone()].into()),
             Word::DoubleQuoted(words) => Ok(vec![words
@@ -911,14 +911,14 @@ impl ShellContext {
     }
 
     fn evaluate_simple_word(
-        &mut self,
+        &self,
         word: &SimpleWord,
         config: &ExecConfig,
     ) -> Result<GlobPart, ProcessExit> {
         match word {
             SimpleWord::Literal(s) => Ok(vec![s.clone()].into()),
             SimpleWord::Escaped(s) => Ok(vec![s.clone()].into()),
-            SimpleWord::Param(p) => Ok(self.evaluate_parameter(p, config).into()),
+            SimpleWord::Param(p) => Ok(self.evaluate_parameter(p, config)?.into()),
             SimpleWord::Subst(p) => Ok(self.evaluate_param_subst(p, config)?.into()),
             SimpleWord::Star => Ok(GlobPart::Star),
             SimpleWord::Question => Ok(GlobPart::Question),
@@ -930,13 +930,13 @@ impl ShellContext {
     }
 
     fn evaluate_param_subst(
-        &mut self,
+        &self,
         param: &ParameterSubstitution,
         config: &ExecConfig,
     ) -> Result<Vec<String>, ProcessExit> {
         Ok(match param {
             ParameterSubstitution::Command(commands) => {
-                let output = self.exec_command_group(commands, config).wait();
+                let output = self.clone().exec_command_group(commands, config).wait();
                 if !output.status.success() {
                     return Err(output.status);
                 }
@@ -951,7 +951,7 @@ impl ShellContext {
                 match p {
                     Parameter::At | Parameter::Star => config.positional_args.len(),
                     p => self
-                        .evaluate_parameter(p, config)
+                        .evaluate_parameter(p, config)?
                         .into_iter()
                         .map(|s| s.len())
                         .reduce(|acc, s| acc + s + 1)
@@ -960,7 +960,7 @@ impl ShellContext {
             )],
             ParameterSubstitution::Arith(_) => todo!(),
             ParameterSubstitution::Default(null_is_unset, parameter, default) => {
-                let parameter = self.evaluate_parameter(parameter, config);
+                let parameter = self.evaluate_parameter(parameter, config)?;
                 if parameter.is_empty()
                     || (*null_is_unset && parameter.len() == 1 && parameter[0].is_empty())
                 {
@@ -983,8 +983,12 @@ impl ShellContext {
         })
     }
 
-    fn evaluate_parameter(&mut self, parameter: &Parameter, config: &ExecConfig) -> Vec<String> {
-        match parameter {
+    fn evaluate_parameter(
+        &self,
+        parameter: &Parameter,
+        config: &ExecConfig,
+    ) -> Result<Vec<String>, ProcessExit> {
+        Ok(match parameter {
             Parameter::Positional(n) => match self.function_args.last() {
                 Some(args) => args.get(*n).cloned().into_iter().collect(),
                 None => config
@@ -1016,7 +1020,7 @@ impl ShellContext {
 
             Parameter::Star => todo!(), // Like @ but runs evaluate_word on each word
             Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
-        }
+        })
     }
 }
 
