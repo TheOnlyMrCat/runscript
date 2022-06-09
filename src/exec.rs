@@ -1013,12 +1013,34 @@ impl ShellContext {
             .skip(1)
             .cloned()
             .collect(),
-            Parameter::Pound => vec![format!("{}", config.positional_args.len() - 1)],
+            Parameter::Star => match self.function_args.last() {
+                Some(args) => args,
+                None => &config.positional_args,
+            }
+            .iter()
+            .skip(1)
+            .map(|word| {
+                crate::parser::parse_word(word)
+                    .map_err(|e| {
+                        ProcessExit::ExecError(CommandExecError::BadStarPositional { err: e })
+                    })
+                    .and_then(|word| self.evaluate_tl_word(&word, config))
+            })
+            .flatten_ok()
+            .collect::<Result<Vec<_>, _>>()?,
+            Parameter::Pound => vec![format!(
+                "{}",
+                match self.function_args.last() {
+                    Some(args) => args,
+                    None => &config.positional_args,
+                }
+                .len()
+                    - 1
+            )],
             Parameter::Dollar => vec![format!("{}", std::process::id())],
             Parameter::Question => vec![format!("{}", self.exit_code)],
             Parameter::Bang => vec![format!("{}", self.pid)],
 
-            Parameter::Star => todo!(), // Like @ but runs evaluate_word on each word
             Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
         })
     }

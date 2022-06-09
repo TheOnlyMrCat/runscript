@@ -16,6 +16,8 @@ pub mod token;
 use ast::AtomicTopLevelCommand;
 use lexer::Lexer;
 
+use self::ast::ComplexWord;
+
 #[derive(Debug, Clone)]
 pub struct RunscriptSource {
     pub path: PathBuf,
@@ -65,6 +67,12 @@ pub fn parse_command(command: &str) -> Result<AtomicTopLevelCommand, ParseError>
     let lexer = Lexer::new(command.chars());
     let mut parser = Parser::<_>::new(lexer);
     parser.complete_command().map(Option::unwrap)
+}
+
+pub fn parse_word(word: &str) -> Result<ComplexWord, ParseError> {
+    let lexer = Lexer::new(word.chars());
+    let mut parser = Parser::<_>::new(lexer);
+    parser.word().map(Option::unwrap)
 }
 
 pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptParseError> {
