@@ -29,11 +29,11 @@ Source code available at https://github.com/TheOnlyMrCat/runscript
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 const FEATURE_FLAGS: [(bool, &str); 2] = [
+    (cfg!(feature = "panic-hook"), "panic-hook"),
     (cfg!(feature = "old-parser"), "old-parser"),
-    (cfg!(feature = "dev-panic"), "dev-panic"),
 ];
 
-#[cfg(not(feature = "dev-panic"))]
+#[cfg(feature = "panic-hook")]
 fn panic_hook(info: &std::panic::PanicInfo) {
     use std::fs::File;
 
@@ -103,7 +103,7 @@ you ran it on.
 }
 
 fn main() {
-    #[cfg(not(feature = "dev-panic"))]
+    #[cfg(feature = "panic-hook")]
     {
         std::panic::set_hook(Box::new(panic_hook));
     }
@@ -312,7 +312,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         }
     };
 
-    #[cfg(not(feature = "dev-panic"))]
+    #[cfg(feature = "panic-hook")]
     if config.dev.panic {
         let _ = std::panic::take_hook();
     } else {
