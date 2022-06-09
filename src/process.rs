@@ -5,8 +5,11 @@ use std::str::Utf8Error;
 
 use glob::PatternError;
 
+use crate::parser::parse::ParseError;
+
 #[derive(Debug)]
 pub enum CommandExecError {
+    BadStarPositional { err: ParseError },
     InvalidGlob { glob: String, err: PatternError },
     NoGlobMatches { glob: String },
     CommandFailed { err: std::io::Error },
