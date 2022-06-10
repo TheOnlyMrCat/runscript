@@ -6,8 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::process::{
-    BuiltinCommand, CommandExecError, ProcessExit, SpawnContext, SpawnableProcess, StdinRedirect,
-    StdoutRedirect, WaitableProcess,
+    BuiltinCommand, CommandExecError, ProcessExit, RedirectConfig, SpawnContext, SpawnableProcess,
+    StdinRedirect, StdoutRedirect, WaitableProcess,
 };
 
 use crate::parser::ast::{
@@ -104,6 +104,14 @@ impl<'a, 'b> ShellContext<'a, 'b> {
 
 impl ShellContext<'_, '_> {
     pub fn exec_command_group(&mut self, script: &[AtomicTopLevelCommand]) -> WaitableProcess {
+        self.exec_command_group_with_default_redirects(script, RedirectConfig::default_fg())
+    }
+
+    pub fn exec_command_group_with_default_redirects(
+        &mut self,
+        script: &[AtomicTopLevelCommand],
+        redir: RedirectConfig,
+    ) -> WaitableProcess {
         use crate::parser::ast::Command;
 
         let mut jobs = vec![];
@@ -115,7 +123,7 @@ impl ShellContext<'_, '_> {
                     Command::List(list) => (list, false),
                 };
 
-                let proc = self.exec_andor_list(command, is_job);
+                let proc = self.exec_andor_list(command, redir);
                 if is_job {
                     self.pid = proc.pid().unwrap_or(-1);
                     jobs.push(proc);
@@ -131,14 +139,14 @@ impl ShellContext<'_, '_> {
         if !script.is_empty() {
             match &script.last().unwrap() {
                 Command::Job(list) => {
-                    let proc = self.exec_andor_list(list, true);
+                    let proc = self.exec_andor_list(list, RedirectConfig::default_bg());
                     let mut last_proc = WaitableProcess::empty_success();
                     jobs.push(proc);
                     last_proc.set_jobs(jobs);
                     last_proc
                 }
                 Command::List(list) => {
-                    let mut last_proc = self.exec_andor_list(list, false);
+                    let mut last_proc = self.exec_andor_list(list, redir);
                     last_proc.set_jobs(jobs);
                     last_proc
                 }
@@ -152,32 +160,28 @@ impl ShellContext<'_, '_> {
         &mut self,
         commands: Arc<CompoundCommand>,
         args: Vec<String>,
+        redir: RedirectConfig,
     ) -> WaitableProcess {
         self.function_args.push(args);
         //TODO: input redirection
-        let process = self
-            .eval_compound_command(&commands)
-            .spawn(SpawnContext::PipelineEnd {
-                context: self,
-                input: StdinRedirect::Inherit,
-            });
+        let process =
+            self.eval_compound_command(&commands, redir)
+                .spawn(SpawnContext::PipelineEnd {
+                    context: self,
+                    input: StdinRedirect::Inherit,
+                });
         self.function_args.pop();
         process
     }
 
-    fn exec_andor_list(&mut self, command: &AndOrList, is_job: bool) -> WaitableProcess {
-        let mut previous_output = self.exec_listable_command(&command.first, is_job);
+    fn exec_andor_list(&mut self, command: &AndOrList, redir: RedirectConfig) -> WaitableProcess {
+        let mut previous_output = self.exec_listable_command(&command.first, redir);
         for chain in &command.rest {
             match chain {
                 AndOr::And(command) => {
                     let finished = previous_output.wait();
-                    if !is_job {
-                        if let Some(output_stream) = &self.config.output_stream {
-                            out::process_finish(output_stream, &finished.status);
-                        }
-                    }
                     if finished.status.success() {
-                        previous_output = self.exec_listable_command(command, is_job);
+                        previous_output = self.exec_listable_command(command, redir);
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -185,13 +189,8 @@ impl ShellContext<'_, '_> {
                 }
                 AndOr::Or(command) => {
                     let finished = previous_output.wait();
-                    if !is_job {
-                        if let Some(output_stream) = &self.config.output_stream {
-                            out::process_finish(output_stream, &finished.status);
-                        }
-                    }
                     if !finished.status.success() {
-                        previous_output = self.exec_listable_command(command, is_job);
+                        previous_output = self.exec_listable_command(command, redir);
                     } else {
                         previous_output = WaitableProcess::finished(finished);
                         break;
@@ -205,25 +204,21 @@ impl ShellContext<'_, '_> {
     fn exec_listable_command(
         &mut self,
         command: &ListableCommand,
-        is_job: bool,
+        redir: RedirectConfig,
     ) -> WaitableProcess {
         let commands = match command {
             ListableCommand::Pipe(_negate, commands) => {
                 commands
                     .iter()
-                    .map(|command| self.eval_pipeable_command(command, is_job))
+                    .map(|command| self.eval_pipeable_command(command, redir))
                     .collect() //TODO: negate?
             }
             ListableCommand::Single(command) => {
-                vec![self.eval_pipeable_command(command, is_job)]
+                vec![self.eval_pipeable_command(command, redir)]
             }
         };
         let last_command = commands.len() - 1;
-        let mut next_input = if is_job {
-            StdinRedirect::None
-        } else {
-            StdinRedirect::Inherit
-        };
+        let mut next_input = redir.stdin;
         for (i, command) in commands.into_iter().enumerate() {
             if i == last_command {
                 return command.spawn(SpawnContext::PipelineEnd {
@@ -253,11 +248,11 @@ impl ShellContext<'_, '_> {
     fn eval_pipeable_command<'a>(
         &mut self,
         command: &'a PipeableCommand,
-        is_job: bool,
+        redir: RedirectConfig,
     ) -> SpawnableProcess<'a> {
         match command {
-            PipeableCommand::Simple(command) => self.eval_simple_command(command, is_job),
-            PipeableCommand::Compound(command) => self.eval_compound_command(command),
+            PipeableCommand::Simple(command) => self.eval_simple_command(command, redir),
+            PipeableCommand::Compound(command) => self.eval_compound_command(command, redir),
             PipeableCommand::FunctionDef(name, body) => {
                 //TODO: Delay registration with context
                 self.functions.insert(name.clone(), body.clone());
@@ -266,10 +261,14 @@ impl ShellContext<'_, '_> {
         }
     }
 
-    fn eval_compound_command<'a>(&mut self, command: &'a CompoundCommand) -> SpawnableProcess<'a> {
+    fn eval_compound_command<'a>(
+        &mut self,
+        command: &'a CompoundCommand,
+        redir: RedirectConfig,
+    ) -> SpawnableProcess<'a> {
         match &command.kind {
-            CompoundCommandKind::Brace(commands) => SpawnableProcess::group(commands),
-            CompoundCommandKind::Subshell(commands) => SpawnableProcess::subshell(commands),
+            CompoundCommandKind::Brace(commands) => SpawnableProcess::group(commands, redir),
+            CompoundCommandKind::Subshell(commands) => SpawnableProcess::subshell(commands, redir),
             //TODO: Evaluate lazily!
             CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
                 while self.exec_command_group(guard).wait().status.success() {
@@ -293,7 +292,7 @@ impl ShellContext<'_, '_> {
 
                 for GuardBodyPair { guard, body } in conditionals {
                     if self.exec_command_group(guard).wait().status.success() {
-                        branch = Some(SpawnableProcess::group(body));
+                        branch = Some(SpawnableProcess::group(body, redir));
                         break;
                     }
                 }
@@ -301,7 +300,7 @@ impl ShellContext<'_, '_> {
                 branch.unwrap_or_else(|| {
                     else_branch
                         .as_deref()
-                        .map(SpawnableProcess::group)
+                        .map(|body| SpawnableProcess::group(body, redir))
                         .unwrap_or_else(SpawnableProcess::empty_success)
                 })
             }
@@ -365,7 +364,7 @@ impl ShellContext<'_, '_> {
     fn eval_simple_command<'a>(
         &mut self,
         command: &'a SimpleCommand,
-        is_job: bool,
+        mut redir: RedirectConfig,
     ) -> SpawnableProcess<'a> {
         use std::process::Command;
 
@@ -445,22 +444,6 @@ impl ShellContext<'_, '_> {
             //TODO: I don't think flatten()ing is correct. The internal Vec<String>s should instead be joined.
             let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
 
-            let mut stdin = if is_job {
-                StdinRedirect::None
-            } else {
-                StdinRedirect::Inherit
-            };
-            let mut stdout = if is_job {
-                StdoutRedirect::None
-            } else {
-                StdoutRedirect::Inherit
-            };
-            let mut stderr = if is_job {
-                StdoutRedirect::None
-            } else {
-                StdoutRedirect::Inherit
-            };
-
             for redirect in redirects {
                 match redirect {
                     EvaluatedRedirect::Read(fd, word) => {
@@ -476,9 +459,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            None | Some(0) => stdin = StdinRedirect::from(file),
-                            Some(1) => stdout = StdoutRedirect::from(file),
-                            Some(2) => stderr = StdoutRedirect::from(file),
+                            None | Some(0) => redir.stdin = StdinRedirect::from(file),
+                            Some(1) => redir.stdout = StdoutRedirect::from(file),
+                            Some(2) => redir.stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -496,9 +479,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            Some(0) => stdin = StdinRedirect::from(file),
-                            None | Some(1) => stdout = StdoutRedirect::from(file),
-                            Some(2) => stderr = StdoutRedirect::from(file),
+                            Some(0) => redir.stdin = StdinRedirect::from(file),
+                            None | Some(1) => redir.stdout = StdoutRedirect::from(file),
+                            Some(2) => redir.stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -517,9 +500,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            None | Some(0) => stdin = StdinRedirect::from(file),
-                            Some(1) => stdout = StdoutRedirect::from(file),
-                            Some(2) => stderr = StdoutRedirect::from(file),
+                            None | Some(0) => redir.stdin = StdinRedirect::from(file),
+                            Some(1) => redir.stdout = StdoutRedirect::from(file),
+                            Some(2) => redir.stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -538,9 +521,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            Some(0) => stdin = StdinRedirect::from(file),
-                            None | Some(1) => stdout = StdoutRedirect::from(file),
-                            Some(2) => stderr = StdoutRedirect::from(file),
+                            Some(0) => redir.stdin = StdinRedirect::from(file),
+                            None | Some(1) => redir.stdout = StdoutRedirect::from(file),
+                            Some(2) => redir.stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -558,9 +541,9 @@ impl ShellContext<'_, '_> {
                             }
                         };
                         match fd {
-                            None | Some(0) => stdin = StdinRedirect::from(file),
-                            Some(1) => stdout = StdoutRedirect::from(file),
-                            Some(2) => stderr = StdoutRedirect::from(file),
+                            None | Some(0) => redir.stdin = StdinRedirect::from(file),
+                            Some(1) => redir.stdout = StdoutRedirect::from(file),
+                            Some(2) => redir.stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -584,9 +567,9 @@ impl ShellContext<'_, '_> {
                             }
                         }
                         match fd {
-                            None | Some(0) => stdin = StdinRedirect::from(file),
-                            Some(1) => stdout = StdoutRedirect::from(file),
-                            Some(2) => stderr = StdoutRedirect::from(file),
+                            None | Some(0) => redir.stdin = StdinRedirect::from(file),
+                            Some(1) => redir.stdout = StdoutRedirect::from(file),
+                            Some(2) => redir.stderr = StdoutRedirect::from(file),
                             Some(_fd) => todo!(), // Might have to use nix::dup2?
                         }
                     }
@@ -599,41 +582,56 @@ impl ShellContext<'_, '_> {
                 }
             }
 
-            let mut process = match command_words[0].as_str() {
-                ":" | "true" => SpawnableProcess::builtin(BuiltinCommand::True),
-                "false" => SpawnableProcess::builtin(BuiltinCommand::False),
+            match command_words[0].as_str() {
+                ":" | "true" => SpawnableProcess::builtin(BuiltinCommand::True, redir),
+                "false" => SpawnableProcess::builtin(BuiltinCommand::False, redir),
                 #[cfg(feature = "dev-panic")]
-                "__run_panic" => SpawnableProcess::builtin(BuiltinCommand::Panic),
+                "__run_panic" => SpawnableProcess::builtin(BuiltinCommand::Panic, redir),
                 "cd" => {
                     //TODO: Extended cd options
-                    SpawnableProcess::builtin(BuiltinCommand::Cd {
-                        path: self.working_directory.join(&command_words[1]),
-                    })
+                    SpawnableProcess::builtin(
+                        BuiltinCommand::Cd {
+                            path: self.working_directory.join(&command_words[1]),
+                        },
+                        redir,
+                    )
                 }
                 "export" => {
                     let name = &command_words[1];
                     if let Some((name, value)) = name.split_once('=') {
-                        SpawnableProcess::builtin(BuiltinCommand::Export {
-                            key: name.to_string(),
-                            value: value.to_string(),
-                        })
+                        SpawnableProcess::builtin(
+                            BuiltinCommand::Export {
+                                key: name.to_string(),
+                                value: value.to_string(),
+                            },
+                            redir,
+                        )
                     } else {
-                        SpawnableProcess::builtin(BuiltinCommand::Export {
-                            key: name.to_string(),
-                            value: self.vars[name].clone(),
-                        })
+                        SpawnableProcess::builtin(
+                            BuiltinCommand::Export {
+                                key: name.to_string(),
+                                value: self.vars[name].clone(),
+                            },
+                            redir,
+                        )
                     }
                 }
                 "unset" => {
                     let name = &command_words[1];
-                    SpawnableProcess::builtin(BuiltinCommand::Unset {
-                        key: name.to_string(),
-                    })
+                    SpawnableProcess::builtin(
+                        BuiltinCommand::Unset {
+                            key: name.to_string(),
+                        },
+                        redir,
+                    )
                 }
-                "source" => SpawnableProcess::builtin(BuiltinCommand::Source {
-                    path: self.working_directory.join(&command_words[1]),
-                    cwd: self.working_directory.clone(),
-                }),
+                "source" => SpawnableProcess::builtin(
+                    BuiltinCommand::Source {
+                        path: self.working_directory.join(&command_words[1]),
+                        cwd: self.working_directory.clone(),
+                    },
+                    redir,
+                ),
                 #[cfg(unix)]
                 "run" => SpawnableProcess::reentrant(
                     self.env
@@ -651,10 +649,11 @@ impl ShellContext<'_, '_> {
                         },
                         colour_choice: self.config.colour_choice,
                     },
+                    redir,
                 ),
                 _ => {
                     if let Some(commands) = self.functions.get(&command_words[0]).cloned() {
-                        SpawnableProcess::function(commands, command_words)
+                        SpawnableProcess::function(commands, command_words, redir)
                     } else {
                         let mut command = Command::new(&command_words[0]);
                         command
@@ -662,14 +661,10 @@ impl ShellContext<'_, '_> {
                             .envs(&self.env)
                             .envs(env_remaps)
                             .current_dir(self.working_directory.clone());
-                        SpawnableProcess::process(command)
+                        SpawnableProcess::process(command, redir)
                     }
                 }
-            };
-            process.stdin = stdin;
-            process.stdout = stdout;
-            process.stderr = stderr;
-            process
+            }
         } else {
             //TODO: Evaluate lazily, to allow this method to take &self, and to restore correct behaviour.
             if let Some(ref output_stream) = self.config.output_stream {

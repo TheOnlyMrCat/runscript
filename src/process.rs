@@ -79,6 +79,7 @@ impl ProcessExit {
 #[derive(Debug)]
 pub struct FinishedProcess {
     pub status: ProcessExit,
+    //TODO: Get rid of these?
     pub stdout: Vec<u8>,
     pub stderr: Vec<u8>,
 }
@@ -339,9 +340,7 @@ impl From<Child> for WaitableProcess {
 
 pub struct SpawnableProcess<'a> {
     ty: SpawnableProcessType<'a>,
-    pub stdin: StdinRedirect,
-    pub stdout: StdoutRedirect,
-    pub stderr: StdoutRedirect,
+    redir: RedirectConfig,
 }
 
 pub enum SpawnableProcessType<'a> {
@@ -360,87 +359,90 @@ pub enum SpawnableProcessType<'a> {
 }
 
 impl SpawnableProcess<'_> {
-    pub fn new(ty: SpawnableProcessType<'_>) -> SpawnableProcess<'_> {
-        SpawnableProcess {
-            ty,
-            stdin: StdinRedirect::None,
-            stdout: StdoutRedirect::None,
-            stderr: StdoutRedirect::None,
-        }
+    pub fn new(ty: SpawnableProcessType<'_>, redir: RedirectConfig) -> SpawnableProcess<'_> {
+        SpawnableProcess { ty, redir }
     }
 
     pub fn empty_success() -> Self {
-        Self::new(SpawnableProcessType::Finished(FinishedProcess {
-            status: ProcessExit::Bool(true),
-            stdout: vec![],
-            stderr: vec![],
-        }))
+        Self::new(
+            SpawnableProcessType::Finished(FinishedProcess {
+                status: ProcessExit::Bool(true),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            RedirectConfig::default_bg(),
+        )
     }
 
     pub fn empty_error(error: CommandExecError) -> Self {
-        Self::new(SpawnableProcessType::Finished(FinishedProcess {
-            status: ProcessExit::ExecError(error),
-            stdout: vec![],
-            stderr: vec![],
-        }))
+        Self::new(
+            SpawnableProcessType::Finished(FinishedProcess {
+                status: ProcessExit::ExecError(error),
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            RedirectConfig::default_bg(),
+        )
     }
 
     pub fn empty_status(status: ProcessExit) -> Self {
-        Self::new(SpawnableProcessType::Finished(FinishedProcess {
-            status,
-            stdout: vec![],
-            stderr: vec![],
-        }))
+        Self::new(
+            SpawnableProcessType::Finished(FinishedProcess {
+                status,
+                stdout: vec![],
+                stderr: vec![],
+            }),
+            RedirectConfig::default_bg(),
+        )
     }
 
-    pub fn process(process: std::process::Command) -> Self {
-        Self::new(SpawnableProcessType::StdProcess(process))
+    pub fn process(process: std::process::Command, redir: RedirectConfig) -> Self {
+        Self::new(SpawnableProcessType::StdProcess(process), redir)
     }
 
-    pub fn builtin(builtin: BuiltinCommand) -> Self {
-        Self::new(SpawnableProcessType::Builtin(builtin))
+    pub fn builtin(builtin: BuiltinCommand, redir: RedirectConfig) -> Self {
+        Self::new(SpawnableProcessType::Builtin(builtin), redir)
     }
 
-    pub fn group(group: &[ast::Command]) -> SpawnableProcess<'_> {
-        Self::new(SpawnableProcessType::Group(group))
+    pub fn group(group: &[ast::Command], redir: RedirectConfig) -> SpawnableProcess<'_> {
+        Self::new(SpawnableProcessType::Group(group), redir)
     }
 
-    pub fn subshell(group: &[ast::Command]) -> SpawnableProcess<'_> {
-        Self::new(SpawnableProcessType::SubshellGroup(group))
+    pub fn subshell(group: &[ast::Command], redir: RedirectConfig) -> SpawnableProcess<'_> {
+        Self::new(SpawnableProcessType::SubshellGroup(group), redir)
     }
 
-    pub fn function(function: Arc<CompoundCommand>, args: Vec<String>) -> Self {
-        Self::new(SpawnableProcessType::Function(function, args))
+    pub fn function(
+        function: Arc<CompoundCommand>,
+        args: Vec<String>,
+        redir: RedirectConfig,
+    ) -> Self {
+        Self::new(SpawnableProcessType::Function(function, args), redir)
     }
 
     pub fn reentrant(
         env: Vec<(String, String)>,
         cwd: Option<PathBuf>,
         recursive_context: BaseExecContext,
+        redir: RedirectConfig,
     ) -> Self {
-        Self::new(SpawnableProcessType::Reentrant {
-            env,
-            cwd,
-            recursive_context,
-        })
+        Self::new(
+            SpawnableProcessType::Reentrant {
+                env,
+                cwd,
+                recursive_context,
+            },
+            redir,
+        )
     }
 
-    pub fn spawn(self, context: SpawnContext) -> WaitableProcess {
+    pub fn spawn(mut self, context: SpawnContext) -> WaitableProcess {
+        self.redir.apply_context(&context);
         match self.ty {
             SpawnableProcessType::StdProcess(mut cmd) => {
-                let resolved_stdin = match self.stdin {
-                    StdinRedirect::None | StdinRedirect::Inherit => context.stdin(),
-                    stdin => stdin,
-                };
-                let resolved_stdout = match self.stdout {
-                    stdout @ (StdoutRedirect::None | StdoutRedirect::Inherit) => {
-                        context.stdout().map(StdoutRedirect::Fd).unwrap_or(stdout)
-                    }
-                    stdout => stdout,
-                };
-                cmd.stdin(resolved_stdin)
-                    .stdout(resolved_stdout)
-                    .stderr(self.stderr);
+                cmd.stdin(self.redir.stdin)
+                    .stdout(self.redir.stdout)
+                    .stderr(self.redir.stderr);
                 let process = cmd.spawn().unwrap();
                 // if let StdinRedirect::Buffer(stdin_buffer) = self.stdin {
                 //     if let Some(mut child_stdin) = process.stdin.as_ref() {
@@ -459,26 +461,27 @@ impl SpawnableProcess<'_> {
             }
             SpawnableProcessType::Function(command, args) => match context {
                 SpawnContext::PipelineEnd { context, .. } => {
-                    context.exec_as_function(command, args)
+                    context.exec_as_function(command, args, self.redir)
                 }
                 SpawnContext::PipelineIntermediate { context, .. } => {
                     let mut context = context.clone();
-                    context.exec_as_function(command, args)
+                    context.exec_as_function(command, args, self.redir)
                 }
             },
             SpawnableProcessType::Group(commands) => match context {
-                SpawnContext::PipelineEnd { context, .. } => context.exec_command_group(commands),
-                SpawnContext::PipelineIntermediate { context, .. } => {
-                    let mut context = context.clone();
-                    context.exec_command_group(commands)
+                SpawnContext::PipelineEnd { context, .. } => {
+                    context.exec_command_group_with_default_redirects(commands, self.redir)
                 }
+                SpawnContext::PipelineIntermediate { context, .. } => context
+                    .clone()
+                    .exec_command_group_with_default_redirects(commands, self.redir),
             },
             SpawnableProcessType::SubshellGroup(commands) => {
                 let mut context = match context {
                     SpawnContext::PipelineEnd { context, .. } => context.clone(),
                     SpawnContext::PipelineIntermediate { context, .. } => context.clone(),
                 };
-                context.exec_command_group(commands)
+                context.exec_command_group_with_default_redirects(commands, self.redir)
             }
             SpawnableProcessType::Builtin(builtin) => builtin.spawn(context),
             SpawnableProcessType::Finished(process) => WaitableProcess::finished(process),
@@ -661,8 +664,46 @@ impl SpawnContext<'_, '_, '_> {
 }
 
 #[derive(Clone, Copy)]
+pub struct RedirectConfig {
+    pub stdin: StdinRedirect,
+    pub stdout: StdoutRedirect,
+    pub stderr: StdoutRedirect,
+}
+
+impl RedirectConfig {
+    pub fn default_fg() -> RedirectConfig {
+        RedirectConfig {
+            stdin: StdinRedirect::Inherit,
+            stdout: StdoutRedirect::Inherit,
+            stderr: StdoutRedirect::Inherit,
+        }
+    }
+
+    pub fn default_bg() -> RedirectConfig {
+        RedirectConfig {
+            stdin: StdinRedirect::Null,
+            stdout: StdoutRedirect::Null,
+            stderr: StdoutRedirect::Null,
+        }
+    }
+
+    fn apply_context(&mut self, context: &SpawnContext) {
+        self.stdin = match self.stdin {
+            StdinRedirect::Null | StdinRedirect::Inherit => context.stdin(),
+            stdin => stdin,
+        };
+        self.stdout = match self.stdout {
+            stdout @ (StdoutRedirect::Null | StdoutRedirect::Inherit) => {
+                context.stdout().map(StdoutRedirect::Fd).unwrap_or(stdout)
+            }
+            stdout => stdout,
+        };
+    }
+}
+
+#[derive(Clone, Copy)]
 pub enum StdinRedirect {
-    None,
+    Null,
     Inherit,
     #[cfg(unix)]
     Dup(std::os::unix::io::RawFd),
@@ -675,7 +716,7 @@ pub enum StdinRedirect {
 impl From<StdinRedirect> for Stdio {
     fn from(redir: StdinRedirect) -> Self {
         match redir {
-            StdinRedirect::None => Stdio::null(),
+            StdinRedirect::Null => Stdio::null(),
             StdinRedirect::Inherit => Stdio::inherit(),
             #[cfg(unix)]
             StdinRedirect::Dup(_) => todo!(),
@@ -709,8 +750,9 @@ where
     }
 }
 
+#[derive(Clone, Copy)]
 pub enum StdoutRedirect {
-    None,
+    Null,
     Inherit,
     #[cfg(unix)]
     Dup(std::os::unix::io::RawFd),
@@ -723,7 +765,7 @@ pub enum StdoutRedirect {
 impl From<StdoutRedirect> for Stdio {
     fn from(redir: StdoutRedirect) -> Self {
         match redir {
-            StdoutRedirect::None => Stdio::null(),
+            StdoutRedirect::Null => Stdio::null(),
             StdoutRedirect::Inherit => Stdio::inherit(),
             #[cfg(unix)]
             StdoutRedirect::Dup(_) => todo!(),
