@@ -491,33 +491,11 @@ impl SpawnableProcess<'_> {
                 cwd,
                 recursive_context,
             } => {
-                let mut child_stdin = None;
-                let stdin_fd = match self.stdin {
-                    StdinRedirect::None => None,
-                    StdinRedirect::Inherit => Some(0),
-                    StdinRedirect::Dup(fd) | StdinRedirect::Fd(fd) => Some(fd),
-                };
-                let mut child_stdout = None;
-                let stdout_fd = match self.stdout {
-                    StdoutRedirect::None => None,
-                    StdoutRedirect::Inherit => Some(1),
-                    StdoutRedirect::Dup(fd) | StdoutRedirect::Fd(fd) => Some(fd),
-                };
-                let mut child_stderr = None;
-                let stderr_fd = match self.stderr {
-                    StdoutRedirect::None => None,
-                    StdoutRedirect::Inherit => Some(2),
-                    StdoutRedirect::Dup(fd) | StdoutRedirect::Fd(fd) => Some(fd),
-                };
-
                 use nix::unistd::ForkResult;
                 match unsafe { nix::unistd::fork() } {
-                    Ok(ForkResult::Parent { child }) => WaitableProcess::reentrant_nightmare(
-                        child,
-                        child_stdin,
-                        child_stdout,
-                        child_stderr,
-                    ),
+                    Ok(ForkResult::Parent { child }) => {
+                        WaitableProcess::reentrant_nightmare(child, None, None, None)
+                    }
                     Ok(ForkResult::Child) => {
                         // If any of this setup fails, exit immediately with the OSERR exitcode.
                         fn bail() -> ! {
@@ -527,13 +505,82 @@ impl SpawnableProcess<'_> {
                             bail()
                         }
 
+                        cfg_if::cfg_if! {
+                            if #[cfg(target_os = "fuchsia")] {
+                                // fuchsia doesn't have /dev/null
+                            } else if #[cfg(target_os = "redox")] {
+                                const DEV_NULL: &str = "null:\0";
+                            } else if #[cfg(target_os = "vxworks")] {
+                                const DEV_NULL: &str = "/null\0";
+                            } else {
+                                const DEV_NULL: &str = "/dev/null\0";
+                            }
+                        }
+
                         // Set up standard I/O streams
-                        // (nix::unistd::dup2(stdin_fd.unwrap(), 0).unwrap_or_else(bail_a) == -1)
-                        //     .then(bail);
-                        // (nix::unistd::dup2(stdout_fd.unwrap(), 1).unwrap_or_else(bail_a) == -1)
-                        //     .then(bail);
-                        // (nix::unistd::dup2(stderr_fd.unwrap(), 2).unwrap_or_else(bail_a) == -1)
-                        //     .then(bail);
+                        match self.redir.stdin {
+                            StdinRedirect::Null => {
+                                (nix::unistd::dup2(
+                                    nix::fcntl::open(
+                                        DEV_NULL,
+                                        nix::fcntl::OFlag::O_WRONLY | nix::fcntl::OFlag::O_CLOEXEC,
+                                        nix::sys::stat::Mode::from_bits_truncate(0o666),
+                                    )
+                                    .unwrap_or_else(bail_a),
+                                    0,
+                                )
+                                .unwrap_or_else(bail_a)
+                                    == -1)
+                                    .then(bail);
+                            }
+                            StdinRedirect::Inherit => {} // Nothing to do
+                            StdinRedirect::Fd(fd) => {
+                                (nix::unistd::dup2(fd, 0).unwrap_or_else(bail_a) == -1).then(bail);
+                            }
+                            StdinRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                        }
+                        match self.redir.stdout {
+                            StdoutRedirect::Null => {
+                                (nix::unistd::dup2(
+                                    nix::fcntl::open(
+                                        DEV_NULL,
+                                        nix::fcntl::OFlag::O_WRONLY | nix::fcntl::OFlag::O_CLOEXEC,
+                                        nix::sys::stat::Mode::from_bits_truncate(0o666),
+                                    )
+                                    .unwrap_or_else(bail_a),
+                                    1,
+                                )
+                                .unwrap_or_else(bail_a)
+                                    == -1)
+                                    .then(bail);
+                            }
+                            StdoutRedirect::Inherit => {} // Nothing to do
+                            StdoutRedirect::Fd(fd) => {
+                                (nix::unistd::dup2(fd, 1).unwrap_or_else(bail_a) == -1).then(bail);
+                            }
+                            StdoutRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                        }
+                        match self.redir.stderr {
+                            StdoutRedirect::Null => {
+                                (nix::unistd::dup2(
+                                    nix::fcntl::open(
+                                        DEV_NULL,
+                                        nix::fcntl::OFlag::O_WRONLY | nix::fcntl::OFlag::O_CLOEXEC,
+                                        nix::sys::stat::Mode::from_bits_truncate(0o666),
+                                    )
+                                    .unwrap_or_else(bail_a),
+                                    2,
+                                )
+                                .unwrap_or_else(bail_a)
+                                    == -1)
+                                    .then(bail);
+                            }
+                            StdoutRedirect::Inherit => {} // Nothing to do
+                            StdoutRedirect::Fd(fd) => {
+                                (nix::unistd::dup2(fd, 2).unwrap_or_else(bail_a) == -1).then(bail);
+                            }
+                            StdoutRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                        }
 
                         // Set up remainder of environment
                         if let Some(cwd) = cwd {
