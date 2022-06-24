@@ -20,7 +20,6 @@ pub enum CommandExecError {
     UnhandledOsString { err: Utf8Error },
     BadRedirect { err: std::io::Error },
     UnsupportedRedirect,
-    UnsupportedIntermediatePipelineCommand,
 }
 
 #[derive(Debug)]
