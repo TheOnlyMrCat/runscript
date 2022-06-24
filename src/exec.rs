@@ -16,6 +16,7 @@ use crate::parser::ast::{
     PipeableCommand, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord,
     Word,
 };
+use crate::ptr::Unique;
 use itertools::Itertools;
 
 use crate::out;
@@ -164,14 +165,117 @@ impl ShellContext<'_, '_> {
     ) -> WaitableProcess {
         self.function_args.push(args);
         //TODO: input redirection
-        let process =
-            self.eval_compound_command(&commands, redir)
-                .spawn(SpawnContext::PipelineEnd {
-                    context: self,
-                    input: StdinRedirect::Inherit,
-                });
+        let process = self.exec_compound_command(&commands, redir);
         self.function_args.pop();
         process
+    }
+
+    pub fn exec_compound_command(
+        &mut self,
+        command: &CompoundCommand,
+        redir: RedirectConfig,
+    ) -> WaitableProcess {
+        Self::exec_compound_command_unique(Unique::Borrowed(self), command, redir)
+    }
+
+    pub fn exec_compound_command_unique(
+        mut this: Unique<Self>,
+        command: &CompoundCommand,
+        redir: RedirectConfig,
+    ) -> WaitableProcess {
+        match &command.kind {
+            CompoundCommandKind::Brace(commands) => {
+                this.exec_command_group_with_default_redirects(commands, redir)
+            }
+            CompoundCommandKind::Subshell(commands) => {
+                this.exec_command_group_with_default_redirects(commands, redir)
+            }
+            CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
+                while this.exec_command_group(guard).wait().status.success() {
+                    this.exec_command_group(body).wait();
+                }
+
+                WaitableProcess::empty_success()
+            }
+            CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
+                while !this.exec_command_group(guard).wait().status.success() {
+                    this.exec_command_group(body).wait();
+                }
+
+                WaitableProcess::empty_success()
+            }
+            CompoundCommandKind::If {
+                conditionals,
+                else_branch,
+            } => {
+                let mut branch = None;
+
+                for GuardBodyPair { guard, body } in conditionals {
+                    if this.exec_command_group(guard).wait().status.success() {
+                        branch = Some(&**body);
+                        break;
+                    }
+                }
+
+                this.exec_command_group(
+                    branch.unwrap_or_else(|| else_branch.as_deref().unwrap_or(&[])),
+                )
+            }
+            CompoundCommandKind::For { var, words, body } => {
+                let mut last_proc = WaitableProcess::empty_success();
+                for word in match words
+                    .as_ref()
+                    .map(|words| -> Result<_, _> {
+                        words
+                            .iter()
+                            .map(|word| this.evaluate_tl_word(word))
+                            .flatten_ok()
+                            .collect::<Result<Vec<_>, _>>()
+                    })
+                    .transpose()
+                {
+                    Ok(words) => words.unwrap_or_else(|| this.config.positional_args.clone()),
+                    Err(status) => {
+                        return WaitableProcess::empty_status(status);
+                    }
+                } {
+                    this.vars.insert(var.clone(), word.clone());
+                    last_proc = this.exec_command_group(body);
+                }
+
+                last_proc
+            }
+            CompoundCommandKind::Case { word, arms } => {
+                let mut last_proc = WaitableProcess::empty_success();
+                let word = match this.evaluate_tl_word(word) {
+                    Ok(word) => word,
+                    Err(status) => {
+                        return WaitableProcess::empty_status(status);
+                    }
+                };
+                for PatternBodyPair { patterns, body } in arms {
+                    let mut pattern_matches = false;
+                    for pattern in patterns {
+                        let pattern = match this.evaluate_tl_word(pattern) {
+                            Ok(pattern) => pattern,
+                            Err(status) => {
+                                return WaitableProcess::empty_status(status);
+                            }
+                        };
+                        if pattern == word {
+                            pattern_matches = true;
+                        }
+                    }
+
+                    if pattern_matches {
+                        last_proc = this.exec_command_group(body);
+                        break;
+                    }
+                }
+
+                last_proc
+            }
+        }
     }
 
     fn exec_andor_list(&mut self, command: &AndOrList, redir: RedirectConfig) -> WaitableProcess {
@@ -252,111 +356,11 @@ impl ShellContext<'_, '_> {
     ) -> SpawnableProcess<'a> {
         match command {
             PipeableCommand::Simple(command) => self.eval_simple_command(command, redir),
-            PipeableCommand::Compound(command) => self.eval_compound_command(command, redir),
+            PipeableCommand::Compound(command) => SpawnableProcess::compound(command, redir),
             PipeableCommand::FunctionDef(name, body) => {
                 //TODO: Delay registration with context
                 self.functions.insert(name.clone(), body.clone());
                 SpawnableProcess::empty_success()
-            }
-        }
-    }
-
-    fn eval_compound_command<'a>(
-        &mut self,
-        command: &'a CompoundCommand,
-        redir: RedirectConfig,
-    ) -> SpawnableProcess<'a> {
-        match &command.kind {
-            CompoundCommandKind::Brace(commands) => SpawnableProcess::group(commands, redir),
-            CompoundCommandKind::Subshell(commands) => SpawnableProcess::subshell(commands, redir),
-            //TODO: Evaluate lazily!
-            CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
-                while self.exec_command_group(guard).wait().status.success() {
-                    self.exec_command_group(body).wait();
-                }
-
-                SpawnableProcess::empty_success()
-            }
-            CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
-                while !self.exec_command_group(guard).wait().status.success() {
-                    self.exec_command_group(body).wait();
-                }
-
-                SpawnableProcess::empty_success()
-            }
-            CompoundCommandKind::If {
-                conditionals,
-                else_branch,
-            } => {
-                let mut branch = None;
-
-                for GuardBodyPair { guard, body } in conditionals {
-                    if self.exec_command_group(guard).wait().status.success() {
-                        branch = Some(SpawnableProcess::group(body, redir));
-                        break;
-                    }
-                }
-
-                branch.unwrap_or_else(|| {
-                    else_branch
-                        .as_deref()
-                        .map(|body| SpawnableProcess::group(body, redir))
-                        .unwrap_or_else(SpawnableProcess::empty_success)
-                })
-            }
-            CompoundCommandKind::For { var, words, body } => {
-                let mut last_proc = WaitableProcess::empty_success();
-                for word in match words
-                    .as_ref()
-                    .map(|words| -> Result<_, _> {
-                        words
-                            .iter()
-                            .map(|word| self.evaluate_tl_word(word))
-                            .flatten_ok()
-                            .collect::<Result<Vec<_>, _>>()
-                    })
-                    .transpose()
-                {
-                    Ok(words) => words.unwrap_or_else(|| self.config.positional_args.clone()),
-                    Err(status) => {
-                        return SpawnableProcess::empty_status(status);
-                    }
-                } {
-                    self.vars.insert(var.clone(), word.clone());
-                    last_proc = self.exec_command_group(body);
-                }
-
-                todo!()
-            }
-            CompoundCommandKind::Case { word, arms } => {
-                let mut last_proc = WaitableProcess::empty_success();
-                let word = match self.evaluate_tl_word(word) {
-                    Ok(word) => word,
-                    Err(status) => {
-                        return SpawnableProcess::empty_status(status);
-                    }
-                };
-                for PatternBodyPair { patterns, body } in arms {
-                    let mut pattern_matches = false;
-                    for pattern in patterns {
-                        let pattern = match self.evaluate_tl_word(pattern) {
-                            Ok(pattern) => pattern,
-                            Err(status) => {
-                                return SpawnableProcess::empty_status(status);
-                            }
-                        };
-                        if pattern == word {
-                            pattern_matches = true;
-                        }
-                    }
-
-                    if pattern_matches {
-                        last_proc = self.exec_command_group(body);
-                        break;
-                    }
-                }
-
-                todo!()
             }
         }
     }

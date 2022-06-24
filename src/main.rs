@@ -16,6 +16,7 @@ mod exec;
 mod out;
 mod parser;
 mod process;
+mod ptr;
 mod script;
 
 use script::{Overrideable, Runscript, ScriptExecution, Target};

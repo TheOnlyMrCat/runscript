@@ -8,8 +8,9 @@ use std::sync::Arc;
 use glob::PatternError;
 
 use crate::exec::{BaseExecContext, ShellContext};
-use crate::parser::ast::{self, CompoundCommand};
+use crate::parser::ast::CompoundCommand;
 use crate::parser::RunscriptSource;
+use crate::ptr::Ref;
 
 #[derive(Debug)]
 pub enum CommandExecError {
@@ -346,8 +347,7 @@ pub struct SpawnableProcess<'a> {
 pub enum SpawnableProcessType<'a> {
     StdProcess(std::process::Command),
     Builtin(BuiltinCommand),
-    Group(&'a [ast::Command]),
-    SubshellGroup(&'a [ast::Command]),
+    Compound(&'a CompoundCommand),
     Function(Arc<CompoundCommand>, Vec<String>),
     Finished(FinishedProcess),
     #[cfg(unix)]
@@ -404,12 +404,8 @@ impl SpawnableProcess<'_> {
         Self::new(SpawnableProcessType::Builtin(builtin), redir)
     }
 
-    pub fn group(group: &[ast::Command], redir: RedirectConfig) -> SpawnableProcess<'_> {
-        Self::new(SpawnableProcessType::Group(group), redir)
-    }
-
-    pub fn subshell(group: &[ast::Command], redir: RedirectConfig) -> SpawnableProcess<'_> {
-        Self::new(SpawnableProcessType::SubshellGroup(group), redir)
+    pub fn compound(compound: &CompoundCommand, redir: RedirectConfig) -> SpawnableProcess<'_> {
+        Self::new(SpawnableProcessType::Compound(compound), redir)
     }
 
     pub fn function(
@@ -436,7 +432,7 @@ impl SpawnableProcess<'_> {
         )
     }
 
-    pub fn spawn(mut self, context: SpawnContext) -> WaitableProcess {
+    pub fn spawn(mut self, mut context: SpawnContext) -> WaitableProcess {
         self.redir.apply_context(&context);
         match self.ty {
             SpawnableProcessType::StdProcess(mut cmd) => {
@@ -459,30 +455,15 @@ impl SpawnableProcess<'_> {
                 // }
                 WaitableProcess::new(process)
             }
-            SpawnableProcessType::Function(command, args) => match context {
-                SpawnContext::PipelineEnd { context, .. } => {
-                    context.exec_as_function(command, args, self.redir)
-                }
-                SpawnContext::PipelineIntermediate { context, .. } => {
-                    let mut context = context.clone();
-                    context.exec_as_function(command, args, self.redir)
-                }
-            },
-            SpawnableProcessType::Group(commands) => match context {
-                SpawnContext::PipelineEnd { context, .. } => {
-                    context.exec_command_group_with_default_redirects(commands, self.redir)
-                }
-                SpawnContext::PipelineIntermediate { context, .. } => context
-                    .clone()
-                    .exec_command_group_with_default_redirects(commands, self.redir),
-            },
-            SpawnableProcessType::SubshellGroup(commands) => {
-                let mut context = match context {
-                    SpawnContext::PipelineEnd { context, .. } => context.clone(),
-                    SpawnContext::PipelineIntermediate { context, .. } => context.clone(),
-                };
-                context.exec_command_group_with_default_redirects(commands, self.redir)
+            SpawnableProcessType::Function(command, args) => {
+                Ref::into_unique(context.shell_context())
+                    .exec_as_function(command, args, self.redir)
             }
+            SpawnableProcessType::Compound(command) => ShellContext::exec_compound_command_unique(
+                Ref::into_unique(context.shell_context()),
+                command,
+                self.redir,
+            ),
             SpawnableProcessType::Builtin(builtin) => builtin.spawn(context),
             SpawnableProcessType::Finished(process) => WaitableProcess::finished(process),
             #[cfg(unix)]
@@ -625,7 +606,7 @@ pub enum BuiltinCommand {
 }
 
 impl BuiltinCommand {
-    fn spawn(self, context: SpawnContext) -> WaitableProcess {
+    fn spawn(self, mut context: SpawnContext) -> WaitableProcess {
         match self {
             BuiltinCommand::True => WaitableProcess::empty_success(),
             BuiltinCommand::False => WaitableProcess::empty_status(ProcessExit::Bool(false)),
@@ -665,14 +646,7 @@ impl BuiltinCommand {
                 };
 
                 let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
-                match context {
-                    SpawnContext::PipelineEnd { context, .. } => {
-                        context.exec_command_group(&shell_file)
-                    }
-                    SpawnContext::PipelineIntermediate { context, .. } => {
-                        context.clone().exec_command_group(&shell_file)
-                    }
-                }
+                Ref::into_unique(context.shell_context()).exec_command_group(&shell_file)
             }
         }
     }
@@ -693,7 +667,7 @@ pub enum SpawnContext<'a, 'ctx_a, 'ctx_b> {
     },
 }
 
-impl SpawnContext<'_, '_, '_> {
+impl<'a, 'ctx_a, 'ctx_b> SpawnContext<'a, 'ctx_a, 'ctx_b> {
     fn stdin(&self) -> StdinRedirect {
         match self {
             SpawnContext::PipelineIntermediate { input, .. } => *input,
@@ -706,6 +680,13 @@ impl SpawnContext<'_, '_, '_> {
         match self {
             SpawnContext::PipelineIntermediate { output, .. } => *output,
             SpawnContext::PipelineEnd { .. } => None,
+        }
+    }
+
+    fn shell_context<'b>(&'b mut self) -> Ref<'b, ShellContext<'ctx_a, 'ctx_b>> {
+        match self {
+            SpawnContext::PipelineIntermediate { context, .. } => (*context).into(),
+            SpawnContext::PipelineEnd { context, .. } => Ref::Unique(*context),
         }
     }
 }
