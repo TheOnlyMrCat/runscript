@@ -288,6 +288,7 @@ name = "runscript"
 version = "1.0.0-beta.6"
 dependencies = [
  "atty",
+ "cfg-if",
  "clap",
  "exitcode",
  "glob",
