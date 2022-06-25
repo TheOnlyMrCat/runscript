@@ -81,7 +81,7 @@ pub struct ShellContext<'a, 'b> {
     /// Exported varables
     pub env: HashMap<String, String>,
     /// Function definitions
-    functions: HashMap<String, Arc<CompoundCommand>>,
+    pub functions: HashMap<String, Arc<CompoundCommand>>,
     /// Stack of function arguments
     function_args: Vec<Vec<String>>,
     /// PID of most recent job
@@ -375,7 +375,7 @@ impl ShellContext<'_, '_> {
     }
 
     fn eval_pipeable_command<'a>(
-        &mut self,
+        &self,
         command: &'a PipeableCommand,
         redir: RedirectConfig,
     ) -> SpawnableProcess<'a> {
@@ -383,15 +383,13 @@ impl ShellContext<'_, '_> {
             PipeableCommand::Simple(command) => self.eval_simple_command(command, redir),
             PipeableCommand::Compound(command) => SpawnableProcess::compound(command, redir),
             PipeableCommand::FunctionDef(name, body) => {
-                //TODO: Delay registration with context
-                self.functions.insert(name.clone(), body.clone());
-                SpawnableProcess::empty_success()
+                SpawnableProcess::fn_def(name.clone(), body.clone())
             }
         }
     }
 
     fn eval_simple_command<'a>(
-        &mut self,
+        &self,
         command: &'a SimpleCommand,
         mut redir: RedirectConfig,
     ) -> SpawnableProcess<'a> {

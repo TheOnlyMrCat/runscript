@@ -349,6 +349,7 @@ pub enum SpawnableProcessType<'a> {
     StdProcess(std::process::Command),
     Builtin(BuiltinCommand),
     Compound(&'a CompoundCommand),
+    FnDef(String, Arc<CompoundCommand>),
     Function(Arc<CompoundCommand>, Vec<String>),
     Remaps(Vec<(String, String)>),
     Finished(FinishedProcess),
@@ -449,16 +450,20 @@ impl SpawnableProcess<'_> {
     pub fn remaps(env: Vec<(String, String)>, printables: Vec<PrintableEnvRemap>) -> Self {
         Self::new(
             SpawnableProcessType::Remaps(env),
-            RedirectConfig {
-                stdin: StdinRedirect::Null,
-                stdout: StdoutRedirect::Null,
-                stderr: StdoutRedirect::Null,
-            },
+            RedirectConfig::default_bg(),
             Some(Printable {
                 command: None,
                 env_remaps: printables,
                 redirects: Vec::new(),
             }),
+        )
+    }
+
+    pub fn fn_def(name: String, body: Arc<CompoundCommand>) -> Self {
+        Self::new(
+            SpawnableProcessType::FnDef(name, body),
+            RedirectConfig::default_bg(),
+            None,
         )
     }
 
@@ -517,6 +522,12 @@ impl SpawnableProcess<'_> {
                 //     }
                 // }
                 WaitableProcess::new(process)
+            }
+            SpawnableProcessType::FnDef(name, body) => {
+                Ref::into_unique(context.shell_context())
+                    .functions
+                    .insert(name, body);
+                WaitableProcess::empty_success()
             }
             SpawnableProcessType::Function(command, args) => {
                 Ref::into_unique(context.shell_context())
