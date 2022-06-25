@@ -19,7 +19,10 @@ use crate::parser::ast::{
 use crate::ptr::Unique;
 use itertools::Itertools;
 
-use crate::out;
+use crate::out::{
+    self, PrintableCommand, PrintableComplexWord, PrintableRedirect, PrintableSimpleWord,
+    PrintableWord,
+};
 use glob::{glob_with, MatchOptions, Pattern};
 
 #[derive(Clone)]
@@ -58,14 +61,14 @@ pub struct BaseExecContext {
 }
 
 pub enum EvaluatedRedirect {
-    Read(Option<u16>, Vec<String>),
-    Write(Option<u16>, Vec<String>),
-    ReadWrite(Option<u16>, Vec<String>),
-    Append(Option<u16>, Vec<String>),
-    Clobber(Option<u16>, Vec<String>),
+    Read(Option<u16>, String),
+    Write(Option<u16>, String),
+    ReadWrite(Option<u16>, String),
+    Append(Option<u16>, String),
+    Clobber(Option<u16>, String),
     Heredoc(Option<u16>, Vec<String>),
-    DupRead(Option<u16>, Vec<String>),
-    DupWrite(Option<u16>, Vec<String>),
+    DupRead(Option<u16>, String),
+    DupWrite(Option<u16>, String),
 }
 
 #[derive(Debug, Clone)]
@@ -228,7 +231,7 @@ impl ShellContext<'_, '_> {
                     .map(|words| -> Result<_, _> {
                         words
                             .iter()
-                            .map(|word| this.evaluate_tl_word(word))
+                            .map(|word| this.evaluate_tl_word(word).map(|(v, _)| v))
                             .flatten_ok()
                             .collect::<Result<Vec<_>, _>>()
                     })
@@ -248,7 +251,7 @@ impl ShellContext<'_, '_> {
             CompoundCommandKind::Case { word, arms } => {
                 let mut last_proc = WaitableProcess::empty_success();
                 let word = match this.evaluate_tl_word(word) {
-                    Ok(word) => word,
+                    Ok(word) => word.0,
                     Err(status) => {
                         return WaitableProcess::empty_status(status);
                     }
@@ -257,7 +260,7 @@ impl ShellContext<'_, '_> {
                     let mut pattern_matches = false;
                     for pattern in patterns {
                         let pattern = match this.evaluate_tl_word(pattern) {
-                            Ok(pattern) => pattern,
+                            Ok(pattern) => pattern.0,
                             Err(status) => {
                                 return WaitableProcess::empty_status(status);
                             }
@@ -322,6 +325,19 @@ impl ShellContext<'_, '_> {
             }
         };
         let last_command = commands.len() - 1;
+        if let Some(output_stream) = &self.config.output_stream {
+            let mut lock = output_stream.lock();
+            //TODO: Proper error handling here?
+            write!(lock, "> ").unwrap();
+            for (i, command) in commands.iter().enumerate() {
+                command.print_to(&mut lock).unwrap();
+                if i == last_command {
+                    writeln!(lock).unwrap();
+                } else {
+                    write!(lock, " | ").unwrap();
+                }
+            }
+        }
         let mut next_input = redir.stdin;
         for (i, command) in commands.into_iter().enumerate() {
             if i == last_command {
@@ -385,7 +401,7 @@ impl ShellContext<'_, '_> {
                         .map(|word| {
                             (
                                 key.clone(),
-                                word.map(|words| words.join(" ")).unwrap_or_default(),
+                                word.map(|(words, _)| words.join(" ")).unwrap_or_default(),
                             )
                         }),
                 ),
@@ -400,7 +416,7 @@ impl ShellContext<'_, '_> {
             Err(status) => return SpawnableProcess::empty_status(status),
         };
 
-        let command_words = match command
+        let (command_words, printable_words): (Vec<_>, Vec<_>) = match command
             .redirects_or_cmd_words
             .iter()
             .filter_map(|r| match r {
@@ -412,7 +428,7 @@ impl ShellContext<'_, '_> {
             })
             .collect::<Result<Vec<_>, _>>()
         {
-            Ok(words) => words,
+            Ok(words) => words.into_iter().unzip(),
             Err(status) => return SpawnableProcess::empty_status(status),
         };
 
@@ -423,11 +439,12 @@ impl ShellContext<'_, '_> {
                     macro_rules! map_redirect {
                         ($($t:ident),*) => {
                             match redirect {
-                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word)?),)*
+                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word)?.0.join(" ")),)*
+                                Redirect::Heredoc(fd, word) => EvaluatedRedirect::Heredoc(*fd, self.evaluate_tl_word(word)?.0)
                             }
                         }
                     }
-                    Ok(map_redirect!(Read, Write, ReadWrite, Append, Clobber, Heredoc, DupRead, DupWrite))
+                    Ok(map_redirect!(Read, Write, ReadWrite, Append, Clobber, DupRead, DupWrite))
                 })
                 .collect::<Result<Vec<_>, _>>()
             {
@@ -435,25 +452,25 @@ impl ShellContext<'_, '_> {
                 Err(status) => return SpawnableProcess::empty_status(status),
             };
 
-            if let Some(ref output_stream) = self.config.output_stream {
-                out::command_prompt(
-                    output_stream,
-                    command,
-                    &env_remaps,
-                    &redirects,
-                    &command_words,
-                );
-            }
-
-            //TODO: I don't think flatten()ing is correct. The internal Vec<String>s should instead be joined.
             let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
+            let (command_name, arguments) = {
+                let mut printable_words = printable_words;
+                printable_words.remove(0);
+                // No panicking possible, because !command_words.is_empty()
+                (command_words.first().unwrap().clone(), printable_words)
+            };
+            let printable_command = PrintableCommand {
+                command_name,
+                arguments,
+                redirects: vec![], //TODO!
+            };
 
             for redirect in redirects {
                 match redirect {
                     EvaluatedRedirect::Read(fd, word) => {
                         let file = match OpenOptions::new()
                             .read(true)
-                            .open(self.working_directory.clone().join(word.join(" ")))
+                            .open(self.working_directory.clone().join(word))
                         {
                             Ok(file) => file,
                             Err(err) => {
@@ -473,7 +490,7 @@ impl ShellContext<'_, '_> {
                         let file = match OpenOptions::new()
                             .write(true)
                             .create(true)
-                            .open(self.working_directory.clone().join(word.join(" ")))
+                            .open(self.working_directory.clone().join(word))
                         {
                             Ok(file) => file,
                             Err(err) => {
@@ -494,7 +511,7 @@ impl ShellContext<'_, '_> {
                             .read(true)
                             .write(true)
                             .create(true)
-                            .open(self.working_directory.clone().join(word.join(" ")))
+                            .open(self.working_directory.clone().join(word))
                         {
                             Ok(file) => file,
                             Err(err) => {
@@ -515,7 +532,7 @@ impl ShellContext<'_, '_> {
                             .write(true)
                             .append(true)
                             .create(true)
-                            .open(self.working_directory.clone().join(word.join(" ")))
+                            .open(self.working_directory.clone().join(word))
                         {
                             Ok(file) => file,
                             Err(err) => {
@@ -535,7 +552,7 @@ impl ShellContext<'_, '_> {
                         let file = match OpenOptions::new()
                             .write(true)
                             .create(true)
-                            .open(self.working_directory.clone().join(word.join(" ")))
+                            .open(self.working_directory.clone().join(word))
                         {
                             Ok(file) => file,
                             Err(err) => {
@@ -587,10 +604,16 @@ impl ShellContext<'_, '_> {
             }
 
             match command_words[0].as_str() {
-                ":" | "true" => SpawnableProcess::builtin(BuiltinCommand::True, redir),
-                "false" => SpawnableProcess::builtin(BuiltinCommand::False, redir),
+                ":" | "true" => {
+                    SpawnableProcess::builtin(BuiltinCommand::True, redir, printable_command)
+                }
+                "false" => {
+                    SpawnableProcess::builtin(BuiltinCommand::False, redir, printable_command)
+                }
                 #[cfg(feature = "dev-panic")]
-                "__run_panic" => SpawnableProcess::builtin(BuiltinCommand::Panic, redir),
+                "__run_panic" => {
+                    SpawnableProcess::builtin(BuiltinCommand::Panic, redir, printable_command)
+                }
                 "cd" => {
                     //TODO: Extended cd options
                     SpawnableProcess::builtin(
@@ -598,6 +621,7 @@ impl ShellContext<'_, '_> {
                             path: self.working_directory.join(&command_words[1]),
                         },
                         redir,
+                        printable_command,
                     )
                 }
                 "export" => {
@@ -609,6 +633,7 @@ impl ShellContext<'_, '_> {
                                 value: value.to_string(),
                             },
                             redir,
+                            printable_command,
                         )
                     } else {
                         SpawnableProcess::builtin(
@@ -617,6 +642,7 @@ impl ShellContext<'_, '_> {
                                 value: self.vars[name].clone(),
                             },
                             redir,
+                            printable_command,
                         )
                     }
                 }
@@ -627,6 +653,7 @@ impl ShellContext<'_, '_> {
                             key: name.to_string(),
                         },
                         redir,
+                        printable_command,
                     )
                 }
                 "source" => SpawnableProcess::builtin(
@@ -635,6 +662,7 @@ impl ShellContext<'_, '_> {
                         cwd: self.working_directory.clone(),
                     },
                     redir,
+                    printable_command,
                 ),
                 #[cfg(unix)]
                 "run" => SpawnableProcess::reentrant(
@@ -654,10 +682,16 @@ impl ShellContext<'_, '_> {
                         colour_choice: self.config.colour_choice,
                     },
                     redir,
+                    printable_command,
                 ),
                 _ => {
                     if let Some(commands) = self.functions.get(&command_words[0]).cloned() {
-                        SpawnableProcess::function(commands, command_words, redir)
+                        SpawnableProcess::function(
+                            commands,
+                            command_words,
+                            redir,
+                            printable_command,
+                        )
                     } else {
                         let mut command = Command::new(&command_words[0]);
                         command
@@ -665,14 +699,14 @@ impl ShellContext<'_, '_> {
                             .envs(&self.env)
                             .envs(env_remaps)
                             .current_dir(self.working_directory.clone());
-                        SpawnableProcess::process(command, redir)
+                        SpawnableProcess::process(command, redir, printable_command)
                     }
                 }
             }
         } else {
             //TODO: Evaluate lazily, to allow this method to take &self, and to restore correct behaviour.
             if let Some(ref output_stream) = self.config.output_stream {
-                out::env_remaps(output_stream, &env_remaps);
+                out::env_remaps(output_stream, &env_remaps).unwrap();
             }
 
             self.vars.reserve(env_remaps.len());
@@ -684,13 +718,18 @@ impl ShellContext<'_, '_> {
         }
     }
 
-    fn evaluate_tl_word(&self, word: &ComplexWord) -> Result<Vec<String>, ProcessExit> {
+    fn evaluate_tl_word(
+        &self,
+        word: &ComplexWord,
+    ) -> Result<(Vec<String>, PrintableComplexWord), ProcessExit> {
         match word {
             ComplexWord::Concat(words) => {
-                let words = words
+                let (words, printable_words): (Vec<_>, Vec<_>) = words
                     .iter()
                     .map(|w| self.evaluate_word(w))
-                    .collect::<Result<Vec<_>, _>>()?;
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .unzip();
                 let is_glob = words.iter().any(|w| !matches!(w, GlobPart::Words(_)));
                 if is_glob {
                     let working_dir_path = {
@@ -735,88 +774,189 @@ impl ShellContext<'_, '_> {
                             glob: stringified_glob,
                         }))
                     } else {
-                        Ok(matches)
+                        Ok((
+                            matches.clone(),
+                            PrintableComplexWord::GlobPattern {
+                                glob_string: printable_words,
+                                matches,
+                            },
+                        ))
                     }
                 } else {
-                    Ok(vec![words
-                        .into_iter()
-                        .flat_map(GlobPart::into_string)
-                        .join("")])
+                    Ok((
+                        vec![words.into_iter().flat_map(GlobPart::into_string).join("")],
+                        PrintableComplexWord::Words(printable_words),
+                    ))
                 }
             }
-            ComplexWord::Single(word) => self.evaluate_word(word).map(GlobPart::into_string),
+            ComplexWord::Single(word) => self.evaluate_word(word).map(|(glob, printable)| {
+                (
+                    glob.into_string(),
+                    PrintableComplexWord::Words(vec![printable]),
+                )
+            }),
         }
     }
 
-    fn evaluate_word(&self, word: &Word) -> Result<GlobPart, ProcessExit> {
+    fn evaluate_word(&self, word: &Word) -> Result<(GlobPart, PrintableWord), ProcessExit> {
         match word {
-            Word::SingleQuoted(literal) => Ok(vec![literal.clone()].into()),
-            Word::DoubleQuoted(words) => Ok(vec![words
-                .iter()
-                .map(|w| self.evaluate_simple_word(w).map(GlobPart::into_string))
-                .flatten_ok()
-                .collect::<Result<String, _>>()?]
-            .into()),
-            Word::Simple(word) => self.evaluate_simple_word(word),
+            Word::SingleQuoted(literal) => Ok((
+                vec![literal.clone()].into(),
+                PrintableWord::SingleQuoted(literal.clone()),
+            )),
+            Word::DoubleQuoted(words) => {
+                let (words, printables): (Vec<_>, Vec<_>) = words
+                    .iter()
+                    .map(|w| {
+                        self.evaluate_simple_word(w)
+                            .map(|(part, printable)| (part.into_string(), printable))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .unzip();
+                Ok((
+                    vec![words.into_iter().flatten().collect::<String>()].into(),
+                    PrintableWord::DoubleQuoted(printables),
+                ))
+            }
+            Word::Simple(word) => {
+                let (glob_part, printable) = self.evaluate_simple_word(word)?;
+                Ok((glob_part, PrintableWord::Unquoted(printable)))
+            }
         }
     }
 
-    fn evaluate_simple_word(&self, word: &SimpleWord) -> Result<GlobPart, ProcessExit> {
+    fn evaluate_simple_word(
+        &self,
+        word: &SimpleWord,
+    ) -> Result<(GlobPart, PrintableSimpleWord), ProcessExit> {
         match word {
-            SimpleWord::Literal(s) => Ok(vec![s.clone()].into()),
-            SimpleWord::Escaped(s) => Ok(vec![s.clone()].into()),
-            SimpleWord::Param(p) => Ok(self.evaluate_parameter(p).into()),
-            SimpleWord::Subst(p) => Ok(self.evaluate_param_subst(p)?.into()),
-            SimpleWord::Star => Ok(GlobPart::Star),
-            SimpleWord::Question => Ok(GlobPart::Question),
-            SimpleWord::SquareOpen => Ok(GlobPart::SquareOpen),
-            SimpleWord::SquareClose => Ok(GlobPart::SquareClose),
-            SimpleWord::Tilde => todo!(),
-            SimpleWord::Colon => Ok(vec![":".to_owned()].into()),
+            SimpleWord::Literal(s) => Ok((
+                vec![s.clone()].into(),
+                PrintableSimpleWord::Literal(s.clone()),
+            )),
+            SimpleWord::Escaped(s) => Ok((
+                vec![s.clone()].into(),
+                PrintableSimpleWord::Escaped(s.clone()),
+            )),
+            SimpleWord::Param(p) => Ok({
+                let (evaluated, original) = self.evaluate_parameter(p);
+                (
+                    evaluated.clone().into(),
+                    PrintableSimpleWord::Substitution {
+                        original,
+                        evaluated: evaluated.join(" "),
+                    },
+                )
+            }),
+            SimpleWord::Subst(p) => self.evaluate_param_subst(p),
+            SimpleWord::Star => Ok((GlobPart::Star, PrintableSimpleWord::Literal("*".to_owned()))),
+            SimpleWord::Question => Ok((
+                GlobPart::Question,
+                PrintableSimpleWord::Literal("?".to_owned()),
+            )),
+            SimpleWord::SquareOpen => Ok((
+                GlobPart::SquareOpen,
+                PrintableSimpleWord::Literal("[".to_owned()),
+            )),
+            SimpleWord::SquareClose => Ok((
+                GlobPart::SquareClose,
+                PrintableSimpleWord::Literal("]".to_owned()),
+            )),
+            SimpleWord::Tilde => Ok((
+                vec!["~".to_owned()].into(),
+                PrintableSimpleWord::Literal("~".to_owned()),
+            )),
+            SimpleWord::Colon => Ok((
+                vec![":".to_owned()].into(),
+                PrintableSimpleWord::Literal(":".to_owned()),
+            )),
         }
     }
 
     fn evaluate_param_subst(
         &self,
         param: &ParameterSubstitution,
-    ) -> Result<Vec<String>, ProcessExit> {
+    ) -> Result<(GlobPart, PrintableSimpleWord), ProcessExit> {
         Ok(match param {
             ParameterSubstitution::Command(commands) => {
                 let output = self.clone().exec_command_group(commands).wait();
                 if !output.status.success() {
                     return Err(output.status);
                 }
-                vec![String::from_utf8(output.stdout).map_err(|e| {
+                let output = String::from_utf8(output.stdout).map_err(|e| {
                     ProcessExit::ExecError(CommandExecError::UnhandledOsString {
                         err: e.utf8_error(),
                     })
-                })?]
+                })?;
+                (
+                    vec![output.clone()].into(),
+                    PrintableSimpleWord::Substitution {
+                        original: "()".to_owned(),
+                        evaluated: output,
+                    },
+                )
             }
-            ParameterSubstitution::Len(p) => vec![format!(
-                "{}",
-                match p {
-                    Parameter::At | Parameter::Star => self.config.positional_args.len() - 1,
-                    p => self
-                        .evaluate_parameter(p)
+            ParameterSubstitution::Len(p) => match p {
+                Parameter::At | Parameter::Star => {
+                    let len = self.config.positional_args.len() - 1;
+                    (
+                        vec![format!("{}", len)].into(),
+                        PrintableSimpleWord::Substitution {
+                            original: "{#@}".to_owned(),
+                            evaluated: format!("{}", len),
+                        },
+                    )
+                }
+                p => {
+                    let (var, original) = self.evaluate_parameter(p);
+                    let len = var
                         .into_iter()
                         .map(|s| s.len())
                         .reduce(|acc, s| acc + s + 1)
-                        .unwrap_or(0),
+                        .unwrap_or(0);
+                    (
+                        vec![format!("{}", len)].into(),
+                        PrintableSimpleWord::Substitution {
+                            original: format!("{{#{}}}", original),
+                            evaluated: format!("{}", len),
+                        },
+                    )
                 }
-            )],
+            },
             ParameterSubstitution::Arith(_) => todo!(),
             ParameterSubstitution::Default(null_is_unset, parameter, default) => {
-                let parameter = self.evaluate_parameter(parameter);
+                let (parameter, original) = self.evaluate_parameter(parameter);
+                let default = default
+                    .as_ref()
+                    .map(|word| self.evaluate_tl_word(word).map(|(v, _)| v))
+                    .unwrap_or_else(|| Ok(Default::default()));
+                //TODO: Show parameter expansions within `default`?
+                let original = format!(
+                    "{{{}{}-{}}}",
+                    original,
+                    if *null_is_unset { ":" } else { "" },
+                    default.as_deref().unwrap_or(&[]).join("")
+                );
                 if parameter.is_empty()
                     || (*null_is_unset && parameter.len() == 1 && parameter[0].is_empty())
                 {
-                    if let Some(word) = default {
-                        self.evaluate_tl_word(word)?
-                    } else {
-                        vec![]
-                    }
+                    let default = default?;
+                    (
+                        default.clone().into(),
+                        PrintableSimpleWord::Substitution {
+                            original,
+                            evaluated: default.join(""),
+                        },
+                    )
                 } else {
-                    parameter
+                    (
+                        parameter.clone().into(),
+                        PrintableSimpleWord::Substitution {
+                            original,
+                            evaluated: parameter.join(""),
+                        },
+                    )
                 }
             }
             ParameterSubstitution::Assign(_, _, _) => todo!(),
@@ -829,37 +969,58 @@ impl ShellContext<'_, '_> {
         })
     }
 
-    fn evaluate_parameter(&self, parameter: &Parameter) -> Vec<String> {
+    fn evaluate_parameter(&self, parameter: &Parameter) -> (Vec<String>, String) {
         match parameter {
             Parameter::Positional(n) => match self.function_args.last() {
-                Some(args) => args.get(*n).cloned().into_iter().collect(),
-                None => self
-                    .config
-                    .positional_args
-                    .get(*n)
+                Some(args) => (
+                    args.get(*n).cloned().into_iter().collect(),
+                    if *n > 9 {
+                        format!("{{{}}}", n)
+                    } else {
+                        format!("{}", n)
+                    },
+                ),
+                None => (
+                    self.config
+                        .positional_args
+                        .get(*n)
+                        .cloned()
+                        .into_iter()
+                        .collect(),
+                    if *n > 9 {
+                        format!("{{{}}}", n)
+                    } else {
+                        format!("{}", n)
+                    },
+                ),
+            },
+            Parameter::Var(name) => (
+                self.vars
+                    .get(name)
                     .cloned()
+                    .or_else(|| std::env::var(name).ok())
                     .into_iter()
                     .collect(),
-            },
-            Parameter::Var(name) => self
-                .vars
-                .get(name)
+                name.clone(),
+            ),
+            Parameter::At => (
+                match self.function_args.last() {
+                    Some(args) => args,
+                    None => &self.config.positional_args,
+                }
+                .iter()
+                .skip(1)
                 .cloned()
-                .or_else(|| std::env::var(name).ok())
-                .into_iter()
                 .collect(),
-            Parameter::At => match self.function_args.last() {
-                Some(args) => args,
-                None => &self.config.positional_args,
-            }
-            .iter()
-            .skip(1)
-            .cloned()
-            .collect(),
-            Parameter::Pound => vec![format!("{}", self.config.positional_args.len() - 1)],
-            Parameter::Dollar => vec![format!("{}", std::process::id())],
-            Parameter::Question => vec![format!("{}", self.exit_code)],
-            Parameter::Bang => vec![format!("{}", self.pid)],
+                "@".to_owned(),
+            ),
+            Parameter::Pound => (
+                vec![format!("{}", self.config.positional_args.len() - 1)],
+                "#".to_owned(),
+            ),
+            Parameter::Dollar => (vec![format!("{}", std::process::id())], "$".to_owned()),
+            Parameter::Question => (vec![format!("{}", self.exit_code)], "?".to_owned()),
+            Parameter::Bang => (vec![format!("{}", self.pid)], "!".to_owned()),
 
             Parameter::Star => todo!(), // Like @ but runs evaluate_word on each word
             Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?

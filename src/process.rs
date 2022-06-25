@@ -8,6 +8,7 @@ use std::sync::Arc;
 use glob::PatternError;
 
 use crate::exec::{BaseExecContext, ShellContext};
+use crate::out::{self, PrintableCommand};
 use crate::parser::ast::CompoundCommand;
 use crate::parser::RunscriptSource;
 use crate::ptr::Ref;
@@ -341,6 +342,7 @@ impl From<Child> for WaitableProcess {
 pub struct SpawnableProcess<'a> {
     ty: SpawnableProcessType<'a>,
     redir: RedirectConfig,
+    printable: Option<PrintableCommand>,
 }
 
 pub enum SpawnableProcessType<'a> {
@@ -358,8 +360,16 @@ pub enum SpawnableProcessType<'a> {
 }
 
 impl SpawnableProcess<'_> {
-    pub fn new(ty: SpawnableProcessType<'_>, redir: RedirectConfig) -> SpawnableProcess<'_> {
-        SpawnableProcess { ty, redir }
+    pub fn new(
+        ty: SpawnableProcessType<'_>,
+        redir: RedirectConfig,
+        printable: Option<PrintableCommand>,
+    ) -> SpawnableProcess<'_> {
+        SpawnableProcess {
+            ty,
+            redir,
+            printable,
+        }
     }
 
     pub fn empty_success() -> Self {
@@ -370,6 +380,7 @@ impl SpawnableProcess<'_> {
                 stderr: vec![],
             }),
             RedirectConfig::default_bg(),
+            None,
         )
     }
 
@@ -381,6 +392,7 @@ impl SpawnableProcess<'_> {
                 stderr: vec![],
             }),
             RedirectConfig::default_bg(),
+            None,
         )
     }
 
@@ -392,27 +404,49 @@ impl SpawnableProcess<'_> {
                 stderr: vec![],
             }),
             RedirectConfig::default_bg(),
+            None,
         )
     }
 
-    pub fn process(process: std::process::Command, redir: RedirectConfig) -> Self {
-        Self::new(SpawnableProcessType::StdProcess(process), redir)
+    pub fn process(
+        process: std::process::Command,
+        redir: RedirectConfig,
+        printable: PrintableCommand,
+    ) -> Self {
+        Self::new(
+            SpawnableProcessType::StdProcess(process),
+            redir,
+            Some(printable),
+        )
     }
 
-    pub fn builtin(builtin: BuiltinCommand, redir: RedirectConfig) -> Self {
-        Self::new(SpawnableProcessType::Builtin(builtin), redir)
+    pub fn builtin(
+        builtin: BuiltinCommand,
+        redir: RedirectConfig,
+        printable: PrintableCommand,
+    ) -> Self {
+        Self::new(
+            SpawnableProcessType::Builtin(builtin),
+            redir,
+            Some(printable),
+        )
     }
 
     pub fn compound(compound: &CompoundCommand, redir: RedirectConfig) -> SpawnableProcess<'_> {
-        Self::new(SpawnableProcessType::Compound(compound), redir)
+        Self::new(SpawnableProcessType::Compound(compound), redir, None)
     }
 
     pub fn function(
         function: Arc<CompoundCommand>,
         args: Vec<String>,
         redir: RedirectConfig,
+        printable: PrintableCommand,
     ) -> Self {
-        Self::new(SpawnableProcessType::Function(function, args), redir)
+        Self::new(
+            SpawnableProcessType::Function(function, args),
+            redir,
+            Some(printable),
+        )
     }
 
     pub fn reentrant(
@@ -420,6 +454,7 @@ impl SpawnableProcess<'_> {
         cwd: Option<PathBuf>,
         recursive_context: BaseExecContext,
         redir: RedirectConfig,
+        printable: PrintableCommand,
     ) -> Self {
         Self::new(
             SpawnableProcessType::Reentrant {
@@ -428,7 +463,19 @@ impl SpawnableProcess<'_> {
                 recursive_context,
             },
             redir,
+            Some(printable),
         )
+    }
+
+    pub fn print_to(
+        &self,
+        output_stream: &mut termcolor::StandardStreamLock,
+    ) -> std::io::Result<()> {
+        if let Some(printable) = &self.printable {
+            out::print_command(output_stream, printable)
+        } else {
+            Ok(())
+        }
     }
 
     pub fn spawn(mut self, mut context: SpawnContext) -> WaitableProcess {

@@ -134,193 +134,167 @@ pub fn phase_message(output_stream: &StandardStream, config: &Config, phase: &st
     writeln!(lock, " {}", name).unwrap();
 }
 
-pub fn command_prompt(
-    output_stream: &StandardStream,
-    command: &SimpleCommand,
-    env_remaps: &[(String, String)],
-    redirects: &[EvaluatedRedirect],
-    evaluated: &[Vec<String>],
-) {
-    let mut lock = output_stream.lock();
-    let words = command
-        .redirects_or_cmd_words
-        .iter()
-        .filter_map(|w| match w {
-            RedirectOrCmdWord::Redirect(_) => None,
-            RedirectOrCmdWord::CmdWord(w) => Some(w),
-        });
-    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
-        .unwrap();
-    for (word, evaluated) in words.zip(evaluated.iter()) {
-        let word_contents = print_tl_word(&mut lock, word);
-        let evaluated_contents = evaluated.join(" ");
-        //? Should perhaps compare in the other direction: split the word contents
-        if word_contents != evaluated_contents {
-            lock.set_color(
-                ColorSpec::new()
-                    .set_bold(true)
-                    .set_intense(true)
-                    .set_fg(Some(Color::Cyan)),
-            )
-            .unwrap();
-            write!(lock, "={}", evaluated_contents).unwrap();
+pub struct PrintableCommand {
+    pub command_name: String,
+    pub arguments: Vec<PrintableComplexWord>,
+    pub redirects: Vec<PrintableRedirect>,
+}
+
+pub struct PrintableRedirect {
+    pub fd: Option<u32>,
+    pub literal: bool,
+    pub file: String,
+}
+
+pub enum PrintableComplexWord {
+    GlobPattern {
+        glob_string: Vec<PrintableWord>,
+        matches: Vec<String>,
+    },
+    Words(Vec<PrintableWord>),
+}
+
+pub enum PrintableWord {
+    SingleQuoted(String),
+    DoubleQuoted(Vec<PrintableSimpleWord>),
+    Unquoted(PrintableSimpleWord),
+}
+
+pub enum PrintableSimpleWord {
+    Literal(String),
+    Escaped(String),
+    Substitution { original: String, evaluated: String },
+}
+
+pub fn print_command(
+    lock: &mut StandardStreamLock,
+    command: &PrintableCommand,
+) -> Result<(), std::io::Error> {
+    //TODO: Make colour config customisable!!
+    //TODO: Show env remaps?
+    // Print command name in bold
+    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))?;
+    write!(lock, "{}", command.command_name)?;
+    lock.reset()?;
+
+    for complex_word in &command.arguments {
+        write!(lock, " ")?;
+        enum FormattingContext {
+            GlobPattern,
+            Quoted,
+            Freestanding,
         }
-        lock.reset().unwrap();
-        write!(lock, " ").unwrap();
-    }
-    if !redirects.is_empty() || !env_remaps.is_empty() {
-        writeln!(lock).unwrap();
-        write!(lock, "-- ").unwrap();
-        for (key, value) in env_remaps {
-            write!(lock, "{}={} ", key, value).unwrap();
+
+        match complex_word {
+            PrintableComplexWord::GlobPattern {
+                glob_string,
+                matches,
+            } => {
+                //TODO: Allow printing glob matches instead
+                lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
+                for word in glob_string {
+                    print_word(lock, word, FormattingContext::GlobPattern)?;
+                }
+                //TODO: Don't print this on windows console, because it doesn't have dimmed?
+                lock.set_color(ColorSpec::new().set_fg(Some(Color::White)).set_dimmed(true))?;
+                write!(lock, " ({} matches)", matches.len())?;
+            }
+            PrintableComplexWord::Words(words) => {
+                //TODO: If this complex word was evaluated empty in evaluations-only output, print an explicit ''
+                for word in words {
+                    print_word(lock, word, FormattingContext::Freestanding)?;
+                }
+            }
         }
-        for redirect in redirects {
-            match redirect {
-                EvaluatedRedirect::Read(fd, file) => {
-                    write!(lock, "{}<{} ", fd.unwrap_or(0), file.join(" "))
+
+        fn print_word(
+            lock: &mut StandardStreamLock,
+            word: &PrintableWord,
+            context: FormattingContext,
+        ) -> Result<(), std::io::Error> {
+            match word {
+                PrintableWord::SingleQuoted(literal) => {
+                    // Highlight strings in yellow
+                    if !matches!(context, FormattingContext::GlobPattern) {
+                        lock.set_color(
+                            ColorSpec::new()
+                                .set_fg(Some(Color::Yellow))
+                                .set_intense(true),
+                        )?;
+                    }
+                    write!(lock, "'{}'", literal)?;
                 }
-                EvaluatedRedirect::Write(fd, file) => {
-                    write!(lock, "{}>{} ", fd.unwrap_or(1), file.join(""))
+                PrintableWord::DoubleQuoted(simple_words) => {
+                    // Highlight strings in yellow
+                    if !matches!(context, FormattingContext::GlobPattern) {
+                        lock.set_color(
+                            ColorSpec::new()
+                                .set_fg(Some(Color::Yellow))
+                                .set_intense(true),
+                        )?;
+                    }
+                    write!(lock, "\"")?;
+                    for simple_word in simple_words {
+                        print_simple_word(lock, simple_word, FormattingContext::Quoted)?;
+                    }
+                    write!(lock, "\"")?;
                 }
-                EvaluatedRedirect::ReadWrite(fd, file) => {
-                    write!(lock, "{}<>{} ", fd.unwrap_or(0), file.join(""))
+                PrintableWord::Unquoted(simple_word) => {
+                    print_simple_word(lock, simple_word, context)?
                 }
-                EvaluatedRedirect::Append(fd, file) => {
-                    write!(lock, "{}>>{} ", fd.unwrap_or(1), file.join(""))
-                }
-                EvaluatedRedirect::Clobber(fd, file) => {
-                    write!(lock, "{}>|{} ", fd.unwrap_or(1), file.join(""))
-                }
-                EvaluatedRedirect::Heredoc(fd, _) => {
-                    write!(lock, "{}<", fd.unwrap_or(0)).unwrap();
+            }
+            Ok(())
+        }
+
+        fn print_simple_word(
+            lock: &mut StandardStreamLock,
+            simple_word: &PrintableSimpleWord,
+            context: FormattingContext,
+        ) -> Result<(), std::io::Error> {
+            match simple_word {
+                PrintableSimpleWord::Literal(literal) => write!(lock, "{}", literal)?,
+                PrintableSimpleWord::Escaped(literal) => write!(lock, "\\{}", literal)?,
+                PrintableSimpleWord::Substitution {
+                    original: _,
+                    evaluated,
+                } => {
                     lock.set_color(
                         ColorSpec::new()
-                            .set_intense(true)
-                            .set_fg(Some(Color::Black)),
-                    )
-                    .unwrap();
-                    write!(lock, "(heredoc) ").unwrap();
-                    lock.reset()
-                }
-                EvaluatedRedirect::DupRead(_fd, _) => todo!(),
-                EvaluatedRedirect::DupWrite(_fd, _) => todo!(),
-            }
-            .unwrap();
-        }
-    }
-}
-
-//TODO: Don't print from these functions
-fn print_tl_word(lock: &mut StandardStreamLock, word: &AtomicTopLevelWord) -> String {
-    match word {
-        ComplexWord::Concat(words) => {
-            let mut concat = String::new();
-            for word in words.iter() {
-                concat.push_str(&print_word(lock, word));
-            }
-            concat
-        }
-        ComplexWord::Single(word) => print_word(lock, word),
-    }
-}
-
-fn print_word(lock: &mut StandardStreamLock, word: &Word) -> String {
-    match word {
-        Word::Simple(w) => print_simple_word(lock, w),
-        Word::DoubleQuoted(w) => {
-            write!(lock, "\"").unwrap();
-            let mut concat = String::new();
-            for word in w.iter() {
-                concat.push_str(&print_simple_word(lock, word));
-            }
-            write!(lock, "\"").unwrap();
-            concat
-        }
-        Word::SingleQuoted(lit) => {
-            write!(lock, "'{}'", lit).unwrap();
-            lit.clone()
-        }
-    }
-}
-
-fn print_simple_word(lock: &mut StandardStreamLock, word: &SimpleWord) -> String {
-    match word {
-        SimpleWord::Literal(lit) => {
-            write!(lock, "{}", lit).unwrap();
-            lit.clone()
-        }
-        SimpleWord::Escaped(tk) => {
-            write!(lock, "\\{}", tk).unwrap();
-            tk.clone()
-        }
-        SimpleWord::Param(p) => {
-            write!(lock, "$").unwrap();
-            print_parameter(lock, p)
-        }
-        SimpleWord::Subst(s) => {
-            match *s {
-                ParameterSubstitution::Command(_) => write!(lock, "$(...)").unwrap(),
-                ParameterSubstitution::Default(colon, ref param, ref default) => {
-                    write!(lock, "${{").unwrap();
-                    print_parameter(lock, param);
-                    write!(lock, "{}-", if colon { ":" } else { "" }).unwrap();
-                    if let Some(word) = default {
-                        print_tl_word(lock, word);
+                            .set_fg(Some(Color::Cyan))
+                            .set_bold(true)
+                            .set_intense(true),
+                    )?;
+                    write!(lock, "{}", evaluated)?;
+                    match context {
+                        FormattingContext::GlobPattern => {
+                            lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?
+                        }
+                        FormattingContext::Quoted => lock.set_color(
+                            ColorSpec::new()
+                                .set_fg(Some(Color::Yellow))
+                                .set_intense(true),
+                        )?,
+                        FormattingContext::Freestanding => lock.reset()?,
                     }
-                    write!(lock, "}}").unwrap();
                 }
-                _ => todo!(),
             }
-            "$\u{0}".to_owned()
-        }
-        SimpleWord::Star => {
-            write!(lock, "*").unwrap();
-            "*".to_owned()
-        }
-        SimpleWord::Question => {
-            write!(lock, "?").unwrap();
-            "?".to_owned()
-        }
-        SimpleWord::SquareOpen => {
-            write!(lock, "[").unwrap();
-            "[".to_owned()
-        }
-        SimpleWord::SquareClose => {
-            write!(lock, "]").unwrap();
-            "]".to_owned()
-        }
-        SimpleWord::Tilde => {
-            write!(lock, "~").unwrap();
-            "~".to_owned()
-        }
-        SimpleWord::Colon => {
-            write!(lock, ":").unwrap();
-            ":".to_owned()
+            Ok(())
         }
     }
+    lock.reset()?;
+    Ok(())
 }
 
-fn print_parameter(lock: &mut StandardStreamLock, parameter: &Parameter) -> String {
-    match parameter {
-        Parameter::At => write!(lock, "@").unwrap(),
-        Parameter::Star => write!(lock, "*").unwrap(),
-        Parameter::Pound => write!(lock, "#").unwrap(),
-        Parameter::Question => write!(lock, "?").unwrap(),
-        Parameter::Dash => write!(lock, "-").unwrap(),
-        Parameter::Dollar => write!(lock, "$").unwrap(),
-        Parameter::Bang => write!(lock, "!").unwrap(),
-        Parameter::Positional(n) if *n < 10 => write!(lock, "{}", n).unwrap(),
-        Parameter::Positional(n) => write!(lock, "{{{}}}", n).unwrap(),
-        Parameter::Var(v) => write!(lock, "{}", v).unwrap(),
-    }
-    "$\u{0}".to_owned()
-}
-
-pub fn env_remaps(output_stream: &StandardStream, remaps: &[(String, String)]) {
+pub fn env_remaps(
+    output_stream: &StandardStream,
+    remaps: &[(String, String)],
+) -> Result<(), std::io::Error> {
     let mut lock = output_stream.lock();
     for (k, v) in remaps {
-        write!(lock, "{k}={v} ").unwrap();
+        write!(lock, "{k}={v} ")?;
     }
+
+    Ok(())
 }
 
 pub fn process_finish(output_stream: &StandardStream, status: &ProcessExit) {
