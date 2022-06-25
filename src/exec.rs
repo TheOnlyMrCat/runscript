@@ -73,6 +73,7 @@ pub enum EvaluatedRedirect {
 
 #[derive(Debug, Clone)]
 pub struct ShellContext<'a, 'b> {
+    //TODO: These should be encapsulated?
     /// The current working directory
     pub working_directory: PathBuf,
     /// The current shell variables
@@ -327,15 +328,23 @@ impl ShellContext<'_, '_> {
         let last_command = commands.len() - 1;
         if let Some(output_stream) = &self.config.output_stream {
             let mut lock = output_stream.lock();
-            //TODO: Proper error handling here?
-            write!(lock, "> ").unwrap();
-            for (i, command) in commands.iter().enumerate() {
-                command.print_to(&mut lock).unwrap();
-                if i == last_command {
-                    writeln!(lock).unwrap();
-                } else {
-                    write!(lock, " | ").unwrap();
+            let any_printable = commands.iter().any(|p| p.is_printable());
+            if any_printable {
+                //TODO: Proper error handling here?
+                write!(lock, "> ").unwrap();
+                for (i, (printable, command)) in
+                    commands.iter().map(|p| (p.is_printable(), p)).enumerate()
+                {
+                    if i != 0 {
+                        write!(lock, " | ").unwrap();
+                    }
+                    if printable {
+                        command.print_to(&mut lock).unwrap();
+                    } else {
+                        write!(lock, "(unprintable)").unwrap();
+                    }
                 }
+                writeln!(lock).unwrap();
             }
         }
         let mut next_input = redir.stdin;

@@ -480,6 +480,10 @@ impl SpawnableProcess<'_> {
         )
     }
 
+    pub fn is_printable(&self) -> bool {
+        self.printable.is_some()
+    }
+
     pub fn print_to(
         &self,
         output_stream: &mut termcolor::StandardStreamLock,
