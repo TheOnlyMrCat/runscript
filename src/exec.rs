@@ -20,8 +20,8 @@ use crate::ptr::Unique;
 use itertools::Itertools;
 
 use crate::out::{
-    self, PrintableCommand, PrintableComplexWord, PrintableRedirect, PrintableSimpleWord,
-    PrintableWord,
+    Printable, PrintableCommand, PrintableComplexWord, PrintableEnvRemap, PrintableRedirect,
+    PrintableSimpleWord, PrintableWord,
 };
 use glob::{glob_with, MatchOptions, Pattern};
 
@@ -390,7 +390,7 @@ impl ShellContext<'_, '_> {
 
         let mut redirects = vec![];
 
-        let env_remaps = match command
+        let (env_remaps, printable_remaps): (Vec<_>, Vec<_>) = match command
             .redirects_or_env_vars
             .iter()
             .filter_map(|r| match r {
@@ -399,10 +399,24 @@ impl ShellContext<'_, '_> {
                         .map(|word| self.evaluate_tl_word(word))
                         .transpose()
                         .map(|word| {
-                            (
-                                key.clone(),
-                                word.map(|(words, _)| words.join(" ")).unwrap_or_default(),
-                            )
+                            word.map(|(words, printable)| {
+                                (
+                                    (key.clone(), words.join(" ")),
+                                    PrintableEnvRemap {
+                                        key: key.clone(),
+                                        value: printable,
+                                    },
+                                )
+                            })
+                            .unwrap_or_else(|| {
+                                (
+                                    (String::new(), String::new()),
+                                    PrintableEnvRemap {
+                                        key: String::new(),
+                                        value: PrintableComplexWord::Empty,
+                                    },
+                                )
+                            })
                         }),
                 ),
                 RedirectOrEnvVar::Redirect(redirect) => {
@@ -412,7 +426,7 @@ impl ShellContext<'_, '_> {
             })
             .collect::<Result<Vec<_>, _>>()
         {
-            Ok(remaps) => remaps,
+            Ok(remaps) => remaps.into_iter().unzip(),
             Err(status) => return SpawnableProcess::empty_status(status),
         };
 
@@ -459,10 +473,55 @@ impl ShellContext<'_, '_> {
                 // No panicking possible, because !command_words.is_empty()
                 (command_words.first().unwrap().clone(), printable_words)
             };
-            let printable_command = PrintableCommand {
-                command_name,
-                arguments,
-                redirects: vec![], //TODO!
+            let printable_command = Printable {
+                command: Some(PrintableCommand {
+                    name: command_name,
+                    arguments,
+                }),
+                env_remaps: printable_remaps,
+                redirects: redirects
+                    .iter()
+                    .map(|redir| match redir {
+                        EvaluatedRedirect::Read(fd, word) => PrintableRedirect {
+                            fd: *fd,
+                            direction: "<".to_owned(),
+                            literal: true,
+                            file: word.clone(),
+                        },
+                        EvaluatedRedirect::Write(fd, word) => PrintableRedirect {
+                            fd: *fd,
+                            direction: ">".to_owned(),
+                            literal: true,
+                            file: word.clone(),
+                        },
+                        EvaluatedRedirect::Append(fd, word) => PrintableRedirect {
+                            fd: *fd,
+                            direction: ">>".to_owned(),
+                            literal: true,
+                            file: word.clone(),
+                        },
+                        EvaluatedRedirect::Clobber(fd, word) => PrintableRedirect {
+                            fd: *fd,
+                            direction: ">|".to_owned(),
+                            literal: true,
+                            file: word.clone(),
+                        },
+                        EvaluatedRedirect::ReadWrite(fd, word) => PrintableRedirect {
+                            fd: *fd,
+                            direction: "<>".to_owned(),
+                            literal: true,
+                            file: word.clone(),
+                        },
+                        EvaluatedRedirect::Heredoc(fd, _) => PrintableRedirect {
+                            fd: *fd,
+                            direction: "<<".to_owned(),
+                            literal: true,
+                            file: "(heredoc)".to_owned(),
+                        },
+                        EvaluatedRedirect::DupRead(_fd, _word) => todo!(),
+                        EvaluatedRedirect::DupWrite(_fd, _word) => todo!(),
+                    })
+                    .collect(),
             };
 
             for redirect in redirects {
@@ -704,17 +763,7 @@ impl ShellContext<'_, '_> {
                 }
             }
         } else {
-            //TODO: Evaluate lazily, to allow this method to take &self, and to restore correct behaviour.
-            if let Some(ref output_stream) = self.config.output_stream {
-                out::env_remaps(output_stream, &env_remaps).unwrap();
-            }
-
-            self.vars.reserve(env_remaps.len());
-            for (key, value) in env_remaps {
-                self.vars.insert(key, value);
-            }
-
-            SpawnableProcess::empty_success()
+            SpawnableProcess::remaps(env_remaps, printable_remaps)
         }
     }
 

@@ -1,14 +1,9 @@
 use std::io::Write;
 
-use crate::parser::ast::{
-    AtomicTopLevelWord, ComplexWord, Parameter, ParameterSubstitution, RedirectOrCmdWord,
-    SimpleCommand, SimpleWord, Word,
-};
 use crate::process::{CommandExecError, ProcessExit};
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 use crate::config::Config;
-use crate::exec::EvaluatedRedirect;
 use crate::parser::RunscriptParseError;
 
 pub fn warning(output_stream: &StandardStream, message: std::fmt::Arguments) {
@@ -134,14 +129,34 @@ pub fn phase_message(output_stream: &StandardStream, config: &Config, phase: &st
     writeln!(lock, " {}", name).unwrap();
 }
 
-pub struct PrintableCommand {
-    pub command_name: String,
-    pub arguments: Vec<PrintableComplexWord>,
+pub struct Printable {
+    pub command: Option<PrintableCommand>,
+    pub env_remaps: Vec<PrintableEnvRemap>,
     pub redirects: Vec<PrintableRedirect>,
 }
 
+pub struct PrintableCommand {
+    pub name: String,
+    pub arguments: Vec<PrintableComplexWord>,
+}
+
+pub struct PrintableEnvRemap {
+    pub key: String,
+    pub value: PrintableComplexWord,
+}
+
+impl Default for PrintableEnvRemap {
+    fn default() -> Self {
+        Self {
+            key: Default::default(),
+            value: PrintableComplexWord::Empty,
+        }
+    }
+}
+
 pub struct PrintableRedirect {
-    pub fd: Option<u32>,
+    pub fd: Option<u16>,
+    pub direction: String,
     pub literal: bool,
     pub file: String,
 }
@@ -152,6 +167,7 @@ pub enum PrintableComplexWord {
         matches: Vec<String>,
     },
     Words(Vec<PrintableWord>),
+    Empty,
 }
 
 pub enum PrintableWord {
@@ -168,132 +184,163 @@ pub enum PrintableSimpleWord {
 
 pub fn print_command(
     lock: &mut StandardStreamLock,
-    command: &PrintableCommand,
+    printable: &Printable,
 ) -> Result<(), std::io::Error> {
     //TODO: Make colour config customisable!!
-    //TODO: Show env remaps?
-    // Print command name in bold
-    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))?;
-    write!(lock, "{}", command.command_name)?;
-    lock.reset()?;
+    for remap in &printable.env_remaps {
+        write!(lock, "{}=", remap.key)?;
+        print_complex_word(lock, &remap.value)?;
+    }
 
-    for complex_word in &command.arguments {
-        write!(lock, " ")?;
-        enum FormattingContext {
-            GlobPattern,
-            Quoted,
-            Freestanding,
+    if let Some(command) = &printable.command {
+        if !printable.env_remaps.is_empty() {
+            // Separate remaps from command name
+            write!(lock, " ")?;
         }
+        // Print command name in bold
+        lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))?;
+        write!(lock, "{}", command.name)?;
+        lock.reset()?;
 
-        match complex_word {
-            PrintableComplexWord::GlobPattern {
-                glob_string,
-                matches,
-            } => {
-                //TODO: Allow printing glob matches instead
-                lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
-                for word in glob_string {
-                    print_word(lock, word, FormattingContext::GlobPattern)?;
-                }
-                //TODO: Don't print this on windows console, because it doesn't have dimmed?
-                lock.set_color(ColorSpec::new().set_fg(Some(Color::White)).set_dimmed(true))?;
-                write!(lock, " ({} matches)", matches.len())?;
-            }
-            PrintableComplexWord::Words(words) => {
-                //TODO: If this complex word was evaluated empty in evaluations-only output, print an explicit ''
-                for word in words {
-                    print_word(lock, word, FormattingContext::Freestanding)?;
-                }
-            }
-        }
-
-        fn print_word(
-            lock: &mut StandardStreamLock,
-            word: &PrintableWord,
-            context: FormattingContext,
-        ) -> Result<(), std::io::Error> {
-            match word {
-                PrintableWord::SingleQuoted(literal) => {
-                    // Highlight strings in yellow
-                    if !matches!(context, FormattingContext::GlobPattern) {
-                        lock.set_color(
-                            ColorSpec::new()
-                                .set_fg(Some(Color::Yellow))
-                                .set_intense(true),
-                        )?;
-                    }
-                    write!(lock, "'{}'", literal)?;
-                }
-                PrintableWord::DoubleQuoted(simple_words) => {
-                    // Highlight strings in yellow
-                    if !matches!(context, FormattingContext::GlobPattern) {
-                        lock.set_color(
-                            ColorSpec::new()
-                                .set_fg(Some(Color::Yellow))
-                                .set_intense(true),
-                        )?;
-                    }
-                    write!(lock, "\"")?;
-                    for simple_word in simple_words {
-                        print_simple_word(lock, simple_word, FormattingContext::Quoted)?;
-                    }
-                    write!(lock, "\"")?;
-                }
-                PrintableWord::Unquoted(simple_word) => {
-                    print_simple_word(lock, simple_word, context)?
-                }
-            }
-            Ok(())
-        }
-
-        fn print_simple_word(
-            lock: &mut StandardStreamLock,
-            simple_word: &PrintableSimpleWord,
-            context: FormattingContext,
-        ) -> Result<(), std::io::Error> {
-            match simple_word {
-                PrintableSimpleWord::Literal(literal) => write!(lock, "{}", literal)?,
-                PrintableSimpleWord::Escaped(literal) => write!(lock, "\\{}", literal)?,
-                PrintableSimpleWord::Substitution {
-                    original: _,
-                    evaluated,
-                } => {
-                    lock.set_color(
-                        ColorSpec::new()
-                            .set_fg(Some(Color::Cyan))
-                            .set_bold(true)
-                            .set_intense(true),
-                    )?;
-                    write!(lock, "{}", evaluated)?;
-                    match context {
-                        FormattingContext::GlobPattern => {
-                            lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?
-                        }
-                        FormattingContext::Quoted => lock.set_color(
-                            ColorSpec::new()
-                                .set_fg(Some(Color::Yellow))
-                                .set_intense(true),
-                        )?,
-                        FormattingContext::Freestanding => lock.reset()?,
-                    }
-                }
-            }
-            Ok(())
+        for complex_word in &command.arguments {
+            write!(lock, " ")?;
+            print_complex_word(lock, complex_word)?;
         }
     }
     lock.reset()?;
+
+    for redirect in &printable.redirects {
+        write!(
+            lock,
+            " {}{}",
+            if let Some(fd) = redirect.fd {
+                format!("{}", fd)
+            } else {
+                "".to_owned()
+            },
+            redirect.direction
+        )?;
+        if !redirect.literal {
+            lock.set_color(
+                ColorSpec::new()
+                    .set_fg(Some(Color::Cyan))
+                    .set_bold(true)
+                    .set_intense(true),
+            )?
+        }
+        write!(lock, "{}", redirect.file)?;
+        lock.reset()?;
+    }
+
     Ok(())
 }
 
-pub fn env_remaps(
-    output_stream: &StandardStream,
-    remaps: &[(String, String)],
-) -> Result<(), std::io::Error> {
-    let mut lock = output_stream.lock();
-    for (k, v) in remaps {
-        write!(lock, "{k}={v} ")?;
-    }
+enum FormattingContext {
+    GlobPattern,
+    Quoted,
+    Freestanding,
+}
 
+fn print_complex_word(
+    lock: &mut StandardStreamLock,
+    complex_word: &PrintableComplexWord,
+) -> Result<(), std::io::Error> {
+    match complex_word {
+        PrintableComplexWord::GlobPattern {
+            glob_string,
+            matches,
+        } => {
+            //TODO: Allow printing glob matches instead
+            lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
+            for word in glob_string {
+                print_word(lock, word, FormattingContext::GlobPattern)?;
+            }
+            //TODO: Don't print this on windows console, because it doesn't have dimmed?
+            lock.set_color(ColorSpec::new().set_fg(Some(Color::White)).set_dimmed(true))?;
+            write!(lock, " ({} matches)", matches.len())?;
+        }
+        PrintableComplexWord::Words(words) => {
+            //TODO: If this complex word was evaluated empty in evaluations-only output, print an explicit ''
+            for word in words {
+                print_word(lock, word, FormattingContext::Freestanding)?;
+            }
+        }
+        PrintableComplexWord::Empty => {
+            write!(lock, "''")?;
+        }
+    }
+    Ok(())
+}
+
+fn print_word(
+    lock: &mut StandardStreamLock,
+    word: &PrintableWord,
+    context: FormattingContext,
+) -> Result<(), std::io::Error> {
+    match word {
+        PrintableWord::SingleQuoted(literal) => {
+            // Highlight strings in yellow
+            if !matches!(context, FormattingContext::GlobPattern) {
+                lock.set_color(
+                    ColorSpec::new()
+                        .set_fg(Some(Color::Yellow))
+                        .set_intense(true),
+                )?;
+            }
+            write!(lock, "'{}'", literal)?;
+        }
+        PrintableWord::DoubleQuoted(simple_words) => {
+            // Highlight strings in yellow
+            if !matches!(context, FormattingContext::GlobPattern) {
+                lock.set_color(
+                    ColorSpec::new()
+                        .set_fg(Some(Color::Yellow))
+                        .set_intense(true),
+                )?;
+            }
+            write!(lock, "\"")?;
+            for simple_word in simple_words {
+                print_simple_word(lock, simple_word, FormattingContext::Quoted)?;
+            }
+            write!(lock, "\"")?;
+        }
+        PrintableWord::Unquoted(simple_word) => print_simple_word(lock, simple_word, context)?,
+    }
+    Ok(())
+}
+
+fn print_simple_word(
+    lock: &mut StandardStreamLock,
+    simple_word: &PrintableSimpleWord,
+    context: FormattingContext,
+) -> Result<(), std::io::Error> {
+    match simple_word {
+        PrintableSimpleWord::Literal(literal) => write!(lock, "{}", literal)?,
+        PrintableSimpleWord::Escaped(literal) => write!(lock, "\\{}", literal)?,
+        PrintableSimpleWord::Substitution {
+            original: _,
+            evaluated,
+        } => {
+            lock.set_color(
+                ColorSpec::new()
+                    .set_fg(Some(Color::Cyan))
+                    .set_bold(true)
+                    .set_intense(true),
+            )?;
+            write!(lock, "{}", evaluated)?;
+            match context {
+                FormattingContext::GlobPattern => {
+                    lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?
+                }
+                FormattingContext::Quoted => lock.set_color(
+                    ColorSpec::new()
+                        .set_fg(Some(Color::Yellow))
+                        .set_intense(true),
+                )?,
+                FormattingContext::Freestanding => lock.reset()?,
+            }
+        }
+    }
     Ok(())
 }
 
