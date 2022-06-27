@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use std::sync::Arc;
 
@@ -26,24 +26,24 @@ use crate::out::{
 use glob::{glob_with, MatchOptions, Pattern};
 
 #[derive(Clone)]
-pub struct ExecConfig<'a> {
+pub struct ExecConfig {
     /// The output stream to output to, or `None` to produce no output
     pub output_stream: Option<Arc<termcolor::StandardStream>>,
     /// The colour choice for the output stream
     pub colour_choice: termcolor::ColorChoice,
     /// The working directory to execute the script's commands in
-    pub working_directory: &'a Path,
+    pub working_directory: PathBuf,
     /// The path to the script file being executed
     pub script_path: Option<PathBuf>,
     /// The name of the target being executed
-    pub target_name: Option<&'a str>,
+    pub target_name: Option<String>,
     /// Positional arguments to pass to the script.
     ///
     ///The first argument replaces `$0`, the second replaces `$1`, etc.
     pub positional_args: Vec<String>,
 }
 
-impl std::fmt::Debug for ExecConfig<'_> {
+impl std::fmt::Debug for ExecConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
@@ -72,7 +72,7 @@ pub enum EvaluatedRedirect {
 }
 
 #[derive(Debug, Clone)]
-pub struct ShellContext<'a, 'b> {
+pub struct ShellContext {
     //TODO: These should be encapsulated?
     /// The current working directory
     pub working_directory: PathBuf,
@@ -89,11 +89,11 @@ pub struct ShellContext<'a, 'b> {
     /// Exit code of most recent top-level command
     exit_code: i32, //TODO: This will always be 0. Perhaps an option to have the script keep going even after errors?
     /// Immutable config
-    config: &'a ExecConfig<'b>,
+    config: ExecConfig,
 }
 
-impl<'a, 'b> ShellContext<'a, 'b> {
-    pub fn new(config: &'a ExecConfig<'b>) -> Self {
+impl ShellContext {
+    pub fn new(config: ExecConfig) -> Self {
         Self {
             working_directory: config.working_directory.to_owned(),
             vars: HashMap::new(),
@@ -107,7 +107,7 @@ impl<'a, 'b> ShellContext<'a, 'b> {
     }
 }
 
-impl ShellContext<'_, '_> {
+impl ShellContext {
     pub fn exec_command_group(&mut self, script: &[AtomicTopLevelCommand]) -> WaitableProcess {
         self.exec_command_group_with_default_redirects(script, RedirectConfig::default_fg())
     }
@@ -231,7 +231,7 @@ impl ShellContext<'_, '_> {
                     .map(|words| -> Result<_, _> {
                         words
                             .iter()
-                            .map(|word| this.evaluate_tl_word(word).map(|(v, _)| v))
+                            .map(|word| this.evaluate_tl_word(word, redir).map(|(v, _)| v))
                             .flatten_ok()
                             .collect::<Result<Vec<_>, _>>()
                     })
@@ -250,7 +250,7 @@ impl ShellContext<'_, '_> {
             }
             CompoundCommandKind::Case { word, arms } => {
                 let mut last_proc = WaitableProcess::empty_success();
-                let word = match this.evaluate_tl_word(word) {
+                let word = match this.evaluate_tl_word(word, redir) {
                     Ok(word) => word.0,
                     Err(status) => {
                         return WaitableProcess::empty_status(status);
@@ -259,7 +259,7 @@ impl ShellContext<'_, '_> {
                 for PatternBodyPair { patterns, body } in arms {
                     let mut pattern_matches = false;
                     for pattern in patterns {
-                        let pattern = match this.evaluate_tl_word(pattern) {
+                        let pattern = match this.evaluate_tl_word(pattern, redir) {
                             Ok(pattern) => pattern.0,
                             Err(status) => {
                                 return WaitableProcess::empty_status(status);
@@ -402,7 +402,7 @@ impl ShellContext<'_, '_> {
             .filter_map(|r| match r {
                 RedirectOrEnvVar::EnvVar(key, word) => Some(
                     word.as_ref()
-                        .map(|word| self.evaluate_tl_word(word))
+                        .map(|word| self.evaluate_tl_word(word, redir))
                         .transpose()
                         .map(|word| {
                             word.map(|(words, printable)| {
@@ -440,7 +440,7 @@ impl ShellContext<'_, '_> {
             .redirects_or_cmd_words
             .iter()
             .filter_map(|r| match r {
-                RedirectOrCmdWord::CmdWord(w) => Some(self.evaluate_tl_word(w)),
+                RedirectOrCmdWord::CmdWord(w) => Some(self.evaluate_tl_word(w, redir)),
                 RedirectOrCmdWord::Redirect(redirect) => {
                     redirects.push(redirect);
                     None
@@ -459,8 +459,8 @@ impl ShellContext<'_, '_> {
                     macro_rules! map_redirect {
                         ($($t:ident),*) => {
                             match redirect {
-                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word)?.0.join(" ")),)*
-                                Redirect::Heredoc(fd, word) => EvaluatedRedirect::Heredoc(*fd, self.evaluate_tl_word(word)?.0)
+                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word, redir)?.0.join(" ")),)*
+                                Redirect::Heredoc(fd, word) => EvaluatedRedirect::Heredoc(*fd, self.evaluate_tl_word(word, redir)?.0)
                             }
                         }
                     }
@@ -737,7 +737,7 @@ impl ShellContext<'_, '_> {
                     Some(self.working_directory.clone()),
                     BaseExecContext {
                         current_file: self.config.script_path.clone(),
-                        current_target: self.config.target_name.map(ToOwned::to_owned),
+                        current_target: self.config.target_name.clone(),
                         args: {
                             let mut args = command_words;
                             args.remove(0);
@@ -775,12 +775,13 @@ impl ShellContext<'_, '_> {
     fn evaluate_tl_word(
         &self,
         word: &ComplexWord,
+        redir: RedirectConfig,
     ) -> Result<(Vec<String>, PrintableComplexWord), ProcessExit> {
         match word {
             ComplexWord::Concat(words) => {
                 let (words, printable_words): (Vec<_>, Vec<_>) = words
                     .iter()
-                    .map(|w| self.evaluate_word(w))
+                    .map(|w| self.evaluate_word(w, redir))
                     .collect::<Result<Vec<_>, _>>()?
                     .into_iter()
                     .unzip();
@@ -843,16 +844,22 @@ impl ShellContext<'_, '_> {
                     ))
                 }
             }
-            ComplexWord::Single(word) => self.evaluate_word(word).map(|(glob, printable)| {
-                (
-                    glob.into_string(),
-                    PrintableComplexWord::Words(vec![printable]),
-                )
-            }),
+            ComplexWord::Single(word) => {
+                self.evaluate_word(word, redir).map(|(glob, printable)| {
+                    (
+                        glob.into_string(),
+                        PrintableComplexWord::Words(vec![printable]),
+                    )
+                })
+            }
         }
     }
 
-    fn evaluate_word(&self, word: &Word) -> Result<(GlobPart, PrintableWord), ProcessExit> {
+    fn evaluate_word(
+        &self,
+        word: &Word,
+        redir: RedirectConfig,
+    ) -> Result<(GlobPart, PrintableWord), ProcessExit> {
         match word {
             Word::SingleQuoted(literal) => Ok((
                 vec![literal.clone()].into(),
@@ -862,7 +869,7 @@ impl ShellContext<'_, '_> {
                 let (words, printables): (Vec<_>, Vec<_>) = words
                     .iter()
                     .map(|w| {
-                        self.evaluate_simple_word(w)
+                        self.evaluate_simple_word(w, redir)
                             .map(|(part, printable)| (part.into_string(), printable))
                     })
                     .collect::<Result<Vec<_>, _>>()?
@@ -874,7 +881,7 @@ impl ShellContext<'_, '_> {
                 ))
             }
             Word::Simple(word) => {
-                let (glob_part, printable) = self.evaluate_simple_word(word)?;
+                let (glob_part, printable) = self.evaluate_simple_word(word, redir)?;
                 Ok((glob_part, PrintableWord::Unquoted(printable)))
             }
         }
@@ -883,6 +890,7 @@ impl ShellContext<'_, '_> {
     fn evaluate_simple_word(
         &self,
         word: &SimpleWord,
+        redir: RedirectConfig,
     ) -> Result<(GlobPart, PrintableSimpleWord), ProcessExit> {
         match word {
             SimpleWord::Literal(s) => Ok((
@@ -903,7 +911,7 @@ impl ShellContext<'_, '_> {
                     },
                 )
             }),
-            SimpleWord::Subst(p) => self.evaluate_param_subst(p),
+            SimpleWord::Subst(p) => self.evaluate_param_subst(p, redir),
             SimpleWord::Star => Ok((GlobPart::Star, PrintableSimpleWord::Literal("*".to_owned()))),
             SimpleWord::Question => Ok((
                 GlobPart::Question,
@@ -931,18 +939,30 @@ impl ShellContext<'_, '_> {
     fn evaluate_param_subst(
         &self,
         param: &ParameterSubstitution,
+        redir: RedirectConfig,
     ) -> Result<(GlobPart, PrintableSimpleWord), ProcessExit> {
         Ok(match param {
             ParameterSubstitution::Command(commands) => {
-                let output = self.clone().exec_command_group(commands).wait();
+                let mut context = self.clone();
+                context.config.output_stream = None;
+                let output = context
+                    .exec_command_group_with_default_redirects(
+                        commands,
+                        RedirectConfig {
+                            stdout: StdoutRedirect::Capture,
+                            ..redir
+                        },
+                    )
+                    .wait();
                 if !output.status.success() {
                     return Err(output.status);
                 }
-                let output = String::from_utf8(output.stdout).map_err(|e| {
+                let mut output = String::from_utf8(output.stdout).map_err(|e| {
                     ProcessExit::ExecError(CommandExecError::UnhandledOsString {
                         err: e.utf8_error(),
                     })
                 })?;
+                output.truncate(output.trim_end_matches('\n').len());
                 (
                     vec![output.clone()].into(),
                     PrintableSimpleWord::Substitution {
@@ -983,7 +1003,7 @@ impl ShellContext<'_, '_> {
                 let (parameter, original) = self.evaluate_parameter(parameter);
                 let default = default
                     .as_ref()
-                    .map(|word| self.evaluate_tl_word(word).map(|(v, _)| v))
+                    .map(|word| self.evaluate_tl_word(word, redir).map(|(v, _)| v))
                     .unwrap_or_else(|| Ok(Default::default()));
                 //TODO: Show parameter expansions within `default`?
                 let original = format!(

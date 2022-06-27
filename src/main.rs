@@ -337,14 +337,14 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 let exec_cfg = ExecConfig {
                     output_stream: None,
                     colour_choice,
-                    working_directory: &cwd,
+                    working_directory: cwd,
                     script_path: None,
                     target_name: None,
                     positional_args: std::iter::once("".to_string())
                         .chain(options.args)
                         .collect(),
                 };
-                let mut shell_context = ShellContext::new(&exec_cfg);
+                let mut shell_context = ShellContext::new(exec_cfg);
                 shell_context
                     .exec_command_group(&[command])
                     .wait()
@@ -386,15 +386,15 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             let exec_cfg = ExecConfig {
                 output_stream: Some(output_stream.clone()),
                 colour_choice,
-                working_directory: &cwd,
+                working_directory: cwd,
                 script_path: Some(script.path),
-                target_name: options.target.as_deref(),
+                target_name: options.target,
                 positional_args: std::iter::once(script_path_argument)
                     .chain(options.args)
                     .collect(),
             };
 
-            let mut shell_context = ShellContext::new(&exec_cfg);
+            let mut shell_context = ShellContext::new(exec_cfg);
             let status = shell_context
                 .exec_command_group(&parsed_script)
                 .wait()
@@ -505,9 +505,9 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         let exec_cfg = ExecConfig {
                             output_stream: Some(output_stream.clone()),
                             colour_choice,
-                            working_directory: &runfile.working_dir,
+                            working_directory: runfile.working_dir,
                             script_path: Some(script.canonical_path.clone()),
-                            target_name: Some(name),
+                            target_name: Some(name.clone()),
                             positional_args: std::iter::once(
                                 script.canonical_path.display().to_string(),
                             )
@@ -533,7 +533,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 out::phase_message(&output_stream, &config, &phase, name);
                                 let status = match &script.commands {
                                     ScriptExecution::Internal { commands, .. } => {
-                                        let mut shell_context = ShellContext::new(&exec_cfg);
+                                        let mut shell_context = ShellContext::new(exec_cfg.clone());
                                         shell_context
                                             .exec_command_group(
                                                 &commands

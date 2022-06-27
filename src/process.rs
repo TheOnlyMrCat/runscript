@@ -601,7 +601,9 @@ impl SpawnableProcess<'_> {
                             StdoutRedirect::Fd(fd) => {
                                 (nix::unistd::dup2(fd, 1).unwrap_or_else(bail_a) == -1).then(bail);
                             }
-                            StdoutRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                            StdoutRedirect::Capture | StdoutRedirect::Dup(_) => {
+                                std::process::exit(exitcode::UNAVAILABLE)
+                            }
                         }
                         match self.redir.stderr {
                             StdoutRedirect::Null => {
@@ -622,7 +624,9 @@ impl SpawnableProcess<'_> {
                             StdoutRedirect::Fd(fd) => {
                                 (nix::unistd::dup2(fd, 2).unwrap_or_else(bail_a) == -1).then(bail);
                             }
-                            StdoutRedirect::Dup(_) => std::process::exit(exitcode::UNAVAILABLE),
+                            StdoutRedirect::Capture | StdoutRedirect::Dup(_) => {
+                                std::process::exit(exitcode::UNAVAILABLE)
+                            }
                         }
 
                         // Set up remainder of environment
@@ -717,9 +721,9 @@ impl BuiltinCommand {
     }
 }
 
-pub enum SpawnContext<'a, 'ctx_a, 'ctx_b> {
+pub enum SpawnContext<'a> {
     PipelineIntermediate {
-        context: &'a ShellContext<'ctx_a, 'ctx_b>,
+        context: &'a ShellContext,
         input: StdinRedirect,
         #[cfg(unix)]
         output: Option<std::os::unix::io::RawFd>,
@@ -727,12 +731,12 @@ pub enum SpawnContext<'a, 'ctx_a, 'ctx_b> {
         output: Option<std::os::windows::prelude::RawHandle>,
     },
     PipelineEnd {
-        context: &'a mut ShellContext<'ctx_a, 'ctx_b>,
+        context: &'a mut ShellContext,
         input: StdinRedirect,
     },
 }
 
-impl<'a, 'ctx_a, 'ctx_b> SpawnContext<'a, 'ctx_a, 'ctx_b> {
+impl<'a> SpawnContext<'a> {
     fn stdin(&self) -> StdinRedirect {
         match self {
             SpawnContext::PipelineIntermediate { input, .. } => *input,
@@ -748,7 +752,7 @@ impl<'a, 'ctx_a, 'ctx_b> SpawnContext<'a, 'ctx_a, 'ctx_b> {
         }
     }
 
-    fn shell_context<'b>(&'b mut self) -> Ref<'b, ShellContext<'ctx_a, 'ctx_b>> {
+    fn shell_context(&mut self) -> Ref<'_, ShellContext> {
         match self {
             SpawnContext::PipelineIntermediate { context, .. } => (*context).into(),
             SpawnContext::PipelineEnd { context, .. } => Ref::Unique(*context),
@@ -847,6 +851,7 @@ where
 pub enum StdoutRedirect {
     Null,
     Inherit,
+    Capture,
     #[cfg(unix)]
     Dup(std::os::unix::io::RawFd),
     #[cfg(unix)]
@@ -860,6 +865,7 @@ impl From<StdoutRedirect> for Stdio {
         match redir {
             StdoutRedirect::Null => Stdio::null(),
             StdoutRedirect::Inherit => Stdio::inherit(),
+            StdoutRedirect::Capture => Stdio::piped(),
             #[cfg(unix)]
             StdoutRedirect::Dup(_) => todo!(),
             #[cfg(unix)]
