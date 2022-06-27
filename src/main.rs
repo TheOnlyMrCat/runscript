@@ -17,7 +17,7 @@ use exec::BaseExecContext;
 use exitcode::ExitCode;
 
 use parser::RunscriptSource;
-use termcolor::{ColorChoice, ColorSpec, StandardStream, WriteColor};
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use self::exec::{ExecConfig, ShellContext};
 use self::parser::SourceFile;
@@ -426,7 +426,21 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         writeln!(lock).unwrap();
                     }
                     first = false;
-                    writeln!(lock, "Targets from `{}`:", rf.display_path).unwrap();
+                    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
+                        .unwrap();
+                    write!(lock, "Targets from `").unwrap();
+                    lock.set_color(
+                        ColorSpec::new()
+                            .set_bold(true)
+                            .set_intense(true)
+                            .set_fg(Some(Color::Cyan)),
+                    )
+                    .unwrap();
+                    write!(lock, "{}", rf.display_path).unwrap();
+                    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
+                        .unwrap();
+                    writeln!(lock, "`:").unwrap();
+                    lock.reset().unwrap();
                     let longest_target = rf
                         .scripts
                         .keys()
@@ -702,14 +716,15 @@ fn list_scripts_for(
     name_length: usize,
     runscript: &Runscript,
 ) {
-    for (target, map) in runscript.scripts.iter().map(|(target, map)| {
+    let default = runscript.get_default_target().map(|(default, _)| default);
+    for (is_default, target, map) in runscript.scripts.iter().map(|(target, map)| {
         if target.is_empty() {
-            ("(blank)", map)
+            (default == Some(target), "(blank)", map)
         } else {
-            (target.as_ref(), map)
+            (default == Some(target), target.as_ref(), map)
         }
     }) {
-        print_phase_list(lock, config, target, name_length, map);
+        print_phase_list(lock, config, target, name_length, is_default, map);
     }
 }
 
@@ -718,8 +733,13 @@ fn print_phase_list(
     config: &Config,
     name: &str,
     name_length: usize,
+    is_default: bool,
     target: &Target,
 ) {
+    if is_default {
+        lock.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))
+            .unwrap();
+    }
     write!(
         lock,
         "{0:1$} ",
