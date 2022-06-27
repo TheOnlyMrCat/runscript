@@ -10,13 +10,11 @@ use glob::PatternError;
 use crate::exec::{BaseExecContext, ShellContext};
 use crate::out::{self, Printable, PrintableEnvRemap};
 use crate::parser::ast::CompoundCommand;
-use crate::parser::parse::ParseError;
-use crate::parser::{RunscriptSource, SourceFile};
+use crate::parser::SourceFile;
 use crate::ptr::Ref;
 
 #[derive(Debug)]
 pub enum CommandExecError {
-    BadStarPositional { err: ParseError },
     InvalidGlob { glob: String, err: PatternError },
     NoGlobMatches { glob: String },
     CommandFailed { err: std::io::Error },
@@ -376,18 +374,6 @@ impl SpawnableProcess<'_> {
         }
     }
 
-    pub fn empty_success() -> Self {
-        Self::new(
-            SpawnableProcessType::Finished(FinishedProcess {
-                status: ProcessExit::Bool(true),
-                stdout: vec![],
-                stderr: vec![],
-            }),
-            RedirectConfig::default_bg(),
-            None,
-        )
-    }
-
     pub fn empty_error(error: CommandExecError) -> Self {
         Self::new(
             SpawnableProcessType::Finished(FinishedProcess {
@@ -682,7 +668,6 @@ pub enum BuiltinCommand {
     Source {
         /// Path should be `join`ed with `context.working_directory` already
         path: PathBuf,
-        cwd: PathBuf,
     },
 }
 
@@ -712,7 +697,7 @@ impl BuiltinCommand {
                 }
                 WaitableProcess::empty_success()
             }
-            BuiltinCommand::Source { path, cwd } => {
+            BuiltinCommand::Source { path } => {
                 let source = SourceFile {
                     source: match std::fs::read_to_string(&path) {
                         Ok(source) => source,
