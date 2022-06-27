@@ -11,7 +11,7 @@ use crate::exec::{BaseExecContext, ShellContext};
 use crate::out::{self, Printable, PrintableEnvRemap};
 use crate::parser::ast::CompoundCommand;
 use crate::parser::parse::ParseError;
-use crate::parser::RunscriptSource;
+use crate::parser::{RunscriptSource, SourceFile};
 use crate::ptr::Ref;
 
 #[derive(Debug)]
@@ -713,7 +713,7 @@ impl BuiltinCommand {
                 WaitableProcess::empty_success()
             }
             BuiltinCommand::Source { path, cwd } => {
-                let source = RunscriptSource {
+                let source = SourceFile {
                     source: match std::fs::read_to_string(&path) {
                         Ok(source) => source,
                         Err(err) => {
@@ -723,7 +723,6 @@ impl BuiltinCommand {
                         }
                     },
                     path,
-                    dir: cwd,
                 };
 
                 let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());

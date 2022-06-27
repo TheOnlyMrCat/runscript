@@ -6,8 +6,9 @@ use crate::parser::lexer::Lexer;
 use crate::parser::parse::Parser;
 use indexmap::IndexMap;
 
-use crate::parser::RunscriptSource;
 use crate::script::*;
+
+use super::SourceFile;
 
 #[derive(Debug)]
 struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
@@ -16,7 +17,7 @@ struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
     line_indices: Vec<usize>,
 }
 
-pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, ()> {
+pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
     let mut context = ParsingContext {
         iterator: source.source.char_indices().peekable(),
         line_indices: source
@@ -25,12 +26,13 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, ()> {
             .filter_map(|(index, ch)| if ch == '\n' { Some(index) } else { None })
             .collect(),
         runfile: Runscript {
-            path: source
+            display_path: source
                 .path
-                .canonicalize()
-                .unwrap_or(source.path)
+                .file_name()
+                .unwrap()
                 .to_string_lossy()
                 .into_owned(),
+            canonical_path: source.path.canonicalize().unwrap_or(source.path),
             source_text: source.source.clone(),
             scripts: IndexMap::new(),
             options: GlobalOptions::default(),

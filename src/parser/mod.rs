@@ -1,3 +1,10 @@
+pub mod ast;
+pub mod lexer;
+#[cfg(feature = "old-parser")]
+pub mod old;
+pub mod parse;
+pub mod token;
+
 use std::path::PathBuf;
 
 use indexmap::IndexMap;
@@ -6,23 +13,18 @@ use parse::{CommandGroupDelimiters, ParseError, Parser};
 use crate::script::Overrideable::*;
 use crate::script::*;
 
-pub mod ast;
-pub mod lexer;
-#[cfg(feature = "old-parser")]
-pub mod old;
-pub mod parse;
-pub mod token;
-
-use ast::AtomicTopLevelCommand;
-use lexer::Lexer;
-
-use self::ast::ComplexWord;
+use self::ast::{AtomicTopLevelCommand, ComplexWord};
+use self::lexer::Lexer;
 
 #[derive(Debug, Clone)]
 pub struct RunscriptSource {
+    pub working_dir: PathBuf,
+    pub files: Vec<SourceFile>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceFile {
     pub path: PathBuf,
-    /// The directory the file's name should be considered relative to
-    pub dir: PathBuf,
     pub source: String,
 }
 
@@ -48,9 +50,7 @@ pub enum RunscriptParseError {
 
 //TODO: It might be convenient to fold this and conch_parser together even more
 
-pub fn parse_shell(
-    source: RunscriptSource,
-) -> Result<Vec<AtomicTopLevelCommand>, RunscriptParseError> {
+pub fn parse_shell(source: SourceFile) -> Result<Vec<AtomicTopLevelCommand>, RunscriptParseError> {
     let lexer = Lexer::new(source.source.chars());
     let mut parser = Parser::<_>::new(lexer);
 
@@ -75,7 +75,7 @@ pub fn parse_word(word: &str) -> Result<ComplexWord, ParseError> {
     parser.word().map(Option::unwrap)
 }
 
-pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptParseError> {
+pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseError> {
     let line_indices = source
         .source
         .char_indices()
@@ -84,12 +84,13 @@ pub fn parse_runscript(source: RunscriptSource) -> Result<Runscript, RunscriptPa
     let mut iterator = source.source.char_indices().peekable();
 
     let mut runscript = Runscript {
-        path: source
+        display_path: source
             .path
-            .canonicalize()
-            .unwrap_or(source.path)
+            .file_name()
+            .unwrap()
             .to_string_lossy()
             .into_owned(),
+        canonical_path: source.path.canonicalize().unwrap_or(source.path),
         source_text: source.source.clone(),
         scripts: IndexMap::new(),
         options: GlobalOptions::default(),
