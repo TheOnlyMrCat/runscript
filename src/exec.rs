@@ -957,11 +957,12 @@ impl ShellContext {
                 if !output.status.success() {
                     return Err(output.status);
                 }
-                let mut output = String::from_utf8(output.stdout).map_err(|e| {
-                    ProcessExit::ExecError(CommandExecError::UnhandledOsString {
-                        err: e.utf8_error(),
-                    })
-                })?;
+                let mut output =
+                    String::from_utf8(output.captured_stdout.unwrap()).map_err(|e| {
+                        ProcessExit::ExecError(CommandExecError::UnhandledOsString {
+                            err: e.utf8_error(),
+                        })
+                    })?;
                 output.truncate(output.trim_end_matches('\n').len());
                 (
                     vec![output.clone()].into(),

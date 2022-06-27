@@ -80,9 +80,7 @@ impl ProcessExit {
 #[derive(Debug)]
 pub struct FinishedProcess {
     pub status: ProcessExit,
-    //TODO: Get rid of these?
-    pub stdout: Vec<u8>,
-    pub stderr: Vec<u8>,
+    pub captured_stdout: Option<Vec<u8>>,
 }
 
 enum OngoingProcess {
@@ -92,7 +90,6 @@ enum OngoingProcess {
         pid: nix::unistd::Pid,
         stdin: Option<std::os::unix::prelude::RawFd>,
         stdout: Option<std::os::unix::prelude::RawFd>,
-        stderr: Option<std::os::unix::prelude::RawFd>,
     },
     Finished(FinishedProcess),
 }
@@ -115,15 +112,9 @@ impl WaitableProcess {
         pid: nix::unistd::Pid,
         stdin: Option<std::os::unix::prelude::RawFd>,
         stdout: Option<std::os::unix::prelude::RawFd>,
-        stderr: Option<std::os::unix::prelude::RawFd>,
     ) -> WaitableProcess {
         WaitableProcess {
-            process: OngoingProcess::Reentrant {
-                pid,
-                stdin,
-                stdout,
-                stderr,
-            },
+            process: OngoingProcess::Reentrant { pid, stdin, stdout },
             associated_jobs: vec![],
         }
     }
@@ -139,8 +130,7 @@ impl WaitableProcess {
         WaitableProcess {
             process: OngoingProcess::Finished(FinishedProcess {
                 status: ProcessExit::Bool(true),
-                stdout: vec![],
-                stderr: vec![],
+                captured_stdout: None,
             }),
             associated_jobs: vec![],
         }
@@ -150,8 +140,7 @@ impl WaitableProcess {
         WaitableProcess {
             process: OngoingProcess::Finished(FinishedProcess {
                 status: ProcessExit::ExecError(error),
-                stdout: vec![],
-                stderr: vec![],
+                captured_stdout: None,
             }),
             associated_jobs: vec![],
         }
@@ -161,8 +150,7 @@ impl WaitableProcess {
         WaitableProcess {
             process: OngoingProcess::Finished(FinishedProcess {
                 status,
-                stdout: vec![],
-                stderr: vec![],
+                captured_stdout: None,
             }),
             associated_jobs: vec![],
         }
@@ -203,8 +191,7 @@ impl WaitableProcess {
                         Signal::SIGHUP,
                         false,
                     )),
-                    stdout: vec![],
-                    stderr: vec![],
+                    captured_stdout: None,
                 }
             }
             OngoingProcess::Reentrant { pid, .. } => {
@@ -215,8 +202,7 @@ impl WaitableProcess {
                         Signal::SIGHUP,
                         false,
                     )),
-                    stdout: vec![],
-                    stderr: vec![],
+                    captured_stdout: None,
                 }
             }
             OngoingProcess::Finished(proc) => proc,
@@ -248,20 +234,11 @@ impl WaitableProcess {
         match self.process {
             OngoingProcess::Concurrent(mut process) => {
                 let status = process.wait().unwrap();
-                let stdout = if let Some(mut stdout) = process.stdout {
+                let captured_stdout = process.stdout.map(|mut stdout| {
                     let mut v = Vec::new();
                     let _ = stdout.read_to_end(&mut v); //TODO: should I handle an error here?
                     v
-                } else {
-                    Vec::new()
-                };
-                let stderr = if let Some(mut stderr) = process.stderr {
-                    let mut v = Vec::new();
-                    let _ = stderr.read_to_end(&mut v); //TODO: should I handle an error here?
-                    v
-                } else {
-                    Vec::new()
-                };
+                });
 
                 for job in self.associated_jobs.into_iter() {
                     job.hup();
@@ -269,39 +246,23 @@ impl WaitableProcess {
 
                 FinishedProcess {
                     status: ProcessExit::StdStatus(status),
-                    stdout,
-                    stderr,
+                    captured_stdout,
                 }
             }
             #[cfg(unix)]
-            OngoingProcess::Reentrant {
-                pid,
-                stdin,
-                stdout,
-                stderr,
-            } => {
+            OngoingProcess::Reentrant { pid, stdin, stdout } => {
                 use std::os::unix::io::FromRawFd;
 
                 if let Some(stdin) = stdin {
                     nix::unistd::close(stdin).unwrap();
                 }
                 let status = nix::sys::wait::waitpid(pid, None).unwrap();
-                let stdout = if let Some(stdout) = stdout {
-                    let mut stdout_file = unsafe { File::from_raw_fd(stdout) };
+                let captured_stdout = stdout.map(|stdout| {
                     let mut v = Vec::new();
-                    let _ = stdout_file.read_to_end(&mut v); //TODO: should I handle an error here?
+                    //SAFETY: Not guaranteed yet. Replace with OwnedFd when stabilised?
+                    let _ = unsafe { File::from_raw_fd(stdout) }.read_to_end(&mut v); //TODO: should I handle an error here?
                     v
-                } else {
-                    Vec::new()
-                };
-                let stderr = if let Some(stderr) = stderr {
-                    let mut stderr_file = unsafe { File::from_raw_fd(stderr) };
-                    let mut v = Vec::new();
-                    let _ = stderr_file.read_to_end(&mut v); //TODO: should I handle an error here?
-                    v
-                } else {
-                    Vec::new()
-                };
+                });
 
                 for job in self.associated_jobs.into_iter() {
                     job.hup();
@@ -309,8 +270,7 @@ impl WaitableProcess {
 
                 FinishedProcess {
                     status: ProcessExit::NixStatus(status),
-                    stdout,
-                    stderr,
+                    captured_stdout,
                 }
             }
             OngoingProcess::Finished(proc) => {
@@ -327,8 +287,7 @@ impl From<Output> for FinishedProcess {
     fn from(o: Output) -> Self {
         FinishedProcess {
             status: ProcessExit::StdStatus(o.status),
-            stdout: o.stdout,
-            stderr: o.stderr,
+            captured_stdout: Some(o.stdout),
         }
     }
 }
@@ -378,8 +337,7 @@ impl SpawnableProcess<'_> {
         Self::new(
             SpawnableProcessType::Finished(FinishedProcess {
                 status: ProcessExit::ExecError(error),
-                stdout: vec![],
-                stderr: vec![],
+                captured_stdout: None,
             }),
             RedirectConfig::default_bg(),
             None,
@@ -390,8 +348,7 @@ impl SpawnableProcess<'_> {
         Self::new(
             SpawnableProcessType::Finished(FinishedProcess {
                 status,
-                stdout: vec![],
-                stderr: vec![],
+                captured_stdout: None,
             }),
             RedirectConfig::default_bg(),
             None,
@@ -537,7 +494,7 @@ impl SpawnableProcess<'_> {
                 use nix::unistd::ForkResult;
                 match unsafe { nix::unistd::fork() } {
                     Ok(ForkResult::Parent { child }) => {
-                        WaitableProcess::reentrant_nightmare(child, None, None, None)
+                        WaitableProcess::reentrant_nightmare(child, None, None)
                     }
                     Ok(ForkResult::Child) => {
                         // If any of this setup fails, exit immediately with the OSERR exitcode.
