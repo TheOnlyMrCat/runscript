@@ -10,6 +10,7 @@ For an example of a useful runscript, see [the runfile for this repository](run)
 - Does **not** use Makefile syntax
 - Supports most of the shell features you know and love (parsing adapted from [ipetkov/conch_parser](https://github.com/ipetkov/conch-parser))
 - Multiple 'phases' per target, so you can chose to build, run, or test a target. If those options aren't enough, you can name your phases whatever you want!
+- Imports targets from multiple files, meaning you can have a personal `.run` file alongside a source-controlled `run` file
 - Fancy output while running scripts
 - Properly emulates a shell, with `export`able variables, `source`ing shell scripts, `cd`ing.
 - If runscript's builtin shell doesn't have everything you need, you can execute a script with an external shell (e.g. `bash`). You can also apply this to an entire runscript.
@@ -22,7 +23,6 @@ For an example of a useful runscript, see [the runfile for this repository](run)
   - [ ] Arithmetic and a number of parameter substitutions
   - [ ] Here-documents
 - [ ] Replace manual SIGHUP'ing with `setpgid`
-- [ ] Fix race conditions in output
 - [ ] Remove most sources of panicking (fuzz testing?)
 - [ ] Support Windows properly
 
