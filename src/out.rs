@@ -42,7 +42,7 @@ pub fn file_read_err(output_stream: &StandardStream, err: std::io::Error) {
     error(output_stream, format_args!("Failed to read script: {err}"));
 }
 
-pub fn file_parse_err(output_stream: &StandardStream, err: RunscriptParseError) {
+pub fn file_parse_err(output_stream: &StandardStream, file: &str, err: RunscriptParseError) {
     match &err {
         RunscriptParseError::DuplicateScript {
             new_line: line,
@@ -52,26 +52,26 @@ pub fn file_parse_err(output_stream: &StandardStream, err: RunscriptParseError) 
             error(
                 output_stream,
                 format_args!(
-                    "Duplicate script: `{t}` on line {line} (previously defined at {prev})"
+                    "In file {file}: Duplicate script: `{t}` on line {line} (previously defined at {prev})"
                 ),
             );
         }
         RunscriptParseError::CommandParseError { line, error: err } => {
             error(
                 output_stream,
-                format_args!("Parse error: {err} on line {line}"),
+                format_args!("In file {file}: Parse error: {err} on line {line}"),
             );
         }
         RunscriptParseError::IllegalCommandLocation { line } => {
             error(
                 output_stream,
-                format_args!("Command outside of target on line {line}"),
+                format_args!("In file {file}: Command outside of target on line {line}"),
             );
         }
         RunscriptParseError::NonexistentOption { line, option } => {
             error(
                 output_stream,
-                format_args!("Nonexistent option: `{option}` on line {line}"),
+                format_args!("In file {file}: Nonexistent option: `{option}` on line {line}"),
             );
         }
     }

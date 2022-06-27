@@ -35,7 +35,7 @@ pub struct DevConfig {
 impl Default for FileConfig {
     fn default() -> Self {
         Self {
-            names: vec!["run".to_owned(), ".run".to_owned()],
+            names: vec![".run".to_owned(), "run".to_owned()],
         }
     }
 }
