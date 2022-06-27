@@ -896,7 +896,7 @@ impl ShellContext<'_, '_> {
                 PrintableSimpleWord::Escaped(s.clone()),
             )),
             SimpleWord::Param(p) => Ok({
-                let (evaluated, original) = self.evaluate_parameter(p)?;
+                let (evaluated, original) = self.evaluate_parameter(p);
                 (
                     evaluated.clone().into(),
                     PrintableSimpleWord::Substitution {
@@ -965,7 +965,7 @@ impl ShellContext<'_, '_> {
                     )
                 }
                 p => {
-                    let (var, original) = self.evaluate_parameter(p)?;
+                    let (var, original) = self.evaluate_parameter(p);
                     let len = var
                         .into_iter()
                         .map(|s| s.len())
@@ -982,7 +982,7 @@ impl ShellContext<'_, '_> {
             },
             ParameterSubstitution::Arith(_) => todo!(),
             ParameterSubstitution::Default(null_is_unset, parameter, default) => {
-                let (parameter, original) = self.evaluate_parameter(parameter)?;
+                let (parameter, original) = self.evaluate_parameter(parameter);
                 let default = default
                     .as_ref()
                     .map(|word| self.evaluate_tl_word(word).map(|(v, _)| v))
@@ -1025,11 +1025,8 @@ impl ShellContext<'_, '_> {
         })
     }
 
-    fn evaluate_parameter(
-        &self,
-        parameter: &Parameter,
-    ) -> Result<(Vec<String>, String), ProcessExit> {
-        Ok(match parameter {
+    fn evaluate_parameter(&self, parameter: &Parameter) -> (Vec<String>, String) {
+        match parameter {
             Parameter::Positional(n) => match self.function_args.last() {
                 Some(args) => (
                     args.get(*n).cloned().into_iter().collect(),
@@ -1080,18 +1077,8 @@ impl ShellContext<'_, '_> {
                 }
                 .iter()
                 .skip(1)
-                .map(|word| {
-                    //TODO: Uhhh.... this is probably not correct???
-                    crate::parser::parse_word(word)
-                        .map_err(|e| {
-                            ProcessExit::ExecError(CommandExecError::BadStarPositional { err: e })
-                        })
-                        .and_then(|word| self.evaluate_tl_word(&word))
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .into_iter()
-                .flat_map(|(word, _)| word)
-                .collect::<Vec<_>>(),
+                .cloned()
+                .collect(),
                 "*".to_owned(),
             ),
             Parameter::Pound => (
@@ -1111,7 +1098,7 @@ impl ShellContext<'_, '_> {
             Parameter::Bang => (vec![format!("{}", self.pid)], "!".to_owned()),
 
             Parameter::Dash => todo!(), // Options of current run invocation. Perhaps could be useful?
-        })
+        }
     }
 }
 
