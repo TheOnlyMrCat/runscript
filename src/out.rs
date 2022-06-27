@@ -399,9 +399,6 @@ pub fn process_finish(output_stream: &StandardStream, status: &ProcessExit) {
     fn exec_error(error: &CommandExecError) -> String {
         match error {
             CommandExecError::CommandFailed { err } => format!("{}", err),
-            CommandExecError::BadStarPositional { err } => {
-                format!("Could not parse positional parameter: {}", err)
-            } //TODO: Which parameter in particular?
             CommandExecError::InvalidGlob { glob, err } => {
                 format!("Invalid glob pattern: {}: {}", glob, err)
             }

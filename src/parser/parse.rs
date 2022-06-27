@@ -2,6 +2,7 @@
 // FIXME: consider parsing [[ exr ]] as keywords? otherwise [[ foo && bar ]] won't get parsed right
 // FIXME: consider parsing out array index syntax? (e.g. ${array[some index]}
 // FIXME: arithmetic substitutions don't currently support param/comand substitutions
+// TODO: To retrieve source/iterator positions, see commit 3e4fac7 or earlier
 
 use std::error::Error;
 use std::fmt;
@@ -290,10 +291,9 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// token in the iterator will be used (or `UnexpectedEOF` if none left).
     #[inline]
     fn make_unexpected_err(&mut self) -> ParseError {
-        let pos = self.iter.pos();
         self.iter
             .next()
-            .map_or(ParseError::UnexpectedEOF, |t| ParseError::Unexpected(t))
+            .map_or(ParseError::UnexpectedEOF, ParseError::Unexpected)
     }
 
     /// Parses a single complete command.
@@ -496,7 +496,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         let mut list = Vec::new();
         loop {
             self.skip_whitespace();
-            let start_pos = self.iter.pos();
             match self.redirect()? {
                 Some(Ok(io)) => list.push(io),
                 Some(Err(_)) => return Err(ParseError::BadFd),
@@ -608,7 +607,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                         dash.to_string(),
                     )))
                 } else {
-                    let path_start_pos = $parser.iter.pos();
                     let path = if let Some(p) = $parser.word_preserve_trailing_whitespace()? {
                         p
                     } else {
@@ -899,7 +897,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
             let mut tok_backup = TokenIterWrapper::Buffered(tok_iter);
             mem::swap(&mut self.iter, &mut tok_backup);
-            let mut body = self.word_interpolated_raw(None, heredoc_start_pos)?;
+            let mut body = self.word_interpolated_raw(None)?;
             let _ = mem::replace(&mut self.iter, tok_backup);
 
             if body.len() > 1 {
@@ -1025,7 +1023,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                 }
 
                 DoubleQuote => ast::Word::DoubleQuoted(
-                    self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)), start_pos)?,
+                    self.word_interpolated_raw(Some((DoubleQuote, DoubleQuote)))?,
                 ),
 
                 // Parameters and backticks should have been
@@ -1070,7 +1068,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     fn word_interpolated_raw(
         &mut self,
         delim: Option<(Token, Token)>,
-        start_pos: SourcePos,
     ) -> ParseResult<Vec<ast::SimpleWord>> {
         let (delim_open, delim_close) = match delim {
             Some((o, c)) => (Some(o), Some(c)),
@@ -1188,7 +1185,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// returns an `Word`, which will capture both cases where a literal or
     /// parameter is parsed.
     fn parameter_raw(&mut self) -> ParseResult<ast::SimpleWord> {
-        let start_pos = self.iter.pos();
         match self.iter.next() {
             Some(ParamPositional(p)) => {
                 Ok(ast::SimpleWord::Param(Parameter::Positional(p as usize)))
@@ -1215,10 +1211,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     ///
     /// All tokens that normally cannot be part of a word will be treated
     /// as literals.
-    fn parameter_substitution_word_raw(
-        &mut self,
-        curly_open_pos: SourcePos,
-    ) -> ParseResult<Option<ast::ComplexWord>> {
+    fn parameter_substitution_word_raw(&mut self) -> ParseResult<Option<ast::ComplexWord>> {
         let mut words = Vec::new();
         'capture_words: loop {
             'capture_literals: loop {
@@ -1337,14 +1330,12 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     fn parameter_substitution_body_raw(
         &mut self,
         param: Parameter,
-        curly_open_pos: SourcePos,
     ) -> ParseResult<ast::SimpleWord> {
         let has_colon = eat_maybe!(self, {
             Colon => { true };
             _ => { false },
         });
 
-        let op_pos = self.iter.pos();
         let op = match self.iter.next() {
             Some(tok @ Dash) | Some(tok @ Equals) | Some(tok @ Question) | Some(tok @ Plus) => tok,
 
@@ -1354,7 +1345,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             None => return Err(ParseError::Unmatched(CurlyOpen)),
         };
 
-        let word = self.parameter_substitution_word_raw(curly_open_pos)?;
+        let word = self.parameter_substitution_word_raw()?;
         let maybe_len = param == Parameter::Pound && !has_colon && word.is_none();
 
         // We must carefully check if we get ${#-} or ${#?}, in which case
@@ -1380,7 +1371,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// Parses a parameter substitution in the form of `${...}`, `$(...)`, or `$((...))`.
     /// Nothing is passed to the builder.
     fn parameter_substitution_raw(&mut self) -> ParseResult<ast::SimpleWord> {
-        let start_pos = self.iter.pos();
         match self.iter.peek() {
             Some(&ParenOpen) => {
                 let is_arith = {
@@ -1418,7 +1408,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             }
 
             Some(&CurlyOpen) => {
-                let curly_open_pos = start_pos;
                 self.iter.next();
 
                 let param = self.parameter_inner()?;
@@ -1427,11 +1416,11 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                         self.iter.next();
                         eat_maybe!(self, {
                             Percent => {
-                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                let word = self.parameter_substitution_word_raw();
                                 ast::ParameterSubstitution::RemoveLargestSuffix(param, word?.map(Box::new))
                             };
                             _ => {
-                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                let word = self.parameter_substitution_word_raw();
                                 ast::ParameterSubstitution::RemoveSmallestSuffix(param, word?.map(Box::new))
                             }
                         })
@@ -1441,11 +1430,11 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                         self.iter.next();
                         eat_maybe!(self, {
                             Pound => {
-                                let word = self.parameter_substitution_word_raw(curly_open_pos);
+                                let word = self.parameter_substitution_word_raw();
                                 ast::ParameterSubstitution::RemoveLargestPrefix(param, word?.map(Box::new))
                             };
                             _ => {
-                                match self.parameter_substitution_word_raw(curly_open_pos)? {
+                                match self.parameter_substitution_word_raw()? {
                                     // Handle ${##} case
                                     None if Parameter::Pound == param => ast::ParameterSubstitution::Len(Parameter::Pound),
                                     w => ast::ParameterSubstitution::RemoveSmallestPrefix(param, w.map(Box::new)),
@@ -1459,7 +1448,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                     | Some(&CurlyClose)
                         if Parameter::Pound == param =>
                     {
-                        return self.parameter_substitution_body_raw(param, curly_open_pos)
+                        return self.parameter_substitution_body_raw(param)
                     }
 
                     // Otherwise we must have ${#param}
@@ -1468,7 +1457,7 @@ impl<I: Iterator<Item = Token>> Parser<I> {
                         eat!(self, { CurlyClose => { ast::ParameterSubstitution::Len(param) } })
                     }
 
-                    _ => return self.parameter_substitution_body_raw(param, curly_open_pos),
+                    _ => return self.parameter_substitution_body_raw(param),
                 };
 
                 Ok(ast::SimpleWord::Subst(subst))
@@ -1480,7 +1469,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
 
     /// Parses a valid parameter that can appear inside a set of curly braces.
     fn parameter_inner(&mut self) -> ParseResult<Parameter> {
-        let start_pos = self.iter.pos();
         let param = match self.iter.next() {
             Some(Star) => Parameter::Star,
             Some(Pound) => Parameter::Pound,
@@ -1507,7 +1495,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// reserved words. Each of the reserved words must be a literal token, and cannot be
     /// quoted or concatenated.
     pub fn do_group(&mut self) -> ParseResult<CommandGroup<ast::Command>> {
-        let start_pos = self.iter.pos();
         self.reserved_word(&[DO])
             .map_err(|_| self.make_unexpected_err())?;
         let result = self.command_group(CommandGroupDelimiters {
@@ -1524,7 +1511,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     pub fn brace_group(&mut self) -> ParseResult<CommandGroup<ast::Command>> {
         // CurlyClose must be encountered as a stand alone word,
         // even though it is represented as its own token
-        let start_pos = self.iter.pos();
         self.reserved_token(&[CurlyOpen])?;
         let cmds = self.command_group(CommandGroupDelimiters {
             reserved_tokens: &[CurlyClose],
@@ -1548,7 +1534,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
         &mut self,
         empty_body_ok: bool,
     ) -> ParseResult<CommandGroup<ast::Command>> {
-        let start_pos = self.iter.pos();
         eat!(self, { ParenOpen => {} });
 
         // Parens are always special tokens
@@ -1731,7 +1716,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// the entire loop) this method returns the relevant parts of the loop command,
     /// without constructing an AST node, it so that the caller can do so with redirections.
     pub fn loop_command(&mut self) -> ParseResult<(LoopKind, ast::GuardBodyPair)> {
-        let start_pos = self.iter.pos();
         let kind = match self
             .reserved_word(&[WHILE, UNTIL])
             .map_err(|_| self.make_unexpected_err())?
@@ -1762,7 +1746,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// method returns the relevant parts of the `if` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
     pub fn if_command(&mut self) -> ParseResult<IfFragments<ast::Command>> {
-        let start_pos = self.iter.pos();
         self.reserved_word(&[IF])
             .map_err(|_| self.make_unexpected_err())?;
 
@@ -1825,7 +1808,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// method returns the relevant parts of the `for` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
     pub fn for_command(&mut self) -> ParseResult<ForFragments<ast::ComplexWord, ast::Command>> {
-        let start_pos = self.iter.pos();
         self.reserved_word(&[FOR])
             .map_err(|_| self.make_unexpected_err())?;
 
@@ -1836,7 +1818,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             _ => return Err(self.make_unexpected_err()),
         }
 
-        let var_pos = self.iter.pos();
         let var = match self.iter.next() {
             Some(Name(v)) => v,
             Some(Literal(s)) => return Err(ParseError::BadIdent(s)),
@@ -1901,8 +1882,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
     /// method returns the relevant parts of the `case` command, without constructing an
     /// AST node, it so that the caller can do so with redirections.
     pub fn case_command(&mut self) -> ParseResult<CaseFragments<ast::ComplexWord>> {
-        let start_pos = self.iter.pos();
-
         macro_rules! missing_in {
             () => {
                 |_| ParseError::IncompleteCmd(CASE, IN)
@@ -2054,7 +2033,6 @@ impl<I: Iterator<Item = Token>> Parser<I> {
             _ => return Err(self.make_unexpected_err()),
         }
 
-        let ident_pos = self.iter.pos();
         let name = match self.iter.next() {
             Some(Name(n)) => n,
             Some(Literal(s)) => return Err(ParseError::BadIdent(s)),

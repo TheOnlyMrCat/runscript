@@ -13,7 +13,7 @@ use parse::{CommandGroupDelimiters, ParseError, Parser};
 use crate::script::Overrideable::*;
 use crate::script::*;
 
-use self::ast::{AtomicTopLevelCommand, ComplexWord};
+use self::ast::AtomicTopLevelCommand;
 use self::lexer::Lexer;
 
 #[derive(Debug, Clone)]
@@ -67,12 +67,6 @@ pub fn parse_command(command: &str) -> Result<AtomicTopLevelCommand, ParseError>
     let lexer = Lexer::new(command.chars());
     let mut parser = Parser::<_>::new(lexer);
     parser.complete_command().map(Option::unwrap)
-}
-
-pub fn parse_word(word: &str) -> Result<ComplexWord, ParseError> {
-    let lexer = Lexer::new(word.chars());
-    let mut parser = Parser::<_>::new(lexer);
-    parser.word().map(Option::unwrap)
 }
 
 pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseError> {

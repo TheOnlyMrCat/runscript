@@ -168,7 +168,6 @@ impl ShellContext<'_, '_> {
         redir: RedirectConfig,
     ) -> WaitableProcess {
         self.function_args.push(args);
-        //TODO: input redirection
         let process = self.exec_compound_command(&commands, redir);
         self.function_args.pop();
         process
@@ -725,7 +724,6 @@ impl ShellContext<'_, '_> {
                 "source" => SpawnableProcess::builtin(
                     BuiltinCommand::Source {
                         path: self.working_directory.join(&command_words[1]),
-                        cwd: self.working_directory.clone(),
                     },
                     redir,
                     printable_command,

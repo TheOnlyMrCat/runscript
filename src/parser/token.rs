@@ -183,11 +183,6 @@ impl fmt::Display for Token {
 }
 
 impl Token {
-    /// Returns whether the token's length is zero.
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
     /// Returns the number of characters it took to recognize a token.
     pub fn len(&self) -> usize {
         self.as_str().len()

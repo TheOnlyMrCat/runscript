@@ -313,7 +313,7 @@ pub struct Multipeek<'a> {
 
 impl<'a> Drop for Multipeek<'a> {
     fn drop(&mut self) {
-        let tokens = mem::replace(&mut self.buf, Vec::new());
+        let tokens = mem::take(&mut self.buf);
         self.iter.rewind(tokens);
     }
 }
