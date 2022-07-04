@@ -40,7 +40,7 @@ fn panic_hook(info: &std::panic::PanicInfo) {
 
     let mut tries = 0;
     let report_file = loop {
-        let uuid = uuid::Uuid::new_v4().to_hyphenated().to_string();
+        let uuid = uuid::Uuid::new_v4();
         let file = {
             let mut file = std::env::temp_dir();
             file.push(format!("runscript-report-{}.txt", uuid));
