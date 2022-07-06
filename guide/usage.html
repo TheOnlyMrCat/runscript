@@ -156,14 +156,14 @@ phase for running the target.</p>
 <code>[target:phase]</code> twice in the same runscript.</p>
 <p>We'll get to the <code>::default-phase</code> in a bit.</p>
 <p>This runscript can be executed by simply executing <code>run</code> in the same directory as the runscript.</p>
-<pre><code class="language-txt">$ run
-Build prog
-&gt; make
+<pre class="ansi"><code><span>$ run
+</span><span style="color: red;font-weight: bold;">Build</span><span style=""> prog
+> </span><span style="font-weight: bold;">make</span><span style="">
 make: `prog' is up to date
-Run prog
-&gt; ./prog
+</span><span style="color: blue;font-weight: bold;">Run</span><span style=""> prog
+> </span><span style="font-weight: bold;">./prog</span><span style="">
 Hello, world!
-</code></pre>
+</span></code></pre>
 <p>You can also choose to only build or only run the target with flags: <code>run -b</code> or <code>run -r</code>.</p>
 <p>Now, back to the <code>::default-phase build run</code>. This line tells Runscript to execute both the <code>build</code> and <code>run</code> phases
 sequentially, by default. If this line were not included, the command <code>run</code> would only execute the <code>run</code> phase.</p>
@@ -174,11 +174,11 @@ sequentially, by default. If this line were not included, the command <code>run<
 cargo run -q -- $@
 </code></pre>
 <p>Arguments can be passed to this script by separating them from the main command with a <code>--</code>:</p>
-<pre><code class="language-txt">$ run -- Arguments
-Run target
-&gt; cargo run -q -- Arguments
+<pre class="ansi"><code><span>$ run -- Arguments
+</span><span style="color: blue;font-weight: bold;">Run</span><span style=""> target
+> </span><span style="font-weight: bold;">cargo</span><span style=""> run -q -- </span><span style="color: aqua;">Arguments</span><span style="">
 Found 1 positional parameter
-</code></pre>
+</span></code></pre>
 <h2 id="multiple-targets"><a class="header" href="#multiple-targets">Multiple targets</a></h2>
 <p>A runscript can, of course, define multiple targets. You could, for example, have a default target for testing your program,
 and a separate target for packaging it for release.</p>
@@ -195,20 +195,20 @@ cargo build --release
 tar czf program.tar.gz -C target/release program
 </code></pre>
 <p>In this runscript, the three targets can be executed in the following ways:</p>
-<pre><code class="language-txt">$ run               # Executes [program:run]
-$ run program:bench # Executes [program:bench]
-$ run pkg           # Executes [pkg]
-</code></pre>
+<pre class="ansi"><code><span>$ run -- Argument   </span><span style="color: silver;"># Executes [program:run] with arguments {"Argument"}</span><span style="">
+$ run program:bench </span><span style="color: silver;"># Executes [program:bench]</span><span style="">
+$ run pkg           </span><span style="color: silver;"># Executes [pkg]</span><span style="">
+</span></code></pre>
 <h2 id="external-script-invocation"><a class="header" href="#external-script-invocation">External script invocation</a></h2>
 <p>If Runscript's builtin shell is inadequate, you can tell the script to use a different shell, such as <code>bash</code> or
 <code>zsh</code>. This is done by putting the path to the shell on the end of the header line:</p>
 <pre><code class="language-run">[external] /bin/bash
 echo Foo
 </code></pre>
-<pre><code class="language-txt">$ run
-Run external
+<pre class="ansi"><code><span>$ run
+</span><span style="color: blue;font-weight: bold;">Run</span><span style=""> external
 Foo
-</code></pre>
+</span></code></pre>
 <p>This can be done on a runscript-wide basis with the <code>::default-shell</code> option:</p>
 <pre><code class="language-run">::default-shell /bin/bash
 
