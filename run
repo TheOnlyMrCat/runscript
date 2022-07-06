@@ -1,0 +1,5 @@
+[book:build]
+mdbook build
+
+[book:run]
+mdbook serve --open
