@@ -30,13 +30,13 @@ We'll get to the `::default-phase` in a bit.
 
 This runscript can be executed by simply executing `run` in the same directory as the runscript.
 
-```txt
+```ansi
 $ run
-Build prog
-> make
+\x1b[1;91mBuild\x1b[0m prog
+> \x1b[1mmake\x1b[0m
 make: `prog' is up to date
-Run prog
-> ./prog
+\x1b[1;94mRun\x1b[0m prog
+> \x1b[1m./prog\x1b[0m
 Hello, world!
 ```
 
@@ -58,10 +58,10 @@ cargo run -q -- $@
 
 Arguments can be passed to this script by separating them from the main command with a `--`:
 
-```txt
+```ansi
 $ run -- Arguments
-Run target
-> cargo run -q -- Arguments
+\x1b[1;94mRun\x1b[0m target
+> \x1b[1mcargo\x1b[0m run -q -- \x1b[96mArguments\x1b[0m
 Found 1 positional parameter
 ```
 
@@ -87,10 +87,10 @@ tar czf program.tar.gz -C target/release program
 
 In this runscript, the three targets can be executed in the following ways:
 
-```txt
-$ run               # Executes [program:run]
-$ run program:bench # Executes [program:bench]
-$ run pkg           # Executes [pkg]
+```ansi
+$ run -- Argument   \x1b[90m# Executes [program:run] with arguments {"Argument"}\x1b[0m
+$ run program:bench \x1b[90m# Executes [program:bench]\x1b[0m
+$ run pkg           \x1b[90m# Executes [pkg]\x1b[0m
 ```
 
 ## External script invocation
@@ -103,9 +103,9 @@ If Runscript's builtin shell is inadequate, you can tell the script to use a dif
 echo Foo
 ```
 
-```txt
+```ansi
 $ run
-Run external
+\x1b[1;94mRun\x1b[0m external
 Foo
 ```
 

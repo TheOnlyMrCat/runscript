@@ -21,6 +21,16 @@ jobs:
         with:
           mdbook-version: '0.4.19'
           # mdbook-version: 'latest'
+      
+      - name: Install cargo
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          profile: minimal
+          default: true
+      
+      - name: Install mdbook-ansi
+        run: cargo install --git 'https://github.com/TheOnlyMrCat/mdbook-ansi'
 
       - run: mdbook build
 
