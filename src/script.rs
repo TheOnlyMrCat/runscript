@@ -32,8 +32,8 @@ pub enum ScriptExecution {
         options: ScriptOptions,
     },
     ExternalPosix {
-        path: String,
-        commands: String,
+        command: Vec<String>,
+        script: String,
     },
 }
 

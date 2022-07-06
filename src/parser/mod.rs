@@ -108,7 +108,7 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
         command_option: bool,
     }
 
-    let mut default_shell: Option<String> = None;
+    let mut default_shell: Option<Vec<String>> = None;
     let mut current_script: Option<CurrentScript> = None;
     while let Some(tk) = iterator.peek().copied() {
         match tk {
@@ -134,9 +134,13 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                         .unwrap_or_else(|| "run".to_owned());
                     (name, phase)
                 };
-                let execution_type = {
-                    let (execution_type, _) = consume_line(&mut iterator);
-                    execution_type.trim().to_owned()
+                let external_command = {
+                    let (external_command, _) = consume_line(&mut iterator);
+                    external_command
+                        .trim()
+                        .split_whitespace()
+                        .map(ToOwned::to_owned)
+                        .collect::<Vec<_>>()
                 };
 
                 // Clean up the previous script if there was one
@@ -161,11 +165,11 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                 // Set up parsing context for new script
                 current_script = Some(CurrentScript {
                     script: Script {
-                        commands: if execution_type.is_empty() {
+                        commands: if external_command.is_empty() {
                             if let Some(default_shell) = &default_shell {
                                 ScriptExecution::ExternalPosix {
-                                    path: default_shell.clone(),
-                                    commands: String::new(),
+                                    command: default_shell.clone(),
+                                    script: String::new(),
                                 }
                             } else {
                                 ScriptExecution::Internal {
@@ -175,8 +179,8 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                             }
                         } else {
                             ScriptExecution::ExternalPosix {
-                                path: execution_type,
-                                commands: String::new(),
+                                command: external_command,
+                                script: String::new(),
                             }
                         },
                         line: line_index!(i),
@@ -228,8 +232,9 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                                 })
                             }
                         }
-                    } else if let ScriptExecution::ExternalPosix { commands, .. } =
-                        &mut current_script.script.commands
+                    } else if let ScriptExecution::ExternalPosix {
+                        script: commands, ..
+                    } = &mut current_script.script.commands
                     {
                         // Target-specific options can still exist in externally-executed scripts,
                         // but we still need to give the `:` back if we're not using it
@@ -265,8 +270,14 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                             runscript.options.default_target.merge(SetNone).unwrap();
                         }
                         "default-shell" => {
-                            let (shell_name, _) = consume_line(&mut iterator);
-                            default_shell = Some(shell_name.trim().to_owned());
+                            let (external_command, _) = consume_line(&mut iterator);
+                            default_shell = Some(
+                                external_command
+                                    .trim()
+                                    .split_whitespace()
+                                    .map(ToOwned::to_owned)
+                                    .collect::<Vec<_>>(),
+                            );
                         }
                         _ => {
                             return Err(RunscriptParseError::NonexistentOption {
@@ -286,7 +297,10 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                 if let Some(CurrentScript {
                     script:
                         Script {
-                            commands: ScriptExecution::ExternalPosix { commands, .. },
+                            commands:
+                                ScriptExecution::ExternalPosix {
+                                    script: commands, ..
+                                },
                             ..
                         },
                     ..
@@ -300,7 +314,9 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
             (i, c) => {
                 if let Some(current_script) = &mut current_script {
                     match &mut current_script.script.commands {
-                        ScriptExecution::ExternalPosix { commands, .. } => {
+                        ScriptExecution::ExternalPosix {
+                            script: commands, ..
+                        } => {
                             commands.push(c); //TODO: Consume full line here so it doesn't try to parse options and script headers?
                             iterator.next();
                         }

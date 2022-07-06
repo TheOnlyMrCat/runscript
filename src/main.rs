@@ -545,12 +545,13 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                             .wait()
                                             .status
                                     }
-                                    ScriptExecution::ExternalPosix { path, commands } => {
+                                    ScriptExecution::ExternalPosix { command, script } => {
                                         let mut file = tempfile::NamedTempFile::new().unwrap();
-                                        file.write_all(commands.as_bytes()).unwrap();
+                                        file.write_all(script.as_bytes()).unwrap();
 
                                         process::ProcessExit::StdStatus(
-                                            std::process::Command::new(&path)
+                                            std::process::Command::new(&command[0])
+                                                .args(&command[1..])
                                                 .arg(file.path())
                                                 .args(&exec_cfg.positional_args[1..])
                                                 .current_dir(&exec_cfg.working_directory)
