@@ -452,21 +452,12 @@ impl SpawnableProcess<'_> {
                 cmd.stdin(self.redir.stdin)
                     .stdout(self.redir.stdout)
                     .stderr(self.redir.stderr);
-                let process = cmd.spawn().unwrap();
-                // if let StdinRedirect::Buffer(stdin_buffer) = self.stdin {
-                //     if let Some(mut child_stdin) = process.stdin.as_ref() {
-                //         use std::io::Write;
-                //         // This approach can cause a deadlock if the following conditions are true:
-                //         // - The child is using a piped stdout (the next process hasn't be spawned yet to consume it)
-                //         // - The stdin buffer is larger than the pipe buffer
-                //         // - The child writes more than one pipe buffer of data without reading enough of stdin
-                //         //? Could run this on separate thread to mitigate this, if necessary.
-                //         //? Could compare buffer size to libc::PIPE_BUF (4KiB), and spawn a thread if it is larger.
-                //         let _ = child_stdin.write_all(&stdin_buffer);
-                //         //TODO: Do I need to worry about an error here?
-                //     }
-                // }
-                WaitableProcess::new(process)
+                match cmd.spawn() {
+                    Ok(process) => WaitableProcess::new(process),
+                    Err(err) => {
+                        WaitableProcess::empty_error(CommandExecError::CommandFailed { err })
+                    }
+                }
             }
             SpawnableProcessType::FnDef(name, body) => {
                 Ref::into_unique(context.shell_context())
