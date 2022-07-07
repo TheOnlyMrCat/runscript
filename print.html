@@ -76,7 +76,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">User Guide</li><li class="chapter-item expanded "><a href="guide/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="guide/usage.html"><strong aria-hidden="true">2.</strong> Basic Usage</a></li><li class="chapter-item expanded "><div><strong aria-hidden="true">3.</strong> Tips and Tricks</div></li><li class="chapter-item expanded affix "><li class="part-title">Reference Guide</li><li class="chapter-item expanded "><div><strong aria-hidden="true">4.</strong> CLI Interface</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">5.</strong> Configuration</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">6.</strong> Shell Scripting Language</div></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">User Guide</li><li class="chapter-item expanded "><a href="guide/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="guide/usage.html"><strong aria-hidden="true">2.</strong> Basic Usage</a></li><li class="chapter-item expanded "><div><strong aria-hidden="true">3.</strong> Tips and Tricks</div></li><li class="chapter-item expanded "><a href="guide/just.html"><strong aria-hidden="true">4.</strong> Comparison with just</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference Guide</li><li class="chapter-item expanded "><div><strong aria-hidden="true">5.</strong> CLI Interface</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">6.</strong> Configuration</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">7.</strong> Shell Scripting Language</div></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -232,6 +232,30 @@ Foo
 [external]
 echo Foo
 </code></pre>
+<div style="break-before: page; page-break-before: always;"></div><h1 id="comparison-with-caseyjust"><a class="header" href="#comparison-with-caseyjust">Comparison with <a href="https://github.com/casey/just">casey/just</a></a></h1>
+<p><code>run</code> and <code>just</code> were written to accomplish, in essence, the same task of managing project-specific commands. Here is a
+breakdown of the main differences between the two command runners:</p>
+<p><strong>Disclaimers:</strong></p>
+<ul>
+<li>I have not actually used <code>just</code>. This feature breakdown is based solely on the features listed in its
+<a href="https://just.systems/man/en">documentation</a>.</li>
+<li>This comparison is currently incomplete. Expect more headings to be added in the future.</li>
+</ul>
+<h2 id="command-execution"><a class="header" href="#command-execution">Command execution</a></h2>
+<p><code>just</code> always delegates script execution to an external shell. By default, each line of a recipe is executed by a individual
+<code>sh</code> instances, but a shell an be supplied for an entire recipe by placing a shebang <code>#!/bin/sh</code> line at the start of the
+recipe, or per-Justfile with a setting <code>set shell := /bin/sh</code>.</p>
+<p><code>run</code>, by default, tries to execute scripts itself, and provide output while doing so. It can be instructed to delegate
+to an external shell in the script header <code>[script] /bin/sh</code> or a file-wide option <code>::default-shell /bin/sh</code>.</p>
+<p>For both tools, this allows recipes/scripts to be written in any language, not just shell language.</p>
+<h2 id="variables-positional-parameters-and-substitution"><a class="header" href="#variables-positional-parameters-and-substitution">Variables, positional parameters, and substitution</a></h2>
+<p><code>just</code> allows variables to be defined at the top of a Justfile, which are evaluated before the recipe is executed and can be
+substituted into a recipe. Recipes can also define positional parameters <code>build TARGET:</code> that can be substituted in the same
+way. Variable substitutions are done with double curly braces <code>cc -o {{TARGET}} {{TARGET}}.c</code>, and positional parameters are
+passed on the command-line in the same way as a recipe target <code>just build my-target</code>.</p>
+<p><code>run</code> does not have the same concept of variables or script-specified positional parameters. These designs are handled by
+the shell language instead. Positional parameters are passed on the command-line separated from the main command by a <code>--</code>:
+<code>run target -- argument</code>, and can be read by the script using <code>$1</code>, <code>$2</code>, etc. parameter substitutions.</p>
 
                     </main>
 

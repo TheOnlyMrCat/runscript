@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Basic Usage - Runscript</title>
+        <title>Comparison with just - Runscript</title>
         <!-- Custom HTML head -->
         <meta content="text/html; charset=utf-8" http-equiv="Content-Type">
         <meta name="description" content="">
@@ -75,7 +75,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">User Guide</li><li class="chapter-item expanded "><a href="../guide/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="../guide/usage.html" class="active"><strong aria-hidden="true">2.</strong> Basic Usage</a></li><li class="chapter-item expanded "><div><strong aria-hidden="true">3.</strong> Tips and Tricks</div></li><li class="chapter-item expanded "><a href="../guide/just.html"><strong aria-hidden="true">4.</strong> Comparison with just</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference Guide</li><li class="chapter-item expanded "><div><strong aria-hidden="true">5.</strong> CLI Interface</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">6.</strong> Configuration</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">7.</strong> Shell Scripting Language</div></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../introduction.html">Introduction</a></li><li class="chapter-item expanded affix "><li class="part-title">User Guide</li><li class="chapter-item expanded "><a href="../guide/installation.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="../guide/usage.html"><strong aria-hidden="true">2.</strong> Basic Usage</a></li><li class="chapter-item expanded "><div><strong aria-hidden="true">3.</strong> Tips and Tricks</div></li><li class="chapter-item expanded "><a href="../guide/just.html" class="active"><strong aria-hidden="true">4.</strong> Comparison with just</a></li><li class="chapter-item expanded affix "><li class="part-title">Reference Guide</li><li class="chapter-item expanded "><div><strong aria-hidden="true">5.</strong> CLI Interface</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">6.</strong> Configuration</div></li><li class="chapter-item expanded "><div><strong aria-hidden="true">7.</strong> Shell Scripting Language</div></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -134,97 +134,37 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="basic-usage"><a class="header" href="#basic-usage">Basic Usage</a></h1>
-<p>Once you have the <code>run</code> binary installed, you can execute runscripts with it.</p>
-<h2 id="a-basic-runscript"><a class="header" href="#a-basic-runscript">A basic runscript</a></h2>
-<p>The syntax of a runscript is inspired by the <a href="https://toml.io">TOML</a> configuration language. Runscript looks for a file called
-<code>run</code> or <code>.run</code> in the current directory, and any parent directory. Here is an example for executing a simple C program:</p>
-<pre><code class="language-run"># Saved as `run` in the current directory
-
-[prog:build]
-make
-
-[prog:run]
-::default-phase build run
-./prog
-</code></pre>
-<p>There are two things of note here. First are the script headers: <code>[prog:build]</code> and <code>[prog:run]</code>. These define <em>targets</em> in
-your runscript. Similar to <code>make</code>, the first target in a file is chosen as the default target, but unlike in <code>make</code>, targets
-can have multiple <em>phases</em>. In this case (and in most cases), there is a <code>build</code> phase for building the target and a <code>run</code>
-phase for running the target.</p>
-<p>If the phase is omitted from a script header, e.g. <code>[prog]</code>, the phase is assumed to be <code>run</code>. You cannot define the same
-<code>[target:phase]</code> twice in the same runscript.</p>
-<p>We'll get to the <code>::default-phase</code> in a bit.</p>
-<p>This runscript can be executed by simply executing <code>run</code> in the same directory as the runscript.</p>
-<pre class="ansi"><code><span>$ run
-</span><span style="color: red;font-weight: bold;">Build</span><span style=""> prog
-> </span><span style="font-weight: bold;">make</span><span style="">
-make: `prog' is up to date
-</span><span style="color: blue;font-weight: bold;">Run</span><span style=""> prog
-> </span><span style="font-weight: bold;">./prog</span><span style="">
-Hello, world!
-</span></code></pre>
-<p>You can also choose to only build or only run the target with flags: <code>run -b</code> or <code>run -r</code>.</p>
-<p>Now, back to the <code>::default-phase build run</code>. This line tells Runscript to execute both the <code>build</code> and <code>run</code> phases
-sequentially, by default. If this line were not included, the command <code>run</code> would only execute the <code>run</code> phase.</p>
-<h2 id="shell-scripting"><a class="header" href="#shell-scripting">Shell scripting</a></h2>
-<p>Runscripts support most basic shell features, such as parameter substitution, flow control, and background jobs.</p>
-<p>Here's an example runscript which takes positional parameters:</p>
-<pre><code class="language-run">[target]
-cargo run -q -- $@
-</code></pre>
-<p>Arguments can be passed to this script by separating them from the main command with a <code>--</code>:</p>
-<pre class="ansi"><code><span>$ run -- Arguments
-</span><span style="color: blue;font-weight: bold;">Run</span><span style=""> target
-> </span><span style="font-weight: bold;">cargo</span><span style=""> run -q -- </span><span style="color: aqua;">Arguments</span><span style="">
-Found 1 positional parameter
-</span></code></pre>
-<h2 id="multiple-targets"><a class="header" href="#multiple-targets">Multiple targets</a></h2>
-<p>A runscript can, of course, define multiple targets. You could, for example, have a default target for testing your program,
-and a separate target for packaging it for release.</p>
-<p>In addition to this, any identifier can be used as a phase name, not just <code>build</code>, <code>run</code>, and <code>test</code>. Here's an example
-runscript showcasing all of these features:</p>
-<pre><code class="language-run">[program:run]
-cargo run -- $@
-
-[program:bench]
-cargo bench
-
-[pkg]
-cargo build --release
-tar czf program.tar.gz -C target/release program
-</code></pre>
-<p>In this runscript, the three targets can be executed in the following ways:</p>
-<pre class="ansi"><code><span>$ run -- Argument   </span><span style="color: silver;"># Executes [program:run] with arguments {"Argument"}</span><span style="">
-$ run program:bench </span><span style="color: silver;"># Executes [program:bench]</span><span style="">
-$ run pkg           </span><span style="color: silver;"># Executes [pkg]</span><span style="">
-</span></code></pre>
-<h2 id="external-script-invocation"><a class="header" href="#external-script-invocation">External script invocation</a></h2>
-<p>If Runscript's builtin shell is inadequate, you can tell the script to use a different shell, such as <code>bash</code> or
-<code>zsh</code>. This is done by putting the path to the shell on the end of the header line:</p>
-<pre><code class="language-run">[external] /bin/bash
-echo Foo
-</code></pre>
-<pre class="ansi"><code><span>$ run
-</span><span style="color: blue;font-weight: bold;">Run</span><span style=""> external
-Foo
-</span></code></pre>
-<p>This can be done on a runscript-wide basis with the <code>::default-shell</code> option:</p>
-<pre><code class="language-run">::default-shell /bin/bash
-
-[external]
-echo Foo
-</code></pre>
+                        <h1 id="comparison-with-caseyjust"><a class="header" href="#comparison-with-caseyjust">Comparison with <a href="https://github.com/casey/just">casey/just</a></a></h1>
+<p><code>run</code> and <code>just</code> were written to accomplish, in essence, the same task of managing project-specific commands. Here is a
+breakdown of the main differences between the two command runners:</p>
+<p><strong>Disclaimers:</strong></p>
+<ul>
+<li>I have not actually used <code>just</code>. This feature breakdown is based solely on the features listed in its
+<a href="https://just.systems/man/en">documentation</a>.</li>
+<li>This comparison is currently incomplete. Expect more headings to be added in the future.</li>
+</ul>
+<h2 id="command-execution"><a class="header" href="#command-execution">Command execution</a></h2>
+<p><code>just</code> always delegates script execution to an external shell. By default, each line of a recipe is executed by a individual
+<code>sh</code> instances, but a shell an be supplied for an entire recipe by placing a shebang <code>#!/bin/sh</code> line at the start of the
+recipe, or per-Justfile with a setting <code>set shell := /bin/sh</code>.</p>
+<p><code>run</code>, by default, tries to execute scripts itself, and provide output while doing so. It can be instructed to delegate
+to an external shell in the script header <code>[script] /bin/sh</code> or a file-wide option <code>::default-shell /bin/sh</code>.</p>
+<p>For both tools, this allows recipes/scripts to be written in any language, not just shell language.</p>
+<h2 id="variables-positional-parameters-and-substitution"><a class="header" href="#variables-positional-parameters-and-substitution">Variables, positional parameters, and substitution</a></h2>
+<p><code>just</code> allows variables to be defined at the top of a Justfile, which are evaluated before the recipe is executed and can be
+substituted into a recipe. Recipes can also define positional parameters <code>build TARGET:</code> that can be substituted in the same
+way. Variable substitutions are done with double curly braces <code>cc -o {{TARGET}} {{TARGET}}.c</code>, and positional parameters are
+passed on the command-line in the same way as a recipe target <code>just build my-target</code>.</p>
+<p><code>run</code> does not have the same concept of variables or script-specified positional parameters. These designs are handled by
+the shell language instead. Positional parameters are passed on the command-line separated from the main command by a <code>--</code>:
+<code>run target -- argument</code>, and can be read by the script using <code>$1</code>, <code>$2</code>, etc. parameter substitutions.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../guide/installation.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="../guide/usage.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
-                            </a>
-                            <a rel="next" href="../guide/just.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                                <i class="fa fa-angle-right"></i>
                             </a>
                         <div style="clear: both"></div>
                     </nav>
@@ -232,11 +172,8 @@ echo Foo
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../guide/installation.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="../guide/usage.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
-                    </a>
-                    <a rel="next" href="../guide/just.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
-                        <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
 
