@@ -17,14 +17,9 @@ use self::ast::AtomicTopLevelCommand;
 use self::lexer::Lexer;
 
 #[derive(Debug, Clone)]
-pub struct RunscriptSource {
-    pub working_dir: PathBuf,
-    pub files: Vec<SourceFile>,
-}
-
-#[derive(Debug, Clone)]
 pub struct SourceFile {
     pub path: PathBuf,
+    pub working_dir: PathBuf,
     pub source: String,
 }
 
@@ -84,6 +79,7 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
             .unwrap()
             .to_string_lossy()
             .into_owned(),
+        working_dir: source.working_dir,
         canonical_path: source.path.canonicalize().unwrap_or(source.path),
         source_text: source.source.clone(),
         scripts: IndexMap::new(),

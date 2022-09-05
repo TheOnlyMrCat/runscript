@@ -16,7 +16,6 @@ use config::Config;
 use exec::BaseExecContext;
 use exitcode::ExitCode;
 
-use parser::RunscriptSource;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 use self::exec::{ExecConfig, ShellContext};
@@ -367,6 +366,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             };
 
             let parsed_script = match parser::parse_shell(SourceFile {
+                working_dir: cwd.clone(),
                 path: script.path.clone(),
                 source: script_source,
             }) {
@@ -403,7 +403,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             status.coerced_code()
         }
         Some(CliSubcommand::List(list)) => {
-            let runfile = match select_files(
+            let files = match select_files(
                 list.file.as_deref(),
                 &config,
                 context.current_file.as_deref(),
@@ -414,7 +414,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 Err(code) => return code,
             };
 
-            let runscripts = parse_files(&output_stream, &cwd, runfile.files);
+            let runscripts = parse_files(&output_stream, &cwd, files);
 
             if runscripts.is_empty() {
                 exitcode::DATAERR
@@ -457,7 +457,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             }
         }
         None => {
-            let runfile = match select_files(
+            let files = match select_files(
                 options.file.as_deref(),
                 &config,
                 context.current_file.as_deref(),
@@ -468,7 +468,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 Err(code) => return code,
             };
 
-            let runscripts = parse_files(&output_stream, &cwd, runfile.files);
+            let runscripts = parse_files(&output_stream, &cwd, files);
 
             if runscripts.is_empty() {
                 exitcode::DATAERR
@@ -505,7 +505,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         let exec_cfg = ExecConfig {
                             output_stream: Some(output_stream.clone()),
                             colour_choice,
-                            working_directory: runfile.working_dir,
+                            working_directory: script.working_dir.clone(),
                             script_path: Some(script.canonical_path.clone()),
                             target_name: Some(name.clone()),
                             positional_args: std::iter::once(
@@ -596,7 +596,7 @@ fn select_files(
     context_file: Option<&Path>,
     cwd: &Path,
     output_stream: &StandardStream,
-) -> Result<RunscriptSource, ExitCode> {
+) -> Result<Vec<SourceFile>, ExitCode> {
     match cli_file {
         Some(file) => {
             let path = std::fs::canonicalize(file).map_err(|err| {
@@ -608,10 +608,11 @@ fn select_files(
                 exitcode::NOINPUT
             })?;
             let working_dir = path.parent().unwrap_or_else(|| Path::new("")).to_owned();
-            Ok(RunscriptSource {
+            Ok(vec![SourceFile {
+                path,
                 working_dir,
-                files: vec![SourceFile { path, source }],
-            })
+                source,
+            }])
         }
         None => match context_file {
             Some(file) => {
@@ -620,40 +621,34 @@ fn select_files(
                     exitcode::NOINPUT
                 })?;
                 let working_dir = file.parent().unwrap_or_else(|| Path::new("")).to_owned();
-                Ok(RunscriptSource {
+                Ok(vec![SourceFile {
+                    path: file.to_owned(),
                     working_dir,
-                    files: vec![SourceFile {
-                        path: file.to_owned(),
-                        source,
-                    }],
-                })
+                    source,
+                }])
             }
             None => {
-                for path in cwd.ancestors() {
-                    let files = config
-                        .file
-                        .names
-                        .iter()
-                        .filter_map(|file| {
+                let files = cwd
+                    .ancestors()
+                    .flat_map(|path| {
+                        config.file.names.iter().filter_map(|file| {
                             let runfile_path = path.join(file);
                             std::fs::read_to_string(&runfile_path)
                                 .ok()
                                 .map(|source| SourceFile {
                                     path: runfile_path,
+                                    working_dir: path.to_owned(),
                                     source,
                                 })
                         })
-                        .collect::<Vec<_>>();
-
-                    if !files.is_empty() {
-                        return Ok(RunscriptSource {
-                            working_dir: path.to_owned(),
-                            files,
-                        });
-                    }
+                    })
+                    .collect::<Vec<_>>();
+                if files.is_empty() {
+                    out::no_runfile_err(output_stream);
+                    Err(exitcode::NOINPUT)
+                } else {
+                    Ok(files)
                 }
-                out::no_runfile_err(output_stream);
-                Err(exitcode::NOINPUT)
             }
         },
     }

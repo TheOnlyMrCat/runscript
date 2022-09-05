@@ -1,4 +1,5 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use crate::parser::ast::AtomicTopLevelCommand;
 use indexmap::IndexMap;
@@ -7,6 +8,7 @@ use indexmap::IndexMap;
 #[derive(Clone, Debug)]
 pub struct Runscript {
     pub canonical_path: PathBuf,
+    pub working_dir: PathBuf,
     pub display_path: String,
     pub source_text: String,
     pub scripts: IndexMap<String, Target>,

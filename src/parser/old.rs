@@ -32,6 +32,7 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),
+            working_dir: source.working_dir,
             canonical_path: source.path.canonicalize().unwrap_or(source.path),
             source_text: source.source.clone(),
             scripts: IndexMap::new(),

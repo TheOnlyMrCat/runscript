@@ -659,6 +659,7 @@ impl BuiltinCommand {
                             });
                         }
                     },
+                    working_dir: context.shell_context().working_directory.clone(),
                     path,
                 };
 
