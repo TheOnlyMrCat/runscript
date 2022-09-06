@@ -967,7 +967,7 @@ impl ShellContext {
                 (
                     vec![output.clone()].into(),
                     PrintableSimpleWord::Substitution {
-                        original: "()".to_owned(),
+                        original: "(...)".to_owned(),
                         evaluated: output,
                     },
                 )

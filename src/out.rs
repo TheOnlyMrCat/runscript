@@ -258,6 +258,7 @@ fn print_complex_word(
             //TODO: Don't print this on windows console, because it doesn't have dimmed?
             lock.set_color(ColorSpec::new().set_fg(Some(Color::White)).set_dimmed(true))?;
             write!(lock, " ({} matches)", matches.len())?;
+            lock.reset()?;
         }
         PrintableComplexWord::Words(words) => {
             //TODO: If this complex word was evaluated empty in evaluations-only output, print an explicit ''
@@ -321,13 +322,20 @@ fn print_simple_word(
             original: _,
             evaluated,
         } => {
-            lock.set_color(
-                ColorSpec::new()
-                    .set_fg(Some(Color::Cyan))
-                    .set_bold(true)
-                    .set_intense(true),
-            )?;
-            write!(lock, "{}", evaluated)?;
+            if evaluated.is_empty() && matches!(context, FormattingContext::Freestanding) {
+                // lock.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)).set_intense(true))?;
+                lock.set_color(ColorSpec::new().set_fg(Some(Color::White)).set_dimmed(true))?;
+                write!(lock, "''")?;
+                // write!(lock, "(${})", original)?;
+            } else {
+                lock.set_color(
+                    ColorSpec::new()
+                        .set_fg(Some(Color::Cyan))
+                        .set_bold(true)
+                        .set_intense(true),
+                )?;
+                write!(lock, "{}", evaluated)?;
+            }
             match context {
                 FormattingContext::GlobPattern => {
                     lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?

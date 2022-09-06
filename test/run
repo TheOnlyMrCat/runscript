@@ -61,10 +61,10 @@ bar baz
 qux quux corge grault
 
 [params]
-FOO='bar' echo ${FOO-No foo}
+FOO='bar' echo $FOO
 FOO='bar' printenv FOO
 FOO='bar'
-echo ${FOO-No foo}
+echo $FOO
 printenv FOO || :
 export FOO
 printenv FOO
