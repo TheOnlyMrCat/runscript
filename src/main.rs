@@ -1,3 +1,5 @@
+#![warn(clippy::print_stdout)]
+
 mod config;
 mod exec;
 mod out;
@@ -11,7 +13,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use clap::{ArgEnum, Args, FromArgMatches, IntoApp, Parser, Subcommand, ValueHint};
+use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum, ValueHint};
 use config::Config;
 use exec::BaseExecContext;
 use exitcode::ExitCode;
@@ -22,16 +24,32 @@ use self::exec::{ExecConfig, ShellContext};
 use self::parser::SourceFile;
 use self::script::{Overrideable, Runscript, ScriptExecution, Target};
 
+build_info::build_info!(fn build_info);
+
+const HELP_TEXT: &str = "\
+Project script manager and executor
+
+Usage: run [OPTIONS] [TARGET:PHASE] [-- ARGS ...]
+       run -c <COMMAND> [-- ARGS ...]
+       run -s <FILE> [-- ARGS ...]
+
+Global Options:
+      --color <WHEN>  [default: auto] [possible values: always, ansi, auto, never]
+  -h, --help          Print help information
+  -V, --version       Print version information
+
+Options:
+  -l, --list         List targets in all runscripts found
+  -f, --file <FILE>  Execute from <FILE> instead of finding all applicable runscripts
+  -b, --build        
+  -r, --run          
+  -t, --test         
+";
+
 const VERSION_TEXT: &str = "\
 Written by TheOnlyMrCat
 Source code available at https://github.com/TheOnlyMrCat/runscript
 ";
-
-const VERSION: &str = env!("CARGO_PKG_VERSION");
-const FEATURE_FLAGS: [(bool, &str); 2] = [
-    (cfg!(feature = "panic-hook"), "panic-hook"),
-    (cfg!(feature = "old-parser"), "old-parser"),
-];
 
 #[cfg(feature = "panic-hook")]
 fn panic_hook(info: &std::panic::PanicInfo) {
@@ -47,6 +65,7 @@ fn panic_hook(info: &std::panic::PanicInfo) {
         };
         match File::create(&file) {
             Ok(mut writer) => {
+                let build = build_info();
                 let _ = write!(
                     writer,
                     "\
@@ -54,13 +73,10 @@ Runscript panicked.
 Crate version: {}
 Operating System: {}
 ",
-                    VERSION,
+                    build.crate_info.version,
                     os_info::get(),
                 );
-                for feature in FEATURE_FLAGS
-                    .into_iter()
-                    .filter_map(|(enabled, feature)| enabled.then(|| feature))
-                {
+                for feature in &build.crate_info.enabled_features {
                     let _ = writeln!(writer, "Feature: {}", feature);
                 }
                 let _ = writeln!(writer);
@@ -138,13 +154,16 @@ fn main() {
 #[clap(
     about,
     version,
+    disable_help_subcommand = true,
     args_conflicts_with_subcommands = true,
-    override_usage = "run [OPTIONS] [TARGET:PHASE] [-- ARGS]"
+    override_usage = "run [options] [target:phase] [-- args]\n       \
+        run -c <command> [-- args]\n       \
+        run -s <file> [-- args]"
 )]
 struct Cli {
     #[clap(subcommand)]
     subcommand: Option<CliSubcommand>,
-    #[clap(arg_enum, long = "color", global = true, default_value_t = CliColourChoice::Auto, next_help_heading = "GLOBAL OPTIONS")]
+    #[clap(value_enum, long = "color", global = true, default_value_t)]
     colour_choice: CliColourChoice,
 
     #[clap(short, long, value_hint = ValueHint::FilePath)]
@@ -162,22 +181,29 @@ struct Cli {
     args: Vec<String>,
 }
 
-#[derive(ArgEnum, Clone)]
+#[derive(ValueEnum, Clone, Default)]
 enum CliColourChoice {
     Always,
     #[clap(name = "ansi")]
     AlwaysAnsi,
+    #[default]
     Auto,
     Never,
 }
 
 #[derive(Subcommand)]
 enum CliSubcommand {
-    #[clap(short_flag = 'c', long_flag = "command")]
+    #[clap(name = "ArbitrarilyLongStringWhichOnlyServesToDelayTheInevitableCommand")]
+    #[clap(override_usage = "run -c <command> [-- args]")]
+    #[clap(short_flag = 'c', long_flag = "command", hide = true)]
     Command(CommandSubcommand),
-    #[clap(short_flag = 's', long_flag = "script")]
+    #[clap(name = "ArbitrarilyLongStringWhichOnlyServesToDelayTheInevitableScript")]
+    #[clap(override_usage = "run -s <script> [-- args]")]
+    #[clap(short_flag = 's', long_flag = "script", hide = true)]
     Script(ScriptSubcommand),
-    #[clap(short_flag = 'l', long_flag = "list")]
+    #[clap(name = "ArbitrarilyLongStringWhichOnlyServesToDelayTheInevitableList")]
+    #[clap(override_usage = "run -l [-f <FILE>]")]
+    #[clap(short_flag = 'l', long_flag = "list", hide = true)]
     List(ListSubcommand),
 }
 
@@ -205,22 +231,20 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     let options = match app.try_get_matches_from_mut(context.args) {
         Ok(m) => Cli::from_arg_matches(&m).unwrap(),
         Err(err) => {
+            #[allow(clippy::print_stdout)]
             match err.kind() {
-                clap::ErrorKind::DisplayHelp => {
-                    app.print_help().expect("Failed to print clap help");
+                clap::error::ErrorKind::DisplayHelp => {
+                    print!("{}", HELP_TEXT); // HELP_TEXT contains a trailing newline
                     return exitcode::OK;
                 }
-                #[allow(clippy::print_stdout)]
-                clap::ErrorKind::DisplayVersion => {
-                    print!("Runscript {}", VERSION);
-                    for feature in FEATURE_FLAGS
-                        .into_iter()
-                        .filter_map(|(enabled, feature)| enabled.then(|| feature))
-                    {
+                clap::error::ErrorKind::DisplayVersion => {
+                    let build = build_info();
+                    print!("runscript {}", build.crate_info.version);
+                    for feature in &build.crate_info.enabled_features {
                         print!(" +{}", feature);
                     }
                     println!();
-                    print!("{}", VERSION_TEXT); // VERSION_TEXT contains a newline already
+                    print!("{}", VERSION_TEXT); // VERSION_TEXT contains a trailing newline
                     return exitcode::OK;
                 }
                 _ => {
