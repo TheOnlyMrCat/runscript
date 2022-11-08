@@ -8,23 +8,23 @@ For an example of a useful runscript, see [the runfile for this repository](run)
 ## Features
 
 - Does **not** use Makefile syntax
+- Emulates a shell and executes commands directly, instead of invoking `sh`.
 - Supports most of the shell features you know and love (parsing adapted from [ipetkov/conch_parser](https://github.com/ipetkov/conch-parser))
+- Can invoke an external tool (not necessarily a shell!) to run a script, if the buildin shell proves inadequate.
 - Multiple 'phases' per target, so you can chose to build, run, or test a target. If those options aren't enough, you can name your phases whatever you want!
 - Imports targets from multiple files, meaning you can have a personal `.run` file alongside a source-controlled `run` file
 - Fancy output while running scripts
-- Properly emulates a shell, with `export`able variables, `source`ing shell scripts, `cd`ing.
-- If runscript's builtin shell doesn't have everything you need, you can execute a script with an external shell (e.g. `bash`). You can also apply this to an entire runscript.
 
 ### Still to do
 
-- [ ] A number of more advanced shell features, including:
-  - [ ] A few shell builtin commands (e.g. `exit`, `nohup`)
-  - [ ] Local variables (?)
-  - [ ] Arithmetic and a number of parameter substitutions
-  - [ ] Here-documents
-- [ ] Replace manual SIGHUP'ing with `setpgid`
-- [ ] Remove most sources of panicking (fuzz testing?)
-- [ ] Support Windows properly
+- A number of more advanced shell features, including:
+  - A few shell builtin commands (e.g. `exit`, `nohup`)
+  - Local variables (?)
+  - Arithmetic and a number of parameter substitutions
+  - Here-documents
+- Replace manual SIGHUP'ing with `setpgid`
+- Remove most sources of panicking (fuzz testing?)
+- Support Windows properly (?)
 
 ### Non-goals
 
@@ -35,8 +35,13 @@ to be able to execute shell scripts to implement the `source` builtin.
 
 ## How to install
 
-Binaries are available from the [releases](https://github.com/TheOnlyMrCat/runscript) page. Supporting package managers is
-difficult, so I'm not going to try doing it until this gets real use. (Feel free to open an issue about it)
+```sh
+git clone https://git.sr.ht/~theonlymrcat/runscript
+cd runscript
+cargo install --release
+```
+
+Supporting package managers is difficult, so I'm not going to try doing it until this gets real use. (Feel free to send an email about it)
 
 ## License
 

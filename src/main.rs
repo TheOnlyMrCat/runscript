@@ -24,8 +24,6 @@ use self::exec::{ExecConfig, ShellContext};
 use self::parser::SourceFile;
 use self::script::{Overrideable, Runscript, ScriptExecution, Target};
 
-build_info::build_info!(fn build_info);
-
 const HELP_TEXT: &str = "\
 Project script manager and executor
 
@@ -51,6 +49,9 @@ Written by TheOnlyMrCat
 Source code available at https://github.com/TheOnlyMrCat/runscript
 ";
 
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+const FEATURES: &[(&str, bool)] = &[("old-parser", cfg!(feature = "old-parser")), ("panic-hook", cfg!(feature = "panic-hook"))];
+
 #[cfg(feature = "panic-hook")]
 fn panic_hook(info: &std::panic::PanicInfo) {
     use std::fs::File;
@@ -65,7 +66,6 @@ fn panic_hook(info: &std::panic::PanicInfo) {
         };
         match File::create(&file) {
             Ok(mut writer) => {
-                let build = build_info();
                 let _ = write!(
                     writer,
                     "\
@@ -73,11 +73,12 @@ Runscript panicked.
 Crate version: {}
 Operating System: {}
 ",
-                    build.crate_info.version,
+                    VERSION,
                     os_info::get(),
                 );
-                for feature in &build.crate_info.enabled_features {
-                    let _ = writeln!(writer, "Feature: {}", feature);
+                let _ = writeln!(writer, "Enabled features:");
+                for feature in FEATURES.iter().filter_map(|(feature, enabled)| enabled.then_some(feature)) {
+                    let _ = write!(writer, " {}", feature);
                 }
                 let _ = writeln!(writer);
                 let _ = writeln!(writer, "Panic info:");
@@ -100,20 +101,20 @@ Operating System: {}
     let _ = stderr.reset();
     let _ = writeln!(
         stderr,
-        "\
-This is a bug, please report it at https://github.com/TheOnlyMrCat/runscript/issues/new{}.
-
-Please include the arguments with which you invoked runscript, and, if possible, the script
-you ran it on.
-",
-        if let Some(file_path) = report_file {
-            format!(
-                "\nand include the generated report file at `{}`",
-                file_path.display()
-            )
-        } else {
-            String::new()
-        }
+        "This is a bug, please report it to <~theonlymrcat/public-inbox@lists.sr.ht>."
+    );    
+    let _ = writeln!(stderr);
+    if let Some(file_path) = report_file {
+        let _ = writeln!(
+        stderr,
+            "A report file was generated at `{}`.",
+            file_path.display()
+        );
+    }
+    let _ = writeln!(
+        stderr,
+        "Please include the arguments with which you invoked runscript, and, if possible, the script\n\
+        you ran it on.",
     );
     let _ = stderr.reset();
 }
@@ -238,9 +239,8 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     return exitcode::OK;
                 }
                 clap::error::ErrorKind::DisplayVersion => {
-                    let build = build_info();
-                    print!("runscript {}", build.crate_info.version);
-                    for feature in &build.crate_info.enabled_features {
+                    print!("runscript {}", VERSION);
+                    for feature in FEATURES.iter().filter_map(|(feature, enabled)| enabled.then_some(feature)) {
                         print!(" +{}", feature);
                     }
                     println!();
