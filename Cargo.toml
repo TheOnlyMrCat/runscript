@@ -21,12 +21,8 @@ default = ["panic-hook"]
 panic-hook = ["os_info", "uuid"]
 old-parser = []
 
-[build-dependencies]
-build-info-build = "0.0.27"
-
 [dependencies]
 atty = "0.2.14"
-build-info = "0.0.27"
 cfg-if = "1.0.0"
 clap = { version = "4.0.9", features = ["derive"] }
 exitcode = "1.1.2"
