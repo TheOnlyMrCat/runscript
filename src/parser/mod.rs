@@ -5,6 +5,7 @@ pub mod old;
 pub mod parse;
 pub mod token;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use indexmap::IndexMap;
@@ -68,7 +69,7 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
     let line_indices = source
         .source
         .char_indices()
-        .filter_map(|(i, c)| (c == '\n').then(|| i))
+        .filter_map(|(i, c)| (c == '\n').then_some(i))
         .collect::<Vec<_>>();
     let mut iterator = source.source.char_indices().peekable();
 
@@ -79,20 +80,19 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
             .unwrap()
             .to_string_lossy()
             .into_owned(),
-        working_dir: source.working_dir,
-        canonical_path: source.path.canonicalize().unwrap_or(source.path),
-        source_text: source.source.clone(),
         scripts: IndexMap::new(),
         options: GlobalOptions::default(),
     };
+    let empty_target = Target {
+        canonical_path: source.path.canonicalize().unwrap_or(source.path),
+        working_dir: source.working_dir,
+        scripts: HashMap::default(),
+        options: TargetOptions::default(),
+    };
 
-    //TODO: Replace with into_ok_or_err (https://github.com/rust-lang/rust/issues/82223)
     macro_rules! line_index {
         ($index:expr) => {
-            match line_indices.binary_search(&$index) {
-                Ok(i) => i + 1,
-                Err(i) => i + 1,
-            }
+            line_indices.partition_point(|&x| $index < x) + 1
         };
     }
 
@@ -133,7 +133,6 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                 let external_command = {
                     let (external_command, _) = consume_line(&mut iterator);
                     external_command
-                        .trim()
                         .split_whitespace()
                         .map(ToOwned::to_owned)
                         .collect::<Vec<_>>()
@@ -141,7 +140,10 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
 
                 // Clean up the previous script if there was one
                 if let Some(current_script) = current_script {
-                    let target = runscript.scripts.entry(current_script.target).or_default();
+                    let target = runscript
+                        .scripts
+                        .entry(current_script.target)
+                        .or_insert_with(|| empty_target.clone());
                     target
                         .scripts
                         .insert(current_script.phase, current_script.script);
@@ -149,7 +151,10 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                 }
 
                 // Ensure the new script is unique
-                let new_target = runscript.scripts.entry(name.clone()).or_default();
+                let new_target = runscript
+                    .scripts
+                    .entry(name.clone())
+                    .or_insert_with(|| empty_target.clone());
                 if let Some(script) = new_target.scripts.get(&phase) {
                     return Err(RunscriptParseError::DuplicateScript {
                         prev_line: script.line,
@@ -211,14 +216,14 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                                 current_script
                                     .target_options
                                     .default_phase
-                                    .merge(Set(phases))
+                                    .merge_unique(Set(phases))
                                     .unwrap();
                             }
                             "no-default-phase" => {
                                 current_script
                                     .target_options
                                     .default_phase
-                                    .merge(SetNone)
+                                    .merge_unique(SetNone)
                                     .unwrap();
                             }
                             _ => {
@@ -259,17 +264,20 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                             runscript
                                 .options
                                 .default_target
-                                .merge(Set(default_name))
+                                .merge_unique(Set(default_name))
                                 .unwrap();
                         }
                         "no-default-script" => {
-                            runscript.options.default_target.merge(SetNone).unwrap();
+                            runscript
+                                .options
+                                .default_target
+                                .merge_unique(SetNone)
+                                .unwrap();
                         }
                         "default-shell" => {
                             let (external_command, _) = consume_line(&mut iterator);
                             default_shell = Some(
                                 external_command
-                                    .trim()
                                     .split_whitespace()
                                     .map(ToOwned::to_owned)
                                     .collect::<Vec<_>>(),
@@ -347,7 +355,10 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
     }
 
     if let Some(current_script) = current_script {
-        let target = runscript.scripts.entry(current_script.target).or_default();
+        let target = runscript
+            .scripts
+            .entry(current_script.target)
+            .or_insert_with(|| empty_target.clone());
         target
             .scripts
             .insert(current_script.phase, current_script.script);

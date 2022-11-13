@@ -28,8 +28,8 @@ impl<'a, T> Deref for Ref<'a, T> {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Ref::Shared(t) => *t,
-            Ref::Unique(t) => *t,
+            Ref::Shared(t) => t,
+            Ref::Unique(t) => t,
         }
     }
 }
@@ -62,7 +62,7 @@ impl<'a, T> Deref for Unique<'a, T> {
 
     fn deref(&self) -> &Self::Target {
         match self {
-            Unique::Borrowed(t) => &**t,
+            Unique::Borrowed(t) => t,
             Unique::Owned(t) => t,
         }
     }
@@ -71,7 +71,7 @@ impl<'a, T> Deref for Unique<'a, T> {
 impl<'a, T> std::ops::DerefMut for Unique<'a, T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         match self {
-            Unique::Borrowed(t) => *t,
+            Unique::Borrowed(t) => t,
             Unique::Owned(t) => t,
         }
     }

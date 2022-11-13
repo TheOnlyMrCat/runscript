@@ -2,6 +2,8 @@
 //! and only accessible using the `old-format` feature. No error-checking is done, since new
 //! (and edited) runscripts should use the new format.
 
+use std::collections::HashMap;
+
 use crate::parser::lexer::Lexer;
 use crate::parser::parse::Parser;
 use indexmap::IndexMap;
@@ -15,6 +17,7 @@ struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
     iterator: std::iter::Peekable<T>,
     runfile: Runscript,
     line_indices: Vec<usize>,
+    empty_target: Target,
 }
 
 pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
@@ -32,11 +35,14 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
                 .unwrap()
                 .to_string_lossy()
                 .into_owned(),
-            working_dir: source.working_dir,
-            canonical_path: source.path.canonicalize().unwrap_or(source.path),
-            source_text: source.source.clone(),
             scripts: IndexMap::new(),
             options: GlobalOptions::default(),
+        },
+        empty_target: Target {
+            canonical_path: source.path.canonicalize().unwrap_or(source.path),
+            working_dir: source.working_dir,
+            scripts: HashMap::new(),
+            options: TargetOptions::default(),
         },
     };
     match parse_root(&mut context) {
@@ -106,7 +112,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .runfile
                         .scripts
                         .entry("default".to_owned())
-                        .or_default()
+                        .or_insert_with(|| context.empty_target.clone())
                         .scripts
                         .insert(phase.to_owned(), script);
                 } else {
@@ -114,7 +120,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .runfile
                         .scripts
                         .entry(name.clone())
-                        .or_default()
+                        .or_insert_with(|| context.empty_target.clone())
                         .scripts
                         .insert(phase.to_owned(), script);
                 }

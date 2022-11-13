@@ -18,7 +18,11 @@ use config::Config;
 use exec::BaseExecContext;
 use exitcode::ExitCode;
 
+use itertools::Itertools;
+use script::CollatedTargets;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+
+use crate::script::Script;
 
 use self::exec::{ExecConfig, ShellContext};
 use self::parser::SourceFile;
@@ -27,7 +31,7 @@ use self::script::{Overrideable, Runscript, ScriptExecution, Target};
 const HELP_TEXT: &str = "\
 Project script manager and executor
 
-Usage: run [OPTIONS] [TARGET:PHASE] [-- ARGS ...]
+Usage: run [OPTIONS] [TARGET:PHASE ...] [-- ARGS ...]
        run -c <COMMAND> [-- ARGS ...]
        run -s <FILE> [-- ARGS ...]
 
@@ -50,7 +54,10 @@ Source code available at https://github.com/TheOnlyMrCat/runscript
 ";
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
-const FEATURES: &[(&str, bool)] = &[("old-parser", cfg!(feature = "old-parser")), ("panic-hook", cfg!(feature = "panic-hook"))];
+const FEATURES: &[(&str, bool)] = &[
+    ("old-parser", cfg!(feature = "old-parser")),
+    ("panic-hook", cfg!(feature = "panic-hook")),
+];
 
 #[cfg(feature = "panic-hook")]
 fn panic_hook(info: &std::panic::PanicInfo) {
@@ -77,7 +84,10 @@ Operating System: {}
                     os_info::get(),
                 );
                 let _ = writeln!(writer, "Enabled features:");
-                for feature in FEATURES.iter().filter_map(|(feature, enabled)| enabled.then_some(feature)) {
+                for feature in FEATURES
+                    .iter()
+                    .filter_map(|(feature, enabled)| enabled.then_some(feature))
+                {
                     let _ = write!(writer, " {}", feature);
                 }
                 let _ = writeln!(writer);
@@ -102,11 +112,11 @@ Operating System: {}
     let _ = writeln!(
         stderr,
         "This is a bug, please report it to <~theonlymrcat/public-inbox@lists.sr.ht>."
-    );    
+    );
     let _ = writeln!(stderr);
     if let Some(file_path) = report_file {
         let _ = writeln!(
-        stderr,
+            stderr,
             "A report file was generated at `{}`.",
             file_path.display()
         );
@@ -156,10 +166,7 @@ fn main() {
     about,
     version,
     disable_help_subcommand = true,
-    args_conflicts_with_subcommands = true,
-    override_usage = "run [options] [target:phase] [-- args]\n       \
-        run -c <command> [-- args]\n       \
-        run -s <file> [-- args]"
+    args_conflicts_with_subcommands = true
 )]
 struct Cli {
     #[clap(subcommand)]
@@ -167,6 +174,8 @@ struct Cli {
     #[clap(value_enum, long = "color", global = true, default_value_t)]
     colour_choice: CliColourChoice,
 
+    #[clap(short, long, conflicts_with_all = ["build", "run", "test", "targets", "args"])]
+    list: bool,
     #[clap(short, long, value_hint = ValueHint::FilePath)]
     file: Option<PathBuf>,
     #[clap(short, long)]
@@ -176,9 +185,8 @@ struct Cli {
     #[clap(short, long)]
     test: bool,
 
-    #[clap(hide = true)]
-    target: Option<String>,
-    #[clap(hide = true, last = true, global = true)]
+    targets: Vec<String>,
+    #[clap(last = true, global = true)]
     args: Vec<String>,
 }
 
@@ -195,17 +203,11 @@ enum CliColourChoice {
 #[derive(Subcommand)]
 enum CliSubcommand {
     #[clap(name = "ArbitrarilyLongStringWhichOnlyServesToDelayTheInevitableCommand")]
-    #[clap(override_usage = "run -c <command> [-- args]")]
-    #[clap(short_flag = 'c', long_flag = "command", hide = true)]
+    #[clap(short_flag = 'c', long_flag = "command")]
     Command(CommandSubcommand),
     #[clap(name = "ArbitrarilyLongStringWhichOnlyServesToDelayTheInevitableScript")]
-    #[clap(override_usage = "run -s <script> [-- args]")]
-    #[clap(short_flag = 's', long_flag = "script", hide = true)]
+    #[clap(short_flag = 's', long_flag = "script")]
     Script(ScriptSubcommand),
-    #[clap(name = "ArbitrarilyLongStringWhichOnlyServesToDelayTheInevitableList")]
-    #[clap(override_usage = "run -l [-f <FILE>]")]
-    #[clap(short_flag = 'l', long_flag = "list", hide = true)]
-    List(ListSubcommand),
 }
 
 #[derive(Args)]
@@ -218,12 +220,6 @@ struct CommandSubcommand {
 struct ScriptSubcommand {
     #[clap(value_hint = ValueHint::FilePath)]
     path: PathBuf,
-}
-
-#[derive(Args)]
-struct ListSubcommand {
-    #[clap(short, long, value_hint = ValueHint::FilePath)]
-    file: Option<PathBuf>,
 }
 
 pub fn run(context: BaseExecContext) -> ExitCode {
@@ -240,7 +236,10 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 }
                 clap::error::ErrorKind::DisplayVersion => {
                     print!("runscript {}", VERSION);
-                    for feature in FEATURES.iter().filter_map(|(feature, enabled)| enabled.then_some(feature)) {
+                    for feature in FEATURES
+                        .iter()
+                        .filter_map(|(feature, enabled)| enabled.then_some(feature))
+                    {
                         print!(" +{}", feature);
                     }
                     println!();
@@ -412,7 +411,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 colour_choice,
                 working_directory: cwd,
                 script_path: Some(script.path),
-                target_name: options.target,
+                target_name: None,
                 positional_args: std::iter::once(script_path_argument)
                     .chain(options.args)
                     .collect(),
@@ -426,9 +425,9 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             out::process_finish(&output_stream, &status);
             status.coerced_code()
         }
-        Some(CliSubcommand::List(list)) => {
+        None if options.list => {
             let files = match select_files(
-                list.file.as_deref(),
+                options.file.as_deref(),
                 &config,
                 context.current_file.as_deref(),
                 &cwd,
@@ -438,47 +437,47 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 Err(code) => return code,
             };
 
+            if files.is_empty() {
+                return exitcode::NOINPUT;
+            }
+
             let runscripts = parse_files(&output_stream, &cwd, files);
 
-            if runscripts.is_empty() {
-                exitcode::DATAERR
-            } else {
-                let mut lock = output_stream.lock();
-                let mut first = true;
-                for rf in runscripts {
-                    if !first {
-                        writeln!(lock).unwrap();
-                    }
-                    first = false;
-                    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
-                        .unwrap();
-                    write!(lock, "Targets from `").unwrap();
-                    lock.set_color(
-                        ColorSpec::new()
-                            .set_bold(true)
-                            .set_intense(true)
-                            .set_fg(Some(Color::Cyan)),
-                    )
-                    .unwrap();
-                    write!(lock, "{}", rf.display_path).unwrap();
-                    lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
-                        .unwrap();
-                    writeln!(lock, "`:").unwrap();
-                    lock.reset().unwrap();
-                    let longest_target = rf
-                        .scripts
-                        .keys()
-                        .map(|s| match s.as_str() {
-                            "" => "(blank)".len(),
-                            s => s.len(),
-                        })
-                        .max()
-                        .unwrap_or(0);
-
-                    list_scripts_for(&mut lock, &config, longest_target, &rf);
+            let mut lock = output_stream.lock();
+            let mut first = true;
+            for rf in runscripts {
+                if !first {
+                    writeln!(lock).unwrap();
                 }
-                exitcode::OK
+                first = false;
+                lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
+                    .unwrap();
+                write!(lock, "Targets from `").unwrap();
+                lock.set_color(
+                    ColorSpec::new()
+                        .set_bold(true)
+                        .set_intense(true)
+                        .set_fg(Some(Color::Cyan)),
+                )
+                .unwrap();
+                write!(lock, "{}", rf.display_path).unwrap();
+                lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))
+                    .unwrap();
+                writeln!(lock, "`:").unwrap();
+                lock.reset().unwrap();
+                let longest_target = rf
+                    .scripts
+                    .keys()
+                    .map(|s| match s.as_str() {
+                        "" => "(blank)".len(),
+                        s => s.len(),
+                    })
+                    .max()
+                    .unwrap_or(0);
+
+                list_scripts_for(&mut lock, &config, longest_target, &rf);
             }
+            exitcode::OK
         }
         None => {
             let files = match select_files(
@@ -492,122 +491,189 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 Err(code) => return code,
             };
 
-            let runscripts = parse_files(&output_stream, &cwd, files);
+            let runscript = parse_files(&output_stream, &cwd, files).collect::<CollatedTargets>();
 
-            if runscripts.is_empty() {
-                exitcode::DATAERR
-            } else {
-                let target = options.target.as_deref().unwrap_or("");
-                let (target, phase) = target
-                    .split_once(':')
-                    .map(|(target, phase)| (target, Some(phase)))
+            struct ResolvedTarget<'a> {
+                target: String,
+                phase: String,
+                exec_cfg: ExecConfig,
+                script: &'a Script,
+            }
+
+            enum TargetResolutionError {
+                NonexistentTarget(String),
+                NonexistentScript { target: String, phase: String },
+                NoDefault,
+                NoDefaultPhase(String),
+            }
+            let targets = options
+                .targets
+                .into_iter()
+                .map(|target| {
+                    let (target, phase) = target
+                        .split_once(':')
+                        .map(|(target, phase)| (target, Some(phase)))
+                        .unwrap_or((&target, None));
+                    let (target_name, target_def) = if target.is_empty() {
+                        context.current_target.as_deref()
+                    } else {
+                        Some(target)
+                    }
+                    .map(|target| {
+                        runscript.get_target(target).ok_or_else(|| {
+                            TargetResolutionError::NonexistentTarget(target.to_owned())
+                        })
+                    })
                     .unwrap_or_else(|| {
-                        if options.build {
-                            (target, Some("build"))
-                        } else if options.run {
-                            (target, Some("run"))
-                        } else if options.test {
-                            (target, Some("test"))
-                        } else {
-                            (target, None)
-                        }
-                    });
-                let target = if target.is_empty() {
-                    context.current_target.as_deref()
-                } else {
-                    Some(target)
-                };
-
-                match runscripts.iter().find_map(|script| {
-                    match target {
-                        Some(target) => script.get_target(target),
-                        None => script.get_default_target(),
-                    }
-                    .map(|target| (target, script))
-                }) {
-                    Some(((name, target), script)) => {
-                        let exec_cfg = ExecConfig {
-                            output_stream: Some(output_stream.clone()),
-                            colour_choice,
-                            working_directory: script.working_dir.clone(),
-                            script_path: Some(script.canonical_path.clone()),
-                            target_name: Some(name.clone()),
-                            positional_args: std::iter::once(
-                                script.canonical_path.display().to_string(),
-                            )
-                            .chain(options.args)
-                            .collect(),
-                        };
-
-                        let phases = match phase {
-                            Some(phase) => vec![phase.to_string()],
-                            None => match target.options.default_phase {
-                                Overrideable::Set(ref phases) => phases.clone(),
-                                Overrideable::Unset => vec!["run".to_string()],
-                                Overrideable::SetNone => {
-                                    out::no_default_phase(&output_stream, name);
-                                    return exitcode::NOINPUT;
-                                }
-                            },
-                        };
-
-                        let mut exit_code = exitcode::OK;
-                        for phase in phases {
-                            if let Some(script) = target.scripts.get(&phase) {
-                                out::phase_message(&output_stream, &config, &phase, name);
-                                let status = match &script.commands {
-                                    ScriptExecution::Internal { commands, .. } => {
-                                        let mut shell_context = ShellContext::new(exec_cfg.clone());
-                                        shell_context
-                                            .exec_command_group(
-                                                &commands
-                                                    .clone() //TODO: Don't clone?
-                                                    .into_iter()
-                                                    .map(|sc| sc.command)
-                                                    .collect::<Vec<_>>(),
-                                            )
-                                            .wait()
-                                            .status
-                                    }
-                                    ScriptExecution::ExternalPosix { command, script } => {
-                                        let mut file = tempfile::NamedTempFile::new().unwrap();
-                                        file.write_all(script.as_bytes()).unwrap();
-
-                                        match std::process::Command::new(&command[0])
-                                            .args(&command[1..])
-                                            .arg(file.path())
-                                            .args(&exec_cfg.positional_args[1..])
-                                            .current_dir(&exec_cfg.working_directory)
-                                            .status()
-                                        {
-                                            Ok(status) => process::ProcessExit::StdStatus(status),
-                                            Err(err) => process::ProcessExit::ExecError(
-                                                process::CommandExecError::CommandFailed { err },
-                                            ),
-                                        }
-                                    }
-                                };
-                                out::process_finish(&output_stream, &status);
-                                exit_code = status.coerced_code();
-                                if exitcode::is_error(exit_code) {
-                                    break;
-                                }
-                            } else {
-                                //TODO: Ensure all phases exist prior to running any of them
-                                out::bad_script_phase(&output_stream, name, &phase);
-                                exit_code = exitcode::NOINPUT;
-                                break;
+                        runscript
+                            .get_default_target()
+                            .ok_or(TargetResolutionError::NoDefault)
+                    })?;
+                    Ok((target_name, target_def, phase.map(ToOwned::to_owned)))
+                })
+                .collect::<Result<Vec<_>, _>>()
+                .and_then(|targets| {
+                    let targets = if targets.is_empty() {
+                        match runscript.get_default_target() {
+                            Some((target_name, target_def)) => {
+                                vec![(target_name, target_def, None)]
                             }
+                            None => return Err(TargetResolutionError::NoDefault),
                         }
-                        exit_code
-                    }
-                    None => {
-                        match target {
-                            Some(target) => out::bad_target(&output_stream, target),
-                            None => out::bad_default(&output_stream),
+                    } else {
+                        targets
+                    };
+                    targets
+                        .into_iter()
+                        .map(|(target_name, target_def, phase)| {
+                            let phases = match phase {
+                                Some(phase) => vec![phase],
+                                None => match target_def.options.default_phase {
+                                    Overrideable::Set(ref phases) => phases.clone(),
+                                    _ if options.build || options.run || options.test => options
+                                        .build
+                                        .then_some("build".to_string())
+                                        .into_iter()
+                                        .chain(options.run.then_some("run".to_string()))
+                                        .chain(options.test.then_some("test".to_string()))
+                                        .collect::<Vec<_>>(),
+                                    Overrideable::Unset => vec!["run".to_string()],
+                                    Overrideable::SetNone => {
+                                        return Err(TargetResolutionError::NoDefaultPhase(
+                                            target_name.clone(),
+                                        ))
+                                    }
+                                },
+                            };
+                            let exec_cfg = ExecConfig {
+                                output_stream: Some(output_stream.clone()),
+                                colour_choice,
+                                working_directory: target_def.working_dir.clone(),
+                                script_path: Some(target_def.canonical_path.clone()),
+                                target_name: Some(target_name.clone()),
+                                positional_args: std::iter::once(
+                                    target_def.canonical_path.display().to_string(),
+                                )
+                                .chain(options.args.iter().cloned())
+                                .collect(),
+                            };
+                            match phases
+                                .into_iter()
+                                .map(|phase| {
+                                    target_def
+                                        .scripts
+                                        .get(&phase)
+                                        .map(|script| (script, phase.clone()))
+                                        .ok_or_else(|| TargetResolutionError::NonexistentScript {
+                                            target: target_name.clone(),
+                                            phase: phase.clone(),
+                                        })
+                                })
+                                .collect::<Result<Vec<_>, _>>()
+                            {
+                                Ok(scripts) => {
+                                    Ok(scripts.into_iter().map(move |(script, phase)| {
+                                        ResolvedTarget {
+                                            target: target_name.clone(),
+                                            phase,
+                                            exec_cfg: exec_cfg.clone(),
+                                            script,
+                                        }
+                                    }))
+                                }
+                                Err(e) => Err(e),
+                            }
+                        })
+                        .flatten_ok()
+                        .collect::<Result<Vec<_>, _>>()
+                });
+
+            match targets {
+                Ok(scripts) => {
+                    let mut exit_code = exitcode::OK;
+                    for ResolvedTarget {
+                        target,
+                        phase,
+                        exec_cfg,
+                        script,
+                    } in scripts
+                    {
+                        out::phase_message(&output_stream, &config, &phase, &target);
+                        let status = match &script.commands {
+                            ScriptExecution::Internal { commands, .. } => {
+                                let mut shell_context = ShellContext::new(exec_cfg.clone());
+                                shell_context
+                                    .exec_command_group(
+                                        &commands
+                                            .clone() //TODO: Don't clone?
+                                            .into_iter()
+                                            .map(|sc| sc.command)
+                                            .collect::<Vec<_>>(),
+                                    )
+                                    .wait()
+                                    .status
+                            }
+                            ScriptExecution::ExternalPosix { command, script } => {
+                                let mut file = tempfile::NamedTempFile::new().unwrap();
+                                file.write_all(script.as_bytes()).unwrap();
+
+                                match std::process::Command::new(&command[0])
+                                    .args(&command[1..])
+                                    .arg(file.path())
+                                    .args(&exec_cfg.positional_args[1..])
+                                    .current_dir(&exec_cfg.working_directory)
+                                    .status()
+                                {
+                                    Ok(status) => process::ProcessExit::StdStatus(status),
+                                    Err(err) => process::ProcessExit::ExecError(
+                                        process::CommandExecError::CommandFailed { err },
+                                    ),
+                                }
+                            }
+                        };
+                        out::process_finish(&output_stream, &status);
+                        exit_code = status.coerced_code();
+                        if exitcode::is_error(exit_code) {
+                            break;
                         }
-                        exitcode::NOINPUT
                     }
+                    exit_code
+                }
+                Err(TargetResolutionError::NoDefault) => {
+                    out::bad_default(&output_stream);
+                    exitcode::NOINPUT
+                }
+                Err(TargetResolutionError::NoDefaultPhase(target)) => {
+                    out::no_default_phase(&output_stream, &target);
+                    exitcode::NOINPUT
+                }
+                Err(TargetResolutionError::NonexistentTarget(target)) => {
+                    out::bad_target(&output_stream, &target);
+                    exitcode::NOINPUT
+                }
+                Err(TargetResolutionError::NonexistentScript { target, phase }) => {
+                    out::bad_script_phase(&output_stream, &target, &phase);
+                    exitcode::NOINPUT
                 }
             }
         }
@@ -640,7 +706,7 @@ fn select_files(
         }
         None => match context_file {
             Some(file) => {
-                let source = std::fs::read_to_string(&file).map_err(|err| {
+                let source = std::fs::read_to_string(file).map_err(|err| {
                     out::file_read_err(output_stream, err);
                     exitcode::NOINPUT
                 })?;
@@ -678,59 +744,56 @@ fn select_files(
     }
 }
 
-fn parse_files(
-    output_stream: &termcolor::StandardStream,
-    cwd: &Path,
+fn parse_files<'a>(
+    output_stream: &'a termcolor::StandardStream,
+    cwd: &'a Path,
     files: Vec<SourceFile>,
-) -> Vec<Runscript> {
-    files
-        .into_iter()
-        .filter_map(|source_file| {
-            match {
-                #[cfg(feature = "old-parser")]
-                {
-                    match parser::parse_runscript(source_file.clone()) {
-                        Ok(rf) => Ok(rf),
-                        Err(e) => parser::old::parse_runscript(source_file.clone())
-                            .map(|rf| {
-                                out::warning(
-                                    output_stream,
-                                    format_args!(
-                                        "Using old parser to parse `{}`",
-                                        source_file
-                                            .path
-                                            .strip_prefix(&cwd)
-                                            .unwrap_or(&source_file.path)
-                                            .display()
-                                    ),
-                                );
-                                rf
-                            })
-                            .map_err(|()| e),
-                    }
-                }
-                #[cfg(not(feature = "old-parser"))]
-                {
-                    parser::parse_runscript(source_file.clone())
-                }
-            } {
-                Ok(rf) => Some(rf),
-                Err(e) => {
-                    out::file_parse_err(
-                        output_stream,
-                        &source_file
-                            .path
-                            .strip_prefix(cwd)
-                            .unwrap_or(&source_file.path)
-                            .display()
-                            .to_string(),
-                        e,
-                    );
-                    None
+) -> impl Iterator<Item = Runscript> + 'a {
+    files.into_iter().filter_map(move |source_file| {
+        match {
+            #[cfg(feature = "old-parser")]
+            {
+                match parser::parse_runscript(source_file.clone()) {
+                    Ok(rf) => Ok(rf),
+                    Err(e) => parser::old::parse_runscript(source_file.clone())
+                        .map(|rf| {
+                            out::warning(
+                                output_stream,
+                                format_args!(
+                                    "Using old parser to parse `{}`",
+                                    source_file
+                                        .path
+                                        .strip_prefix(cwd)
+                                        .unwrap_or(&source_file.path)
+                                        .display()
+                                ),
+                            );
+                            rf
+                        })
+                        .map_err(|()| e),
                 }
             }
-        })
-        .collect::<Vec<_>>()
+            #[cfg(not(feature = "old-parser"))]
+            {
+                parser::parse_runscript(source_file.clone())
+            }
+        } {
+            Ok(rf) => Some(rf),
+            Err(e) => {
+                out::file_parse_err(
+                    output_stream,
+                    &source_file
+                        .path
+                        .strip_prefix(cwd)
+                        .unwrap_or(&source_file.path)
+                        .display()
+                        .to_string(),
+                    e,
+                );
+                None
+            }
+        }
+    })
 }
 
 fn list_scripts_for(
