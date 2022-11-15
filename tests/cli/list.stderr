@@ -1,0 +1,9 @@
+[0m[1mTargets from `[0m[1m[38;5;14m.run[0m[1m`:
+[0m[0m[33malpha [0m[31m.[0m[1m[38;5;12mR[0m[32m.[0m
+bravo [0m[31m.[0m[34m.[0m[32m.[0m[1m[38;5;15m clean[0m
+
+[0m[1mTargets from `[0m[1m[38;5;14mrun[0m[1m`:
+[0m[0m[33malpha   [0m[31m.[0m[34m.[0m[1m[38;5;10mT[0m
+charlie [0m[1m[38;5;9mB[0m[1m[38;5;12mR[0m[32m.[0m
+delta   [0m[31m.[0m[1m[38;5;12mR[0m[32m.[0m[1m[38;5;15m alt[0m[1m[38;5;15m alt2[0m
+...

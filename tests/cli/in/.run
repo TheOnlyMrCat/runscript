@@ -1,0 +1,6 @@
+[alpha]
+::default-phase run
+echo "Default phase: run"
+
+[bravo:clean]
+echo "Non-default phase"

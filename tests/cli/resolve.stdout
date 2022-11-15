@@ -1,0 +1,6 @@
+Default phase: run
+Non-default phase
+Phases in separate files
+Multiple phases for one target
+(Builtin)
+(Multiple-custom)

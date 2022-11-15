@@ -1,0 +1,12 @@
+[0m[1m[38;5;12mRun[0m alpha
+> [0m[1mecho[0m [0m[38;5;11m"Default phase: run"[0m
+[0m[1m[38;5;15mClean[0m bravo
+> [0m[1mecho[0m [0m[38;5;11m"Non-default phase"[0m
+[0m[1m[38;5;10mTest[0m alpha
+> [0m[1mecho[0m [0m[38;5;11m"Phases in separate files"[0m
+[0m[1m[38;5;9mBuild[0m charlie
+> [0m[1mecho[0m [0m[38;5;11m"Multiple phases for one target"[0m
+[0m[1m[38;5;12mRun[0m charlie
+> [0m[1mecho[0m [0m[38;5;11m"(Builtin)"[0m
+[0m[1m[38;5;15mAlt2[0m delta
+> [0m[1mecho[0m [0m[38;5;11m"(Multiple-custom)"[0m

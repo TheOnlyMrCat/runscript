@@ -1,0 +1,21 @@
+::default-script alpha
+
+[alpha:test]
+::default-phase test
+echo "Phases in separate files"
+
+[charlie:build]
+::default-phase build run
+echo "Multiple phases for one target"
+
+[charlie:run]
+echo "(Builtin)"
+
+[delta:run]
+echo "Multiple phases for one target"
+
+[delta:alt]
+echo "(Custom)"
+
+[delta:alt2]
+echo "(Multiple-custom)"

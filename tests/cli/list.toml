@@ -1,0 +1,2 @@
+args = ["-l"]
+fs.cwd = "in"

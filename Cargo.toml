@@ -43,3 +43,6 @@ winapi = "0.3.9"
 
 [target.'cfg(unix)'.dependencies]
 nix = "0.25.0"
+
+[dev-dependencies]
+trycmd = "0.14.4"
