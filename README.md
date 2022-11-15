@@ -10,7 +10,7 @@ For an example of a useful runscript, see [the runfile for this repository](run)
 - Does **not** use Makefile syntax
 - Emulates a shell and executes commands directly, instead of invoking `sh`.
 - Supports most of the shell features you know and love (parsing adapted from [ipetkov/conch_parser](https://github.com/ipetkov/conch-parser))
-- Can invoke an external tool (not necessarily a shell!) to run a script, if the buildin shell proves inadequate.
+- Can invoke an external tool (not necessarily a shell!) to run a script, if the builtin shell proves inadequate.
 - Multiple 'phases' per target, so you can chose to build, run, or test a target. If those options aren't enough, you can name your phases whatever you want!
 - Imports targets from multiple files, meaning you can have a personal `.run` file alongside a source-controlled `run` file
 - Fancy output while running scripts
