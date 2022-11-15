@@ -33,7 +33,7 @@ impl FromIterator<Runscript> for CollatedTargets {
 pub struct Target {
     pub canonical_path: PathBuf,
     pub working_dir: PathBuf,
-    pub scripts: HashMap<String, Script>,
+    pub scripts: IndexMap<String, Script>,
     pub options: TargetOptions,
 }
 
