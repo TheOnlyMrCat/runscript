@@ -2,12 +2,12 @@
 //! and only accessible using the `old-format` feature. No error-checking is done, since new
 //! (and edited) runscripts should use the new format.
 
-use std::collections::HashMap;
+use std::path::PathBuf;
+
+use indexmap::IndexMap;
 
 use crate::parser::lexer::Lexer;
 use crate::parser::parse::Parser;
-use indexmap::IndexMap;
-
 use crate::script::*;
 
 use super::SourceFile;
@@ -17,7 +17,8 @@ struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
     iterator: std::iter::Peekable<T>,
     runfile: Runscript,
     line_indices: Vec<usize>,
-    empty_target: Target,
+    canonical_path: PathBuf,
+    working_dir: PathBuf,
 }
 
 pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
@@ -38,12 +39,8 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
             scripts: IndexMap::new(),
             options: GlobalOptions::default(),
         },
-        empty_target: Target {
-            canonical_path: source.path.canonicalize().unwrap_or(source.path),
-            working_dir: source.working_dir,
-            scripts: HashMap::new(),
-            options: TargetOptions::default(),
-        },
+        canonical_path: source.path.canonicalize().unwrap_or(source.path),
+        working_dir: source.working_dir,
     };
     match parse_root(&mut context) {
         Ok(()) => Ok(context.runfile),
@@ -100,11 +97,13 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .find_map(|(line, &end)| if end > i { Some(line + 1) } else { None })
                     .unwrap_or(context.line_indices.len());
                 let script = Script {
-                    line,
                     commands: ScriptExecution::Internal {
                         commands: parse_commands(context)?,
                         options: ScriptOptions::default(),
                     },
+                    canonical_path: context.canonical_path.clone(),
+                    working_dir: context.working_dir.clone(),
+                    line,
                 };
 
                 if name == "-" {
@@ -112,7 +111,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .runfile
                         .scripts
                         .entry("default".to_owned())
-                        .or_insert_with(|| context.empty_target.clone())
+                        .or_default()
                         .scripts
                         .insert(phase.to_owned(), script);
                 } else {
@@ -120,7 +119,7 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                         .runfile
                         .scripts
                         .entry(name.clone())
-                        .or_insert_with(|| context.empty_target.clone())
+                        .or_default()
                         .scripts
                         .insert(phase.to_owned(), script);
                 }

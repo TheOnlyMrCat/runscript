@@ -4,10 +4,13 @@
 cargo build
 
 [runscript:run]
-cargo run --no-default-features -- -t -f test/run
+cargo run --no-default-features --features old-parser -- $@
+
+[runscript:test]
+::default-phase test
+cargo test
 
 [args]
-cargo run --no-default-features --features old-parser -- $@
 
 [no_exec]
 __run_panic

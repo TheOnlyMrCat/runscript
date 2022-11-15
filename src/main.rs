@@ -565,18 +565,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                     }
                                 },
                             };
-                            let exec_cfg = ExecConfig {
-                                output_stream: Some(output_stream.clone()),
-                                colour_choice,
-                                working_directory: target_def.working_dir.clone(),
-                                script_path: Some(target_def.canonical_path.clone()),
-                                target_name: Some(target_name.clone()),
-                                positional_args: std::iter::once(
-                                    target_def.canonical_path.display().to_string(),
-                                )
-                                .chain(options.args.iter().cloned())
-                                .collect(),
-                            };
                             match phases
                                 .into_iter()
                                 .map(|phase| {
@@ -592,13 +580,22 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 .collect::<Result<Vec<_>, _>>()
                             {
                                 Ok(scripts) => {
-                                    Ok(scripts.into_iter().map(move |(script, phase)| {
-                                        ResolvedTarget {
-                                            target: target_name.clone(),
-                                            phase,
-                                            exec_cfg: exec_cfg.clone(),
-                                            script,
-                                        }
+                                    Ok(scripts.into_iter().map(|(script, phase)| ResolvedTarget {
+                                        target: target_name.clone(),
+                                        phase,
+                                        exec_cfg: ExecConfig {
+                                            output_stream: Some(output_stream.clone()),
+                                            colour_choice,
+                                            working_directory: script.working_dir.clone(),
+                                            script_path: Some(script.canonical_path.clone()),
+                                            target_name: Some(target_name.clone()),
+                                            positional_args: std::iter::once(
+                                                script.canonical_path.display().to_string(),
+                                            )
+                                            .chain(options.args.iter().cloned())
+                                            .collect(),
+                                        },
+                                        script,
                                     }))
                                 }
                                 Err(e) => Err(e),

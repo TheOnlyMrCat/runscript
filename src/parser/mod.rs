@@ -5,7 +5,6 @@ pub mod old;
 pub mod parse;
 pub mod token;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use indexmap::IndexMap;
@@ -83,12 +82,7 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
         scripts: IndexMap::new(),
         options: GlobalOptions::default(),
     };
-    let empty_target = Target {
-        canonical_path: source.path.canonicalize().unwrap_or(source.path),
-        working_dir: source.working_dir,
-        scripts: HashMap::default(),
-        options: TargetOptions::default(),
-    };
+    let canonical_path = source.path.canonicalize().unwrap_or(source.path);
 
     macro_rules! line_index {
         ($index:expr) => {
@@ -140,21 +134,18 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
 
                 // Clean up the previous script if there was one
                 if let Some(current_script) = current_script {
-                    let target = runscript
-                        .scripts
-                        .entry(current_script.target)
-                        .or_insert_with(|| empty_target.clone());
+                    let target = runscript.scripts.entry(current_script.target).or_default();
                     target
                         .scripts
                         .insert(current_script.phase, current_script.script);
-                    target.options.merge(current_script.target_options).unwrap();
+                    target
+                        .options
+                        .merge_unique(current_script.target_options)
+                        .unwrap();
                 }
 
                 // Ensure the new script is unique
-                let new_target = runscript
-                    .scripts
-                    .entry(name.clone())
-                    .or_insert_with(|| empty_target.clone());
+                let new_target = runscript.scripts.entry(name.clone()).or_default();
                 if let Some(script) = new_target.scripts.get(&phase) {
                     return Err(RunscriptParseError::DuplicateScript {
                         prev_line: script.line,
@@ -184,6 +175,8 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                                 script: String::new(),
                             }
                         },
+                        canonical_path: canonical_path.clone(),
+                        working_dir: source.working_dir.clone(),
                         line: line_index!(i),
                     },
                     target: name,
@@ -355,14 +348,14 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
     }
 
     if let Some(current_script) = current_script {
-        let target = runscript
-            .scripts
-            .entry(current_script.target)
-            .or_insert_with(|| empty_target.clone());
+        let target = runscript.scripts.entry(current_script.target).or_default();
         target
             .scripts
             .insert(current_script.phase, current_script.script);
-        target.options.merge(current_script.target_options).unwrap();
+        target
+            .options
+            .merge_unique(current_script.target_options)
+            .unwrap();
     }
 
     Ok(runscript)

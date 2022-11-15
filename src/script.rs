@@ -1,8 +1,8 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
-use crate::parser::ast::AtomicTopLevelCommand;
 use indexmap::IndexMap;
+
+use crate::parser::ast::AtomicTopLevelCommand;
 
 #[derive(Clone, Debug)]
 pub struct Runscript {
@@ -19,20 +19,24 @@ pub struct CollatedTargets {
 
 impl FromIterator<Runscript> for CollatedTargets {
     fn from_iter<T: IntoIterator<Item = Runscript>>(iter: T) -> Self {
-        iter.into_iter().fold(Self::default(), |mut a, mut b| {
-            b.scripts.retain(|k, _v| !a.scripts.contains_key(k));
+        iter.into_iter().fold(Self::default(), |mut a, b| {
             a.scripts.reserve(b.scripts.len());
-            a.scripts.extend(b.scripts.into_iter());
+            for (name, target) in b.scripts {
+                match a.scripts.entry(name) {
+                    indexmap::map::Entry::Occupied(mut entry) => entry.get_mut().merge(target),
+                    indexmap::map::Entry::Vacant(entry) => {
+                        entry.insert(target);
+                    }
+                }
+            }
             a.options.merge(b.options);
             a
         })
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Target {
-    pub canonical_path: PathBuf,
-    pub working_dir: PathBuf,
     pub scripts: IndexMap<String, Script>,
     pub options: TargetOptions,
 }
@@ -40,6 +44,8 @@ pub struct Target {
 #[derive(Clone, Debug)]
 pub struct Script {
     pub commands: ScriptExecution,
+    pub canonical_path: PathBuf,
+    pub working_dir: PathBuf,
     pub line: usize,
 }
 
@@ -116,6 +122,16 @@ impl CollatedTargets {
     }
 }
 
+impl Target {
+    pub fn merge(&mut self, mut other: Target) {
+        other
+            .scripts
+            .retain(|key, _| !self.scripts.contains_key(key));
+        self.scripts.extend(other.scripts);
+        self.options.merge(other.options);
+    }
+}
+
 impl GlobalOptions {
     pub fn merge(&mut self, other: GlobalOptions) {
         self.default_target.merge(other.default_target);
@@ -123,7 +139,11 @@ impl GlobalOptions {
 }
 
 impl TargetOptions {
-    pub fn merge(&mut self, other: TargetOptions) -> Result<(), ()> {
+    pub fn merge(&mut self, other: TargetOptions) {
+        self.default_phase.merge(other.default_phase);
+    }
+
+    pub fn merge_unique(&mut self, other: TargetOptions) -> Result<(), ()> {
         self.default_phase.merge_unique(other.default_phase)?;
         Ok(())
     }
