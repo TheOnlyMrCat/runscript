@@ -1,2 +1,2 @@
-args = ["-l"]
+args = ["-l", "--color=always"]
 fs.cwd = "in"

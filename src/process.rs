@@ -8,7 +8,7 @@ use std::sync::Arc;
 use glob::PatternError;
 
 use crate::exec::{BaseExecContext, ShellContext};
-use crate::out::{self, Printable, PrintableEnvRemap};
+use crate::out::{self, OutputStateLock, Printable, PrintableEnvRemap};
 use crate::parser::ast::CompoundCommand;
 use crate::parser::SourceFile;
 use crate::ptr::Ref;
@@ -434,10 +434,7 @@ impl SpawnableProcess<'_> {
         self.printable.is_some()
     }
 
-    pub fn print_to(
-        &self,
-        output_stream: &mut termcolor::StandardStreamLock,
-    ) -> std::io::Result<()> {
+    pub fn print_to(&self, output_stream: &mut OutputStateLock<'_>) -> std::io::Result<()> {
         if let Some(printable) = &self.printable {
             out::print_command(output_stream, printable)
         } else {

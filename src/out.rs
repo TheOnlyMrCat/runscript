@@ -3,46 +3,100 @@ use std::io::Write;
 use crate::process::{CommandExecError, ProcessExit};
 use termcolor::{Color, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
-use crate::config::Config;
+use crate::config::{OutputConfig, Theme};
 use crate::parser::RunscriptParseError;
 
-pub fn warning(output_stream: &StandardStream, message: std::fmt::Arguments) {
-    let mut lock = output_stream.lock();
-    lock.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Yellow)))
-        .unwrap();
+pub struct OutputState {
+    pub output_stream: StandardStream,
+    pub theme: Theme,
+    pub config: OutputConfig,
+}
+
+pub struct OutputStateLock<'a> {
+    pub output_stream: StandardStreamLock<'a>,
+    pub theme: &'a Theme,
+    pub config: &'a OutputConfig,
+}
+
+impl OutputState {
+    pub fn lock(&self) -> OutputStateLock<'_> {
+        OutputStateLock {
+            output_stream: self.output_stream.lock(),
+            theme: &self.theme,
+            config: &self.config,
+        }
+    }
+}
+
+impl Write for OutputStateLock<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.output_stream.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.output_stream.flush()
+    }
+}
+
+impl WriteColor for OutputStateLock<'_> {
+    fn supports_color(&self) -> bool {
+        self.output_stream.supports_color()
+    }
+
+    fn set_color(&mut self, spec: &ColorSpec) -> std::io::Result<()> {
+        self.output_stream.set_color(spec)
+    }
+
+    fn reset(&mut self) -> std::io::Result<()> {
+        self.output_stream.reset()
+    }
+}
+
+pub fn warning(output_state: &OutputState, message: std::fmt::Arguments) {
+    let mut lock = output_state.output_stream.lock();
+    lock.set_color(
+        ColorSpec::new()
+            .set_bold(true)
+            .set_fg(Some(output_state.theme.warning.unwrap_or(Color::Yellow))),
+    )
+    .unwrap();
     write!(lock, "warning:").unwrap();
     lock.reset().unwrap();
     writeln!(lock, " {message}").unwrap();
 }
 
-pub fn error(output_stream: &StandardStream, message: std::fmt::Arguments) {
-    let mut lock = output_stream.lock();
-    lock.set_color(ColorSpec::new().set_bold(true).set_fg(Some(Color::Red)))
-        .unwrap();
+pub fn error(output_state: &OutputState, message: std::fmt::Arguments) {
+    let mut lock = output_state.output_stream.lock();
+    lock.set_color(
+        ColorSpec::new()
+            .set_bold(true)
+            .set_fg(Some(output_state.theme.error.unwrap_or(Color::Red))),
+    )
+    .unwrap();
     write!(lock, "error:").unwrap();
     lock.reset().unwrap();
     writeln!(lock, " {message}").unwrap()
 }
 
-pub fn no_runfile_err(output_stream: &StandardStream) {
+pub fn no_runfile_err(output_state: &OutputState) {
     error(
-        output_stream,
+        output_state,
         format_args!("Could not find runfile to execute"),
     );
 }
 
-pub fn dir_read_err(output_stream: &StandardStream, err: std::io::Error) {
+pub fn dir_read_err(output_state: &OutputState, err: std::io::Error) {
     error(
-        output_stream,
+        output_state,
         format_args!("Failed to access working directory: {err}"),
     );
 }
 
-pub fn file_read_err(output_stream: &StandardStream, err: std::io::Error) {
-    error(output_stream, format_args!("Failed to read script: {err}"));
+pub fn file_read_err(output_state: &OutputState, err: std::io::Error) {
+    error(output_state, format_args!("Failed to read script: {err}"));
 }
 
-pub fn file_parse_err(output_stream: &StandardStream, file: &str, err: RunscriptParseError) {
+pub fn file_parse_err(output_state: &OutputState, file: &str, err: RunscriptParseError) {
     match &err {
         RunscriptParseError::DuplicateScript {
             new_line: line,
@@ -50,7 +104,7 @@ pub fn file_parse_err(output_stream: &StandardStream, file: &str, err: Runscript
             target_name: t,
         } => {
             error(
-                output_stream,
+                output_state,
                 format_args!(
                     "In file {file}: Duplicate script: `{t}` on line {line} (previously defined at {prev})"
                 ),
@@ -58,70 +112,62 @@ pub fn file_parse_err(output_stream: &StandardStream, file: &str, err: Runscript
         }
         RunscriptParseError::CommandParseError { line, error: err } => {
             error(
-                output_stream,
+                output_state,
                 format_args!("In file {file}: Parse error: {err} on line {line}"),
             );
         }
         RunscriptParseError::IllegalCommandLocation { line } => {
             error(
-                output_stream,
+                output_state,
                 format_args!("In file {file}: Command outside of target on line {line}"),
             );
         }
         RunscriptParseError::NonexistentOption { line, option } => {
             error(
-                output_stream,
+                output_state,
                 format_args!("In file {file}: Nonexistent option: `{option}` on line {line}"),
             );
         }
     }
 }
 
-pub fn bad_target(output_stream: &StandardStream, target: &str) {
-    error(
-        output_stream,
-        format_args!("No target with name `{target}`"),
-    );
+pub fn bad_target(output_state: &OutputState, target: &str) {
+    error(output_state, format_args!("No target with name `{target}`"));
 }
 
-pub fn bad_default(output_stream: &StandardStream) {
-    error(output_stream, format_args!("No default target"));
+pub fn bad_default(output_state: &OutputState) {
+    error(output_state, format_args!("No default target"));
 }
 
-pub fn no_default_phase(output_stream: &StandardStream, target: &str) {
+pub fn no_default_phase(output_state: &OutputState, target: &str) {
     error(
-        output_stream,
+        output_state,
         format_args!("Target `{target}` has no default phase"),
     );
 }
 
-pub fn bad_script_phase(output_stream: &StandardStream, target: &str, phase: &str) {
+pub fn bad_script_phase(output_state: &OutputState, target: &str, phase: &str) {
     error(
-        output_stream,
+        output_state,
         format_args!("No scripts to execute for `{target}:{phase}`"),
     );
 }
 
-pub fn phase_color(config: &Config, phase: &str) -> Color {
-    if config.colours.enabled {
-        config
-            .colours
-            .phases
-            .get(phase)
-            .copied()
-            .unwrap_or(Color::White)
-    } else {
-        Color::White
-    }
+pub fn phase_color(theme: &Theme, phase: &str) -> Color {
+    theme
+        .phase
+        .get(phase)
+        .and_then(|phase| phase.color)
+        .unwrap_or(Color::White)
 }
 
-pub fn phase_message(output_stream: &StandardStream, config: &Config, phase: &str, name: &str) {
-    let mut lock = output_stream.lock();
+pub fn phase_message(output_state: &OutputState, phase: &str, name: &str) {
+    let mut lock = output_state.output_stream.lock();
     lock.set_color(
         ColorSpec::new()
             .set_bold(true)
             .set_intense(true)
-            .set_fg(Some(phase_color(config, phase))),
+            .set_fg(Some(phase_color(&output_state.theme, phase))),
     )
     .unwrap();
     write!(lock, "{}", { phase[0..1].to_uppercase() + &phase[1..] }).unwrap();
@@ -133,6 +179,22 @@ pub struct Printable {
     pub command: Option<PrintableCommand>,
     pub env_remaps: Vec<PrintableEnvRemap>,
     pub redirects: Vec<PrintableRedirect>,
+}
+
+pub fn command_start(state: &mut OutputStateLock) -> std::io::Result<()> {
+    write!(state.output_stream, "{}", state.config.prompt_prefix)
+}
+
+pub fn command_pipe(state: &mut OutputStateLock) -> std::io::Result<()> {
+    write!(state.output_stream, " | ")
+}
+
+pub fn unprintable_command(state: &mut OutputStateLock) -> std::io::Result<()> {
+    write!(state.output_stream, "(unprintable)")
+}
+
+pub fn command_end(state: &mut OutputStateLock) -> std::io::Result<()> {
+    writeln!(state.output_stream)
 }
 
 pub struct PrintableCommand {
@@ -183,10 +245,9 @@ pub enum PrintableSimpleWord {
 }
 
 pub fn print_command(
-    lock: &mut StandardStreamLock,
+    lock: &mut OutputStateLock,
     printable: &Printable,
 ) -> Result<(), std::io::Error> {
-    //TODO: Make colour config customisable!!
     for remap in &printable.env_remaps {
         write!(lock, "{}=", remap.key)?;
         print_complex_word(lock, &remap.value)?;
@@ -197,8 +258,13 @@ pub fn print_command(
             // Separate remaps from command name
             write!(lock, " ")?;
         }
-        // Print command name in bold
-        lock.set_color(ColorSpec::new().set_bold(true).set_intense(true))?;
+        lock.set_color(
+            lock.theme
+                .command
+                .first_argument
+                .as_ref()
+                .expect("theme should be canonicalised and merged with default"),
+        )?;
         write!(lock, "{}", command.name)?;
         lock.reset()?;
 
@@ -222,10 +288,11 @@ pub fn print_command(
         )?;
         if !redirect.literal {
             lock.set_color(
-                ColorSpec::new()
-                    .set_fg(Some(Color::Cyan))
-                    .set_bold(true)
-                    .set_intense(true),
+                lock.theme
+                    .command
+                    .substitution
+                    .as_ref()
+                    .expect("theme should be canonicalised and merged with default"),
             )?
         }
         write!(lock, "{}", redirect.file)?;
@@ -242,7 +309,7 @@ enum FormattingContext {
 }
 
 fn print_complex_word(
-    lock: &mut StandardStreamLock,
+    lock: &mut OutputStateLock,
     complex_word: &PrintableComplexWord,
 ) -> Result<(), std::io::Error> {
     match complex_word {
@@ -251,12 +318,23 @@ fn print_complex_word(
             matches,
         } => {
             //TODO: Allow printing glob matches instead
-            lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?;
+            lock.set_color(
+                lock.theme
+                    .command
+                    .glob_matches
+                    .as_ref()
+                    .expect("theme should be canonicalised and merged with default"),
+            )?;
             for word in glob_string {
                 print_word(lock, word, FormattingContext::GlobPattern)?;
             }
-            //TODO: Don't print this on windows console, because it doesn't have dimmed?
-            lock.set_color(ColorSpec::new().set_fg(Some(Color::White)).set_dimmed(true))?;
+            lock.set_color(
+                lock.theme
+                    .command
+                    .glob_matches_hint
+                    .as_ref()
+                    .expect("theme should be canonicalised and merged with default"),
+            )?;
             write!(lock, " ({} matches)", matches.len())?;
             lock.reset()?;
         }
@@ -274,7 +352,7 @@ fn print_complex_word(
 }
 
 fn print_word(
-    lock: &mut StandardStreamLock,
+    lock: &mut OutputStateLock,
     word: &PrintableWord,
     context: FormattingContext,
 ) -> Result<(), std::io::Error> {
@@ -283,9 +361,11 @@ fn print_word(
             // Highlight strings in yellow
             if !matches!(context, FormattingContext::GlobPattern) {
                 lock.set_color(
-                    ColorSpec::new()
-                        .set_fg(Some(Color::Yellow))
-                        .set_intense(true),
+                    lock.theme
+                        .command
+                        .single_quotes
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
                 )?;
             }
             write!(lock, "'{}'", literal)?;
@@ -294,9 +374,11 @@ fn print_word(
             // Highlight strings in yellow
             if !matches!(context, FormattingContext::GlobPattern) {
                 lock.set_color(
-                    ColorSpec::new()
-                        .set_fg(Some(Color::Yellow))
-                        .set_intense(true),
+                    lock.theme
+                        .command
+                        .double_quotes
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
                 )?;
             }
             write!(lock, "\"")?;
@@ -311,7 +393,7 @@ fn print_word(
 }
 
 fn print_simple_word(
-    lock: &mut StandardStreamLock,
+    lock: &mut OutputStateLock,
     simple_word: &PrintableSimpleWord,
     context: FormattingContext,
 ) -> Result<(), std::io::Error> {
@@ -323,27 +405,53 @@ fn print_simple_word(
             evaluated,
         } => {
             if evaluated.is_empty() && matches!(context, FormattingContext::Freestanding) {
-                // lock.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)).set_intense(true))?;
-                lock.set_color(ColorSpec::new().set_fg(Some(Color::White)).set_dimmed(true))?;
+                //TODO: Handling options for empty arguments
+                lock.set_color(
+                    lock.theme
+                        .command
+                        .empty_argument
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
+                )?;
                 write!(lock, "''")?;
                 // write!(lock, "(${})", original)?;
             } else {
-                lock.set_color(
-                    ColorSpec::new()
-                        .set_fg(Some(Color::Cyan))
-                        .set_bold(true)
-                        .set_intense(true),
-                )?;
+                lock.set_color(match context {
+                    FormattingContext::GlobPattern => lock
+                        .theme
+                        .command
+                        .glob_substitution
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
+                    FormattingContext::Quoted => lock
+                        .theme
+                        .command
+                        .quoted_substitution
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
+                    FormattingContext::Freestanding => lock
+                        .theme
+                        .command
+                        .substitution
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
+                })?;
                 write!(lock, "{}", evaluated)?;
             }
             match context {
-                FormattingContext::GlobPattern => {
-                    lock.set_color(ColorSpec::new().set_fg(Some(Color::Blue)))?
-                }
+                FormattingContext::GlobPattern => lock.set_color(
+                    lock.theme
+                        .command
+                        .glob_matches
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
+                )?,
                 FormattingContext::Quoted => lock.set_color(
-                    ColorSpec::new()
-                        .set_fg(Some(Color::Yellow))
-                        .set_intense(true),
+                    lock.theme
+                        .command
+                        .double_quotes
+                        .as_ref()
+                        .expect("theme should be canonicalised and merged with default"),
                 )?,
                 FormattingContext::Freestanding => lock.reset()?,
             }
@@ -352,7 +460,7 @@ fn print_simple_word(
     Ok(())
 }
 
-pub fn process_finish(output_stream: &StandardStream, status: &ProcessExit) {
+pub fn process_finish(output_state: &OutputState, status: &ProcessExit) {
     extern "C" {
         fn strsignal(sig: std::os::raw::c_int) -> *const std::os::raw::c_char;
     }
@@ -425,7 +533,7 @@ pub fn process_finish(output_stream: &StandardStream, status: &ProcessExit) {
         }
     }
 
-    let mut lock = output_stream.lock();
+    let mut lock = output_state.output_stream.lock();
     match status {
         ProcessExit::Bool(b) => {
             if !*b {

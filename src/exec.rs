@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use std::sync::Arc;
 
+use crate::config::Theme;
 use crate::process::{
     BuiltinCommand, CommandExecError, ProcessExit, RedirectConfig, SpawnContext, SpawnableProcess,
     StdinRedirect, StdoutRedirect, WaitableProcess,
@@ -20,15 +21,15 @@ use crate::ptr::Unique;
 use itertools::Itertools;
 
 use crate::out::{
-    Printable, PrintableCommand, PrintableComplexWord, PrintableEnvRemap, PrintableRedirect,
-    PrintableSimpleWord, PrintableWord,
+    self, OutputState, Printable, PrintableCommand, PrintableComplexWord, PrintableEnvRemap,
+    PrintableRedirect, PrintableSimpleWord, PrintableWord,
 };
 use glob::{glob_with, MatchOptions, Pattern};
 
 #[derive(Clone)]
 pub struct ExecConfig {
     /// The output stream to output to, or `None` to produce no output
-    pub output_stream: Option<Arc<termcolor::StandardStream>>,
+    pub output_state: Option<Arc<OutputState>>,
     /// The colour choice for the output stream
     pub colour_choice: termcolor::ColorChoice,
     /// The working directory to execute the script's commands in
@@ -58,6 +59,7 @@ pub struct BaseExecContext {
     pub current_target: Option<String>,
     pub args: Vec<String>,
     pub colour_choice: termcolor::ColorChoice,
+    pub theme: Option<Theme>,
 }
 
 pub enum EvaluatedRedirect {
@@ -325,25 +327,25 @@ impl ShellContext {
             }
         };
         let last_command = commands.len() - 1;
-        if let Some(output_stream) = &self.config.output_stream {
-            let mut lock = output_stream.lock();
+        if let Some(output_state) = &self.config.output_state {
+            let mut lock = output_state.lock();
             let any_printable = commands.iter().any(|p| p.is_printable());
             if any_printable {
                 //TODO: Proper error handling here?
-                write!(lock, "> ").unwrap();
+                out::command_start(&mut lock).unwrap();
                 for (i, (printable, command)) in
                     commands.iter().map(|p| (p.is_printable(), p)).enumerate()
                 {
                     if i != 0 {
-                        write!(lock, " | ").unwrap();
+                        out::command_pipe(&mut lock).unwrap();
                     }
                     if printable {
                         command.print_to(&mut lock).unwrap();
                     } else {
-                        write!(lock, "(unprintable)").unwrap();
+                        out::unprintable_command(&mut lock).unwrap();
                     }
                 }
-                writeln!(lock).unwrap();
+                out::command_end(&mut lock).unwrap();
             }
         }
         let mut next_input = redir.stdin;
@@ -744,6 +746,11 @@ impl ShellContext {
                             args
                         },
                         colour_choice: self.config.colour_choice,
+                        theme: self
+                            .config
+                            .output_state
+                            .as_ref()
+                            .map(|state| state.theme.clone()),
                     },
                     redir,
                     printable_command,
@@ -944,7 +951,7 @@ impl ShellContext {
         Ok(match param {
             ParameterSubstitution::Command(commands) => {
                 let mut context = self.clone();
-                context.config.output_stream = None;
+                context.config.output_state = None;
                 let output = context
                     .exec_command_group_with_default_redirects(
                         commands,

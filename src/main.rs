@@ -1,4 +1,4 @@
-#![warn(clippy::print_stdout)]
+#![warn(clippy::print_stdout, clippy::print_stderr)]
 
 mod config;
 mod exec;
@@ -14,11 +14,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{Args, CommandFactory, FromArgMatches, Parser, Subcommand, ValueEnum, ValueHint};
-use config::Config;
+use config::{Config, OutputConfig, Theme};
 use exec::BaseExecContext;
 use exitcode::ExitCode;
 
 use itertools::Itertools;
+use out::{OutputState, OutputStateLock};
 use script::CollatedTargets;
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
@@ -37,6 +38,7 @@ Usage: run [OPTIONS] [TARGET:PHASE ...] [-- ARGS ...]
 
 Global Options:
       --color <WHEN>  [default: auto] [possible values: always, ansi, auto, never]
+  -u, --theme <NAME>  Change colour theme for this invocation
   -h, --help          Print help information
   -V, --version       Print version information
 
@@ -140,6 +142,7 @@ fn main() {
         current_file: None,
         current_target: None,
         colour_choice: ColorChoice::Auto,
+        theme: None,
     };
 
     loop {
@@ -173,6 +176,8 @@ struct Cli {
     subcommand: Option<CliSubcommand>,
     #[clap(value_enum, long = "color", global = true, default_value_t)]
     colour_choice: CliColourChoice,
+    #[clap(short = 'u', global = true)]
+    theme: Option<String>,
 
     #[clap(short, long, conflicts_with_all = ["build", "run", "test", "targets", "args"])]
     list: bool,
@@ -258,11 +263,26 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         CliColourChoice::Always => ColorChoice::Always,
         CliColourChoice::Never => ColorChoice::Never,
         CliColourChoice::AlwaysAnsi => ColorChoice::AlwaysAnsi,
-        CliColourChoice::Auto => context.colour_choice,
+        CliColourChoice::Auto => match context.colour_choice {
+            ColorChoice::Auto => {
+                if atty::is(atty::Stream::Stderr) {
+                    ColorChoice::Auto
+                } else {
+                    ColorChoice::Never
+                }
+            }
+            choice => choice,
+        },
     };
-    let output_stream = Arc::new(StandardStream::stderr(colour_choice));
+    let output_stream = StandardStream::stderr(colour_choice);
 
-    let config = {
+    let mut output_state = OutputState {
+        output_stream,
+        theme: context.theme.unwrap_or_else(Theme::default),
+        config: OutputConfig::default(),
+    };
+
+    let config_dir = {
         // Runscript config file is at $RUNSCRIPT_CONFIG_DIR/config.toml, $XDG_CONFIG_HOME/runscript/config.toml,
         // or $HOME/.config/runscript/config.toml on unix.
         // It is at $RUNSCRIPT_CONFIG_DIR\config.toml or {FOLDERID_LocalAppData}\runscript\config.toml on Windows.
@@ -309,31 +329,84 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 }
             }
         }
-
-        if let Some(config_dir) = config_dir {
-            let config_file = config_dir.join("config.toml");
-            if let Ok(contents) = std::fs::read_to_string(&config_file) {
-                match toml::from_str(&contents) {
-                    Ok(config) => config,
-                    Err(e) => {
-                        out::warning(
-                            &output_stream,
-                            format_args!(
-                                "Failed to parse config file at `{}`\n{}",
-                                config_file.display(),
-                                e
-                            ),
-                        );
-                        Config::default()
-                    }
+        config_dir
+    };
+    let config = if let Some(config_dir) = config_dir {
+        let config_file = config_dir.join("config.toml");
+        let config = if let Ok(contents) = std::fs::read_to_string(&config_file) {
+            match toml::from_str(&contents) {
+                Ok(config) => config,
+                Err(e) => {
+                    out::warning(
+                        &output_state,
+                        format_args!(
+                            "Failed to parse config file at `{}`\n{}",
+                            config_file.display(),
+                            e
+                        ),
+                    );
+                    Config::default()
                 }
-            } else {
-                Config::default()
             }
         } else {
             Config::default()
+        };
+        match options.theme.as_ref().or(config.output.theme.as_ref()) {
+            Some(name) if name != "default" => {
+                let mut name = name;
+                let themes_dir = config_dir.join("themes");
+                let mut resolved_theme = Theme::empty();
+                while name != "default" {
+                    let theme_file = {
+                        if name.contains(['.', '/']) {
+                            out::warning(
+                                &output_state,
+                                format_args!("Theme name contains illegal characters `.` or `/`"),
+                            );
+                            break;
+                        }
+                        let mut theme_file = themes_dir.join(name);
+                        theme_file.set_extension("toml");
+                        theme_file
+                    };
+                    match std::fs::read_to_string(&theme_file) {
+                        Ok(contents) => match toml::from_str(&contents) {
+                            Ok(theme) => resolved_theme = resolved_theme.merged_with(theme),
+                            Err(e) => out::warning(
+                                &output_state,
+                                format_args!(
+                                    "Failed to parse theme at `{}`\n{}",
+                                    theme_file.display(),
+                                    e
+                                ),
+                            ),
+                        },
+                        Err(e) => out::warning(
+                            &output_state,
+                            format_args!(
+                                "Failed to read theme file at `{}`\n{}",
+                                theme_file.display(),
+                                e
+                            ),
+                        ),
+                    }
+
+                    name = &resolved_theme.based_on;
+                }
+
+                output_state.theme = resolved_theme
+                    .merged_with(output_state.theme)
+                    .canonicalised();
+            }
+            _ => {}
         }
+
+        config
+    } else {
+        Config::default()
     };
+
+    let output_state = Arc::new(output_state);
 
     #[cfg(feature = "panic-hook")]
     if config.dev.panic {
@@ -348,7 +421,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     let cwd = match env::current_dir() {
         Ok(cwd) => cwd,
         Err(e) => {
-            out::dir_read_err(&output_stream, e);
+            out::dir_read_err(&output_state, e);
             return exitcode::NOINPUT;
         }
     };
@@ -357,7 +430,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         Some(CliSubcommand::Command(command)) => match parser::parse_command(&command.command) {
             Ok(command) => {
                 let exec_cfg = ExecConfig {
-                    output_stream: None,
+                    output_state: None,
                     colour_choice,
                     working_directory: cwd,
                     script_path: None,
@@ -374,8 +447,8 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     .coerced_code()
             }
             Err(e) => {
-                let mut lock = output_stream.lock();
-                writeln!(lock, "{}", e).unwrap();
+                let mut state = output_state.lock();
+                writeln!(state.output_stream, "{}", e).unwrap();
                 exitcode::DATAERR
             }
         },
@@ -383,7 +456,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             let script_source = match std::fs::read_to_string(&script.path) {
                 Ok(script_source) => script_source,
                 Err(e) => {
-                    out::file_read_err(&output_stream, e);
+                    out::file_read_err(&output_state, e);
                     return exitcode::NOINPUT;
                 }
             };
@@ -395,7 +468,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             }) {
                 Ok(script) => script,
                 Err(e) => {
-                    out::file_parse_err(&output_stream, &script.path.display().to_string(), e);
+                    out::file_parse_err(&output_state, &script.path.display().to_string(), e);
                     return exitcode::DATAERR;
                 }
             };
@@ -407,7 +480,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 .unwrap_or_else(|_| script.path.to_string_lossy().into_owned());
 
             let exec_cfg = ExecConfig {
-                output_stream: Some(output_stream.clone()),
+                output_state: Some(output_state.clone()),
                 colour_choice,
                 working_directory: cwd,
                 script_path: Some(script.path),
@@ -422,7 +495,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 .exec_command_group(&parsed_script)
                 .wait()
                 .status;
-            out::process_finish(&output_stream, &status);
+            out::process_finish(&output_state, &status);
             status.coerced_code()
         }
         None if options.list => {
@@ -431,7 +504,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 &config,
                 context.current_file.as_deref(),
                 &cwd,
-                &output_stream,
+                &output_state,
             ) {
                 Ok(runfile) => runfile,
                 Err(code) => return code,
@@ -441,11 +514,12 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 return exitcode::NOINPUT;
             }
 
-            let runscripts = parse_files(&output_stream, &cwd, files);
+            let runscripts = parse_files(&output_state, &cwd, files);
 
-            let mut lock = output_stream.lock();
+            let mut state = output_state.lock();
             let mut first = true;
             for rf in runscripts {
+                let lock = &mut state.output_stream;
                 if !first {
                     writeln!(lock).unwrap();
                 }
@@ -475,7 +549,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     .max()
                     .unwrap_or(0);
 
-                list_scripts_for(&mut lock, &config, longest_target, &rf);
+                list_scripts_for(&mut state, longest_target, &rf);
             }
             exitcode::OK
         }
@@ -485,13 +559,13 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                 &config,
                 context.current_file.as_deref(),
                 &cwd,
-                &output_stream,
+                &output_state,
             ) {
                 Ok(runfile) => runfile,
                 Err(code) => return code,
             };
 
-            let runscript = parse_files(&output_stream, &cwd, files).collect::<CollatedTargets>();
+            let runscript = parse_files(&output_state, &cwd, files).collect::<CollatedTargets>();
 
             struct ResolvedTarget<'a> {
                 target: String,
@@ -584,7 +658,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                         target: target_name.clone(),
                                         phase,
                                         exec_cfg: ExecConfig {
-                                            output_stream: Some(output_stream.clone()),
+                                            output_state: Some(output_state.clone()),
                                             colour_choice,
                                             working_directory: script.working_dir.clone(),
                                             script_path: Some(script.canonical_path.clone()),
@@ -615,7 +689,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                         script,
                     } in scripts
                     {
-                        out::phase_message(&output_stream, &config, &phase, &target);
+                        out::phase_message(&output_state, &phase, &target);
                         let status = match &script.commands {
                             ScriptExecution::Internal { commands, .. } => {
                                 let mut shell_context = ShellContext::new(exec_cfg.clone());
@@ -648,7 +722,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                 }
                             }
                         };
-                        out::process_finish(&output_stream, &status);
+                        out::process_finish(&output_state, &status);
                         exit_code = status.coerced_code();
                         if exitcode::is_error(exit_code) {
                             break;
@@ -657,19 +731,19 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     exit_code
                 }
                 Err(TargetResolutionError::NoDefault) => {
-                    out::bad_default(&output_stream);
+                    out::bad_default(&output_state);
                     exitcode::NOINPUT
                 }
                 Err(TargetResolutionError::NoDefaultPhase(target)) => {
-                    out::no_default_phase(&output_stream, &target);
+                    out::no_default_phase(&output_state, &target);
                     exitcode::NOINPUT
                 }
                 Err(TargetResolutionError::NonexistentTarget(target)) => {
-                    out::bad_target(&output_stream, &target);
+                    out::bad_target(&output_state, &target);
                     exitcode::NOINPUT
                 }
                 Err(TargetResolutionError::NonexistentScript { target, phase }) => {
-                    out::bad_script_phase(&output_stream, &target, &phase);
+                    out::bad_script_phase(&output_state, &target, &phase);
                     exitcode::NOINPUT
                 }
             }
@@ -682,16 +756,16 @@ fn select_files(
     config: &Config,
     context_file: Option<&Path>,
     cwd: &Path,
-    output_stream: &StandardStream,
+    output_state: &OutputState,
 ) -> Result<Vec<SourceFile>, ExitCode> {
     match cli_file {
         Some(file) => {
             let path = std::fs::canonicalize(file).map_err(|err| {
-                out::file_read_err(output_stream, err);
+                out::file_read_err(output_state, err);
                 exitcode::NOINPUT
             })?;
             let source = std::fs::read_to_string(&path).map_err(|err| {
-                out::file_read_err(output_stream, err);
+                out::file_read_err(output_state, err);
                 exitcode::NOINPUT
             })?;
             let working_dir = path.parent().unwrap_or_else(|| Path::new("")).to_owned();
@@ -704,7 +778,7 @@ fn select_files(
         None => match context_file {
             Some(file) => {
                 let source = std::fs::read_to_string(file).map_err(|err| {
-                    out::file_read_err(output_stream, err);
+                    out::file_read_err(output_state, err);
                     exitcode::NOINPUT
                 })?;
                 let working_dir = file.parent().unwrap_or_else(|| Path::new("")).to_owned();
@@ -731,7 +805,7 @@ fn select_files(
                     })
                     .collect::<Vec<_>>();
                 if files.is_empty() {
-                    out::no_runfile_err(output_stream);
+                    out::no_runfile_err(output_state);
                     Err(exitcode::NOINPUT)
                 } else {
                     Ok(files)
@@ -742,7 +816,7 @@ fn select_files(
 }
 
 fn parse_files<'a>(
-    output_stream: &'a termcolor::StandardStream,
+    output_state: &'a OutputState,
     cwd: &'a Path,
     files: Vec<SourceFile>,
 ) -> impl Iterator<Item = Runscript> + 'a {
@@ -755,7 +829,7 @@ fn parse_files<'a>(
                     Err(e) => parser::old::parse_runscript(source_file.clone())
                         .map(|rf| {
                             out::warning(
-                                output_stream,
+                                output_state,
                                 format_args!(
                                     "Using old parser to parse `{}`",
                                     source_file
@@ -778,7 +852,7 @@ fn parse_files<'a>(
             Ok(rf) => Some(rf),
             Err(e) => {
                 out::file_parse_err(
-                    output_stream,
+                    output_state,
                     &source_file
                         .path
                         .strip_prefix(cwd)
@@ -793,12 +867,7 @@ fn parse_files<'a>(
     })
 }
 
-fn list_scripts_for(
-    lock: &mut termcolor::StandardStreamLock,
-    config: &Config,
-    name_length: usize,
-    runscript: &Runscript,
-) {
+fn list_scripts_for(lock: &mut OutputStateLock, name_length: usize, runscript: &Runscript) {
     let default = runscript.get_default_target().map(|(default, _)| default);
     for (is_default, target, map) in runscript.scripts.iter().map(|(target, map)| {
         if target.is_empty() {
@@ -807,18 +876,18 @@ fn list_scripts_for(
             (default == Some(target), target.as_ref(), map)
         }
     }) {
-        print_phase_list(lock, config, target, name_length, is_default, map);
+        print_phase_list(lock, target, name_length, is_default, map);
     }
 }
 
 fn print_phase_list(
-    lock: &mut termcolor::StandardStreamLock,
-    config: &Config,
+    state: &mut OutputStateLock,
     name: &str,
     name_length: usize,
     is_default: bool,
     target: &Target,
 ) {
+    let lock = &mut state.output_stream;
     if is_default {
         lock.set_color(ColorSpec::new().set_fg(Some(Color::Yellow)))
             .unwrap();
@@ -836,7 +905,7 @@ fn print_phase_list(
             ColorSpec::new()
                 .set_bold(true)
                 .set_intense(true)
-                .set_fg(Some(out::phase_color(config, "build"))),
+                .set_fg(Some(out::phase_color(state.theme, "build"))),
         )
         .expect("Failed to set colour");
         write!(lock, "B").unwrap();
@@ -845,7 +914,7 @@ fn print_phase_list(
             ColorSpec::new()
                 .set_bold(false)
                 .set_intense(false)
-                .set_fg(Some(out::phase_color(config, "build"))),
+                .set_fg(Some(out::phase_color(state.theme, "build"))),
         )
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
@@ -855,7 +924,7 @@ fn print_phase_list(
             ColorSpec::new()
                 .set_bold(true)
                 .set_intense(true)
-                .set_fg(Some(out::phase_color(config, "run"))),
+                .set_fg(Some(out::phase_color(state.theme, "run"))),
         )
         .expect("Failed to set colour");
         write!(lock, "R").unwrap();
@@ -864,7 +933,7 @@ fn print_phase_list(
             ColorSpec::new()
                 .set_bold(false)
                 .set_intense(false)
-                .set_fg(Some(out::phase_color(config, "run"))),
+                .set_fg(Some(out::phase_color(state.theme, "run"))),
         )
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
@@ -874,7 +943,7 @@ fn print_phase_list(
             ColorSpec::new()
                 .set_bold(true)
                 .set_intense(true)
-                .set_fg(Some(out::phase_color(config, "test"))),
+                .set_fg(Some(out::phase_color(state.theme, "test"))),
         )
         .expect("Failed to set colour");
         write!(lock, "T").unwrap();
@@ -883,7 +952,7 @@ fn print_phase_list(
             ColorSpec::new()
                 .set_bold(false)
                 .set_intense(false)
-                .set_fg(Some(out::phase_color(config, "test"))),
+                .set_fg(Some(out::phase_color(state.theme, "test"))),
         )
         .expect("Failed to set colour");
         write!(lock, ".").unwrap();
@@ -897,7 +966,7 @@ fn print_phase_list(
             ColorSpec::new()
                 .set_bold(true)
                 .set_intense(true)
-                .set_fg(Some(out::phase_color(config, phase))),
+                .set_fg(Some(out::phase_color(state.theme, phase))),
         )
         .expect("Failed to set colour");
         write!(lock, " {}", phase).expect("Failed to write");

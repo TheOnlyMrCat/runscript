@@ -1,2 +1,2 @@
-args = [ "alpha:run", "bravo:clean", ":test", "charlie", "delta:alt2"]
+args = ["--color=always", "alpha:run", "bravo:clean", ":test", "charlie", "delta:alt2"]
 fs.cwd = "in"
