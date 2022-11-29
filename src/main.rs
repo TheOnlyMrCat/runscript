@@ -18,6 +18,7 @@ use config::{Config, OutputConfig, Theme};
 use exec::BaseExecContext;
 use exitcode::ExitCode;
 
+use is_terminal::IsTerminal;
 use itertools::Itertools;
 use out::{OutputState, OutputStateLock};
 use script::CollatedTargets;
@@ -265,7 +266,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
         CliColourChoice::AlwaysAnsi => ColorChoice::AlwaysAnsi,
         CliColourChoice::Auto => match context.colour_choice {
             ColorChoice::Auto => {
-                if atty::is(atty::Stream::Stderr) {
+                if std::io::stderr().is_terminal() {
                     ColorChoice::Auto
                 } else {
                     ColorChoice::Never
