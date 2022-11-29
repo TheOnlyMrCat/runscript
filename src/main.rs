@@ -624,7 +624,6 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                             let phases = match phase {
                                 Some(phase) => vec![phase],
                                 None => match target_def.options.default_phase {
-                                    Overrideable::Set(ref phases) => phases.clone(),
                                     _ if options.build || options.run || options.test => options
                                         .build
                                         .then_some("build".to_string())
@@ -632,6 +631,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                                         .chain(options.run.then_some("run".to_string()))
                                         .chain(options.test.then_some("test".to_string()))
                                         .collect::<Vec<_>>(),
+                                    Overrideable::Set(ref phases) => phases.clone(),
                                     Overrideable::Unset => vec!["run".to_string()],
                                     Overrideable::SetNone => {
                                         return Err(TargetResolutionError::NoDefaultPhase(
