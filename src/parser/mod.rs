@@ -86,7 +86,7 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
 
     macro_rules! line_index {
         ($index:expr) => {
-            line_indices.partition_point(|&x| $index < x) + 1
+            line_indices.partition_point(|&x| x < $index) + 1
         };
     }
 
@@ -107,7 +107,15 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, RunscriptParseEr
                 consume_line(&mut iterator);
             }
             // Script
-            (i, '[') => {
+            (i, '[')
+                if source.source[line_indices
+                    .partition_point(|&x| x < i)
+                    .checked_sub(1)
+                    .map(|x| line_indices[x])
+                    .unwrap_or(0)..i]
+                    .bytes()
+                    .all(|b| b.is_ascii_whitespace()) =>
+            {
                 // Get script name, phase, and the (optional) executing shell.
                 let (name, phase) = {
                     iterator.next();
