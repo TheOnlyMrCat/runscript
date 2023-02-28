@@ -11,7 +11,7 @@ name = "repl"
 required-features = ["reedline"]
 
 [dependencies]
-chumsky = "0.8.0"
+chumsky = "0.9.0"
 reedline = { version = "0.16.0", optional = true }
 
 [dev-dependencies]

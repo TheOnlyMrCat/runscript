@@ -48,3 +48,6 @@ nix = "0.26.2"
 
 [dev-dependencies]
 trycmd = "0.14.12"
+
+[workspace]
+members = ["runscript-parse"]
