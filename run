@@ -10,7 +10,15 @@ cargo run --no-default-features --features old-parser -- $@
 ::default-phase test
 cargo test
 
-[args]
+[parse:build]
+cargo build --package runscript-parse
+
+[parse:run]
+cargo run --package runscript-parse --bin repl --features reedline
+
+[parse:test]
+::default-phase test
+cargo test --package runscript-parse --lib
 
 [no_exec]
 __run_panic

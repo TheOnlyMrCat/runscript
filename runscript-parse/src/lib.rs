@@ -60,7 +60,7 @@ fn pad<O, E: chumsky::Error<u8>>(
     whitespace().repeated().ignore_then(parser)
 }
 
-fn pad_intercommand<O, E: chumsky::Error<u8>>(
+pub fn pad_intercommand<O, E: chumsky::Error<u8>>(
     parser: impl Parser<u8, O, Error = E> + Clone,
 ) -> impl Parser<u8, O, Error = E> + Clone {
     whitespace_intercommand().repeated().ignore_then(parser)
@@ -68,9 +68,10 @@ fn pad_intercommand<O, E: chumsky::Error<u8>>(
 
 pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Clone {
     recursive(|command_chain| {
-        let mut more_complex_word = Recursive::declare();
+        let mut parameter_complex_word = Recursive::declare();
 
-        let literal = none_of(b"*?[#~%|&;<>()$`\\\"' \t\n")
+        // This differs slightly from the spec, in that } are disallowed
+        let literal = none_of(b"*?[#~%|&;<>()}$`\\\"' \t\n")
             .or(just(b'\\').ignore_then(none_of(b"\n")))
             .repeated()
             .at_least(1)
@@ -131,7 +132,7 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
                 .clone()
                 .then(
                     subst_type
-                        .then(pad(more_complex_word.clone().map(Box::new).or_not()))
+                        .then(pad(parameter_complex_word.clone().map(Box::new).or_not()))
                         .or_not(),
                 )
                 .map(|(param, subst)| match subst {
@@ -163,7 +164,8 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
                 }));
         let backticked_command = command_chain
             .clone()
-            .separated_by(pad(just(b';')))
+            .repeated()
+            .at_least(1)
             .delimited_by(just(b'`'), just(b'`'))
             .map(ParameterSubstitution::Command);
         let parameter_or_subst = just(b'$')
@@ -172,7 +174,8 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
                     .map(ParameterSubstitution::Parameter)
                     .or(command_chain
                         .clone()
-                        .separated_by(pad(just(b';')))
+                        .repeated()
+                        .at_least(1)
                         .delimited_by(just(b'('), just(b')'))
                         .map(ParameterSubstitution::Command))
                     .or(subst.delimited_by(just(b'{'), just(b'}'))),
@@ -193,20 +196,19 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
                 .delimited_by(just(b'\''), just(b'\''))
                 .map(Word::SingleQuoted),
             quoted_word
+                .clone()
                 .repeated()
                 .delimited_by(just(b'"'), just(b'"'))
                 .map(Word::DoubleQuoted),
             simple_word.map(Word::Simple),
         ));
-        let complex_word = word.repeated().at_least(1);
-        more_complex_word.define(
-            complex_word
-                .clone()
-                .or(whitespace().map(|bytes| vec![Word::Simple(SimpleWord::Literal(bytes))]))
+        parameter_complex_word.define(
+            word.clone()
+                .or(whitespace().map(|bytes| Word::Simple(SimpleWord::Literal(bytes))))
                 .repeated()
-                .at_least(1)
-                .flatten(),
+                .at_least(1),
         );
+        let complex_word = word.repeated().at_least(1);
 
         let file_redirect = one_of(b"0123456789")
             .repeated()
@@ -285,8 +287,8 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
             pad_intercommand(command_chain.clone())
                 .repeated()
                 .at_least(1)
-                .delimited_by(just(b'('), just(b')'))
-                .then(redirect.clone().repeated())
+                .delimited_by(just(b'('), pad(just(b')')))
+                .then(pad(redirect.clone()).repeated())
                 .map(|(commands, redirects)| CommandGroup::Subshell {
                     commands,
                     redirects,
@@ -294,8 +296,8 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
             pad_intercommand(command_chain.clone())
                 .repeated()
                 .at_least(1)
-                .delimited_by(just(b'{'), just(b'}'))
-                .then(redirect.clone().repeated())
+                .delimited_by(just(b'{'), pad(just(b'}')))
+                .then(pad(redirect.clone()).repeated())
                 .map(|(commands, redirects)| CommandGroup::Brace {
                     commands,
                     redirects,
@@ -303,7 +305,7 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
             simple_command.map(|simple_command| CommandGroup::Simple(Box::new(simple_command))),
         ));
         let pipeline = pad(just(b'!').or_not())
-            .then(pad(command_group).separated_by(pad(just(b'|'))))
+            .then(pad(command_group).separated_by(pad(just(b'|'))).at_least(1))
             .map(|(bang, command_groups)| Pipeline {
                 command_groups,
                 negate: bang.is_some(),
@@ -336,6 +338,13 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use crate::ast::*;
+
+    #[test]
+    fn parser_api() {
+        let command = super::command_chain();
+
+        assert!(command.parse(b"").is_err());
+    }
 
     #[test]
     fn command_words() {
@@ -436,7 +445,7 @@ mod tests {
     #[test]
     fn command_list() {
         let command = crate::command_chain();
-        let commands = crate::pad_intercommand(command).repeated().exactly(3);
+        let commands = crate::pad_intercommand(command).repeated();
         assert_eq!(
             commands
                 .then_ignore(end())
@@ -627,7 +636,7 @@ mod tests {
     fn parameter_substitutions() {
         let command = super::command_chain();
 
-        std::assert_eq!(
+        assert_eq!(
             command
                 .then_ignore(end())
                 .parse(b"${247} ${#} ${##} ${SHELL##z} ${SHELL%sh} ${FOO:- bar}"),
@@ -648,7 +657,7 @@ mod tests {
                             )))],
                             vec![Word::Simple(SimpleWord::Subst(
                                 ParameterSubstitution::RemoveLargestPrefix(
-                                    Parameter::Var(b"zsh".to_vec(),),
+                                    Parameter::Var(b"SHELL".to_vec(),),
                                     Some(Box::new(vec![Word::Simple(SimpleWord::Literal(
                                         b"z".to_vec()
                                     ))]))
@@ -656,7 +665,7 @@ mod tests {
                             ))],
                             vec![Word::Simple(SimpleWord::Subst(
                                 ParameterSubstitution::RemoveSmallestSuffix(
-                                    Parameter::Var(b"zsh".to_vec(),),
+                                    Parameter::Var(b"SHELL".to_vec(),),
                                     Some(Box::new(vec![Word::Simple(SimpleWord::Literal(
                                         b"sh".to_vec()
                                     ))]))
@@ -673,6 +682,117 @@ mod tests {
                             ))],
                         ]
                     }))],
+                    negate: false,
+                },
+                rest: vec![],
+                job: false,
+            })
+        )
+    }
+
+    #[test]
+    fn subshell_brace_groups() {
+        let command = super::command_chain();
+
+        assert_eq!(
+            command
+                .then_ignore(end())
+                .parse(b"{ echo a; ( echo b & echo c ) >/dev/null & }"),
+            Ok(CommandChain {
+                first: Pipeline {
+                    command_groups: vec![CommandGroup::Brace {
+                        commands: vec![
+                            CommandChain {
+                                first: Pipeline {
+                                    command_groups: vec![CommandGroup::Simple(Box::new(
+                                        SimpleCommand {
+                                            redirects: vec![],
+                                            assignments: vec![],
+                                            words: vec![
+                                                vec![Word::Simple(SimpleWord::Literal(
+                                                    b"echo".to_vec()
+                                                ))],
+                                                vec![Word::Simple(SimpleWord::Literal(
+                                                    b"a".to_vec()
+                                                ))],
+                                            ]
+                                        }
+                                    ))],
+                                    negate: false,
+                                },
+                                rest: vec![],
+                                job: false,
+                            },
+                            CommandChain {
+                                first: Pipeline {
+                                    command_groups: vec![CommandGroup::Subshell {
+                                        commands: vec![
+                                            CommandChain {
+                                                first: Pipeline {
+                                                    command_groups: vec![CommandGroup::Simple(
+                                                        Box::new(SimpleCommand {
+                                                            redirects: vec![],
+                                                            assignments: vec![],
+                                                            words: vec![
+                                                                vec![Word::Simple(
+                                                                    SimpleWord::Literal(
+                                                                        b"echo".to_vec()
+                                                                    )
+                                                                )],
+                                                                vec![Word::Simple(
+                                                                    SimpleWord::Literal(
+                                                                        b"b".to_vec()
+                                                                    )
+                                                                )],
+                                                            ]
+                                                        })
+                                                    )],
+                                                    negate: false,
+                                                },
+                                                rest: vec![],
+                                                job: true,
+                                            },
+                                            CommandChain {
+                                                first: Pipeline {
+                                                    command_groups: vec![CommandGroup::Simple(
+                                                        Box::new(SimpleCommand {
+                                                            redirects: vec![],
+                                                            assignments: vec![],
+                                                            words: vec![
+                                                                vec![Word::Simple(
+                                                                    SimpleWord::Literal(
+                                                                        b"echo".to_vec()
+                                                                    )
+                                                                )],
+                                                                vec![Word::Simple(
+                                                                    SimpleWord::Literal(
+                                                                        b"c".to_vec()
+                                                                    )
+                                                                )],
+                                                            ]
+                                                        })
+                                                    )],
+                                                    negate: false,
+                                                },
+                                                rest: vec![],
+                                                job: false,
+                                            }
+                                        ],
+                                        redirects: vec![Redirect::Write(
+                                            None,
+                                            vec![Word::Simple(SimpleWord::Literal(
+                                                b"/dev/null".to_vec()
+                                            ))]
+                                        )]
+                                    }],
+                                    negate: false,
+                                },
+                                rest: vec![],
+                                job: true,
+                            }
+                        ],
+                        redirects: vec![],
+                    }],
                     negate: false,
                 },
                 rest: vec![],
