@@ -248,46 +248,70 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
             .map(|(name, word)| RedirOrAssignment::Assignment(name, word))))
         .repeated();
 
+        let first_word = pad(complex_word.clone()).try_map(|word, span| {
+            if word.len() == 1 {
+                match word[0] {
+                    Word::Simple(SimpleWord::Literal(ref bytes)) => match bytes.as_slice() {
+                        b"if" | b"elif" | b"else" | b"fi" | b"then" | b"while" | b"for" | b"do"
+                        | b"done" => {
+                            return Err(Simple::custom(
+                                span,
+                                format!(
+                                    "{} not valid in this position",
+                                    std::str::from_utf8(bytes).unwrap()
+                                ),
+                            ))
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+            }
+            Ok(word)
+        });
+
         let words = pad(redirect
             .clone()
             .map(RedirOrWord::Redirect)
             .or(complex_word.map(RedirOrWord::Word)))
-        .repeated()
-        .at_least(1);
+        .repeated();
 
-        let simple_command = assignments.then(words).map(|(assignments, words)| {
-            let mut redirects = vec![];
-            let assignments = assignments
-                .into_iter()
-                .filter_map(|either| match either {
-                    RedirOrAssignment::Redirect(redir) => {
-                        redirects.push(redir);
-                        None
+        let simple_command =
+            assignments
+                .then(first_word)
+                .then(words)
+                .map(|((assignments, first_word), words)| {
+                    let mut redirects = vec![];
+                    let assignments = assignments
+                        .into_iter()
+                        .filter_map(|either| match either {
+                            RedirOrAssignment::Redirect(redir) => {
+                                redirects.push(redir);
+                                None
+                            }
+                            RedirOrAssignment::Assignment(name, word) => Some((name, word)),
+                        })
+                        .collect();
+                    let words = std::iter::once(first_word)
+                        .chain(words.into_iter().filter_map(|either| match either {
+                            RedirOrWord::Redirect(redir) => {
+                                redirects.push(redir);
+                                None
+                            }
+                            RedirOrWord::Word(word) => Some(word),
+                        }))
+                        .collect();
+                    SimpleCommand {
+                        redirects,
+                        assignments,
+                        words,
                     }
-                    RedirOrAssignment::Assignment(name, word) => Some((name, word)),
-                })
-                .collect();
-            let words = words
-                .into_iter()
-                .filter_map(|either| match either {
-                    RedirOrWord::Redirect(redir) => {
-                        redirects.push(redir);
-                        None
-                    }
-                    RedirOrWord::Word(word) => Some(word),
-                })
-                .collect();
-            SimpleCommand {
-                redirects,
-                assignments,
-                words,
-            }
-        });
+                });
         let command_group = choice((
             pad_intercommand(command_chain.clone())
                 .repeated()
                 .at_least(1)
-                .delimited_by(just(b'('), pad(just(b')')))
+                .delimited_by(just(b'('), pad_intercommand(just(b')')))
                 .then(pad(redirect.clone()).repeated())
                 .map(|(commands, redirects)| CommandGroup::Subshell {
                     commands,
@@ -296,11 +320,57 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
             pad_intercommand(command_chain.clone())
                 .repeated()
                 .at_least(1)
-                .delimited_by(just(b'{'), pad(just(b'}')))
+                .delimited_by(just(b'{'), pad_intercommand(just(b'}')))
                 .then(pad(redirect.clone()).repeated())
                 .map(|(commands, redirects)| CommandGroup::Brace {
                     commands,
                     redirects,
+                }),
+            just(b"if")
+                .ignore_then(
+                    pad_intercommand(command_chain.clone())
+                        .repeated()
+                        .at_least(1),
+                )
+                .then_ignore(pad_intercommand(just(b"then")))
+                .then(
+                    pad_intercommand(command_chain.clone())
+                        .repeated()
+                        .at_least(1),
+                )
+                .then(
+                    pad_intercommand(just(b"elif"))
+                        .ignore_then(
+                            pad_intercommand(command_chain.clone())
+                                .repeated()
+                                .at_least(1),
+                        )
+                        .then_ignore(pad_intercommand(just(b"then")))
+                        .then(
+                            pad_intercommand(command_chain.clone())
+                                .repeated()
+                                .at_least(1),
+                        )
+                        .repeated(),
+                )
+                .then(
+                    pad_intercommand(just(b"else"))
+                        .ignore_then(
+                            pad_intercommand(command_chain.clone())
+                                .repeated()
+                                .at_least(1),
+                        )
+                        .or_not(),
+                )
+                .then_ignore(pad_intercommand(just(b"fi")))
+                .then(pad(redirect.clone()).repeated())
+                .map(|(((if_, elifs), else_branch), io)| CommandGroup::If {
+                    conditionals: std::iter::once(if_)
+                        .chain(elifs)
+                        .map(|(guard, body)| GuardBodyPair { guard, body })
+                        .collect(),
+                    else_branch,
+                    io,
                 }),
             simple_command.map(|simple_command| CommandGroup::Simple(Box::new(simple_command))),
         ));
@@ -799,5 +869,155 @@ mod tests {
                 job: false,
             })
         )
+    }
+
+    #[test]
+    fn if_statements() {
+        let command = super::command_chain();
+        assert_eq!(
+            command.parse(b"if true; then echo true; fi"),
+            Ok(CommandChain {
+                first: Pipeline {
+                    command_groups: vec![CommandGroup::If {
+                        conditionals: vec![GuardBodyPair {
+                            guard: vec![CommandChain {
+                                first: Pipeline {
+                                    command_groups: vec![CommandGroup::Simple(Box::new(
+                                        SimpleCommand {
+                                            redirects: vec![],
+                                            assignments: vec![],
+                                            words: vec![vec![Word::Simple(SimpleWord::Literal(
+                                                b"true".to_vec()
+                                            ))],],
+                                        }
+                                    ))],
+                                    negate: false,
+                                },
+                                rest: vec![],
+                                job: false,
+                            }],
+                            body: vec![CommandChain {
+                                first: Pipeline {
+                                    command_groups: vec![CommandGroup::Simple(Box::new(
+                                        SimpleCommand {
+                                            redirects: vec![],
+                                            assignments: vec![],
+                                            words: vec![
+                                                vec![Word::Simple(SimpleWord::Literal(
+                                                    b"echo".to_vec()
+                                                ))],
+                                                vec![Word::Simple(SimpleWord::Literal(
+                                                    b"true".to_vec()
+                                                ))],
+                                            ],
+                                        }
+                                    ))],
+                                    negate: false,
+                                },
+                                rest: vec![],
+                                job: false,
+                            }],
+                        },],
+                        else_branch: None,
+                        io: vec![],
+                    }],
+                    negate: false,
+                },
+                rest: vec![],
+                job: false,
+            })
+        );
+        assert_eq!(
+            command.parse(b"if true; then echo true; elif false; then echo false; else echo huh; fi >/dev/null"),
+            Ok(CommandChain {
+                    first: Pipeline {
+                        command_groups: vec![CommandGroup::If {
+                            conditionals: vec![
+                                GuardBodyPair {
+                                    guard: vec![CommandChain {
+                                        first: Pipeline {
+                                            command_groups: vec![CommandGroup::Simple(Box::new(SimpleCommand {
+                                                redirects: vec![],
+                                                assignments: vec![],
+                                                words: vec![
+                                                    vec![Word::Simple(SimpleWord::Literal(b"true".to_vec()))],
+                                                ],
+                                            }))],
+                                            negate: false,
+                                        },
+                                        rest: vec![],
+                                        job: false,
+                                    }],
+                                    body: vec![CommandChain {
+                                        first: Pipeline {
+                                            command_groups: vec![CommandGroup::Simple(Box::new(SimpleCommand {
+                                                redirects: vec![],
+                                                assignments: vec![],
+                                                words: vec![
+                                                    vec![Word::Simple(SimpleWord::Literal(b"echo".to_vec()))],
+                                                    vec![Word::Simple(SimpleWord::Literal(b"true".to_vec()))],
+                                                ],
+                                            }))],
+                                            negate: false,
+                                        },
+                                        rest: vec![],
+                                        job: false,
+                                    }],
+                                },
+                                GuardBodyPair {
+                                    guard: vec![CommandChain {
+                                        first: Pipeline {
+                                            command_groups: vec![CommandGroup::Simple(Box::new(SimpleCommand {
+                                                redirects: vec![],
+                                                assignments: vec![],
+                                                words: vec![vec![Word::Simple(SimpleWord::Literal(b"false".to_vec()))]],
+                                            }))],
+                                            negate: false,
+                                        },
+                                        rest: vec![],
+                                        job: false,
+                                    }],
+                                    body: vec![CommandChain {
+                                        first: Pipeline {
+                                            command_groups: vec![CommandGroup::Simple(Box::new(SimpleCommand {
+                                                redirects: vec![],
+                                                assignments: vec![],
+                                                words: vec![
+                                                    vec![Word::Simple(SimpleWord::Literal(b"echo".to_vec()))],
+                                                    vec![Word::Simple(SimpleWord::Literal(b"false".to_vec()))],
+                                                ],
+                                            }))],
+                                            negate: false,
+                                        },
+                                        rest: vec![],
+                                        job: false,
+                                    }],
+                                },
+                            ],
+                            else_branch: Some(vec![CommandChain {
+                                first: Pipeline {
+                                    command_groups: vec![CommandGroup::Simple(Box::new(SimpleCommand {
+                                        redirects: vec![],
+                                        assignments: vec![],
+                                        words: vec![
+                                            vec![Word::Simple(SimpleWord::Literal(b"echo".to_vec()))],
+                                            vec![Word::Simple(SimpleWord::Literal(b"huh".to_vec()))],
+                                        ],
+                                    }))],
+                                    negate: false,
+                                },
+                                rest: vec![],
+                                job: false,
+                            }]),
+                            io: vec![
+                                Redirect::Write(None, vec![Word::Simple(SimpleWord::Literal(b"/dev/null".to_vec()))])
+                            ],
+                        }],
+                        negate: false,
+                    },
+                    rest: vec![],
+                    job: false,
+                }
+        ))
     }
 }

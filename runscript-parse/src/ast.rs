@@ -103,6 +103,10 @@ pub enum SimpleWord {
     SquareOpen,
     /// Represents `]`, useful for handling pattern expansions.
     SquareClose,
+    /// Represents `{`, useful for handling pattern expansions.
+    BraceOpen,
+    /// Represents `}`, useful for handling pattern expansions.
+    BraceClose,
     /// Represents `~`, useful for handling tilde expansions.
     Tilde,
     /// Represents `:`, useful for handling tilde expansions.
