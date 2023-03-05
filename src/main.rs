@@ -28,7 +28,7 @@ use crate::script::Script;
 
 use self::exec::{ExecConfig, ShellContext};
 use self::parser::SourceFile;
-use self::script::{Overrideable, Runscript, ScriptExecution, Target};
+use self::script::{Overrideable, Runscript, Target};
 
 const HELP_TEXT: &str = "\
 Project script manager and executor
@@ -428,33 +428,38 @@ pub fn run(context: BaseExecContext) -> ExitCode {
     };
 
     match options.subcommand {
-        Some(CliSubcommand::Command(command)) => match parser::parse_command(&command.command) {
-            Ok(command) => {
-                let exec_cfg = ExecConfig {
-                    output_state: None,
-                    colour_choice,
-                    working_directory: cwd,
-                    script_path: None,
-                    target_name: None,
-                    positional_args: std::iter::once("".to_string())
-                        .chain(options.args)
-                        .collect(),
-                };
-                let mut shell_context = ShellContext::new(exec_cfg);
-                shell_context
-                    .exec_command_group(&[command])
-                    .wait()
-                    .status
-                    .coerced_code()
+        Some(CliSubcommand::Command(command)) => {
+            match parser::parse_command(command.command.as_bytes()) {
+                Ok(command) => {
+                    let exec_cfg = ExecConfig {
+                        output_state: None,
+                        colour_choice,
+                        working_directory: cwd,
+                        script_path: None,
+                        target_name: None,
+                        positional_args: std::iter::once("".to_string())
+                            .chain(options.args)
+                            .collect(),
+                    };
+                    let mut shell_context = ShellContext::new(exec_cfg);
+                    shell_context
+                        .exec_commands(&command)
+                        .wait()
+                        .status
+                        .coerced_code()
+                }
+                Err(errors) => {
+                    //TODO: Pass this through `out` module
+                    let mut state = output_state.lock();
+                    for e in errors {
+                        writeln!(state.output_stream, "{}", e).unwrap();
+                    }
+                    exitcode::DATAERR
+                }
             }
-            Err(e) => {
-                let mut state = output_state.lock();
-                writeln!(state.output_stream, "{}", e).unwrap();
-                exitcode::DATAERR
-            }
-        },
+        }
         Some(CliSubcommand::Script(script)) => {
-            let script_source = match std::fs::read_to_string(&script.path) {
+            let script_source = match std::fs::read(&script.path) {
                 Ok(script_source) => script_source,
                 Err(e) => {
                     out::file_read_err(&output_state, e);
@@ -469,7 +474,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             }) {
                 Ok(script) => script,
                 Err(e) => {
-                    out::file_parse_err(&output_state, &script.path.display().to_string(), e);
+                    // out::file_parse_err(&output_state, &script.path.display().to_string(), e);
                     return exitcode::DATAERR;
                 }
             };
@@ -492,10 +497,7 @@ pub fn run(context: BaseExecContext) -> ExitCode {
             };
 
             let mut shell_context = ShellContext::new(exec_cfg);
-            let status = shell_context
-                .exec_command_group(&parsed_script)
-                .wait()
-                .status;
+            let status = shell_context.exec_commands(&parsed_script).wait().status;
             out::process_finish(&output_state, &status);
             status.coerced_code()
         }
@@ -691,36 +693,25 @@ pub fn run(context: BaseExecContext) -> ExitCode {
                     } in scripts
                     {
                         out::phase_message(&output_state, &phase, &target);
-                        let status = match &script.commands {
-                            ScriptExecution::Internal { commands, .. } => {
+                        let status = match &script.options.executor {
+                            Overrideable::Unset | Overrideable::SetNone => {
+                                let commands = match parser::parse_command(&script.body) {
+                                    Ok(commands) => commands,
+                                    Err(e) => {
+                                        todo!()
+                                    }
+                                };
                                 let mut shell_context = ShellContext::new(exec_cfg.clone());
-                                shell_context
-                                    .exec_command_group(
-                                        &commands
-                                            .clone() //TODO: Don't clone?
-                                            .into_iter()
-                                            .map(|sc| sc.command)
-                                            .collect::<Vec<_>>(),
-                                    )
-                                    .wait()
-                                    .status
+                                shell_context.exec_commands(&commands).wait().status
                             }
-                            ScriptExecution::ExternalPosix { command, script } => {
+                            Overrideable::Set(command) => {
                                 let mut file = tempfile::NamedTempFile::new().unwrap();
-                                file.write_all(script.as_bytes()).unwrap();
+                                file.write_all(&script.body).unwrap();
 
-                                match std::process::Command::new(&command[0])
-                                    .args(&command[1..])
-                                    .arg(file.path())
-                                    .args(&exec_cfg.positional_args[1..])
-                                    .current_dir(&exec_cfg.working_directory)
-                                    .status()
-                                {
-                                    Ok(status) => process::ProcessExit::StdStatus(status),
-                                    Err(err) => process::ProcessExit::ExecError(
-                                        process::CommandExecError::CommandFailed { err },
-                                    ),
-                                }
+                                //FIXME: The file needs to actually be passed as an argument
+                                let commands = parser::parse_command(&command).unwrap();
+                                let mut shell_context = ShellContext::new(exec_cfg.clone());
+                                shell_context.exec_commands(&commands).wait().status
                             }
                         };
                         out::process_finish(&output_state, &status);
@@ -765,7 +756,7 @@ fn select_files(
                 out::file_read_err(output_state, err);
                 exitcode::NOINPUT
             })?;
-            let source = std::fs::read_to_string(&path).map_err(|err| {
+            let source = std::fs::read(&path).map_err(|err| {
                 out::file_read_err(output_state, err);
                 exitcode::NOINPUT
             })?;
@@ -778,7 +769,7 @@ fn select_files(
         }
         None => match context_file {
             Some(file) => {
-                let source = std::fs::read_to_string(file).map_err(|err| {
+                let source = std::fs::read(file).map_err(|err| {
                     out::file_read_err(output_state, err);
                     exitcode::NOINPUT
                 })?;
@@ -795,13 +786,11 @@ fn select_files(
                     .flat_map(|path| {
                         config.file.names.iter().filter_map(|file| {
                             let runfile_path = path.join(file);
-                            std::fs::read_to_string(&runfile_path)
-                                .ok()
-                                .map(|source| SourceFile {
-                                    path: runfile_path,
-                                    working_dir: path.to_owned(),
-                                    source,
-                                })
+                            std::fs::read(&runfile_path).ok().map(|source| SourceFile {
+                                path: runfile_path,
+                                working_dir: path.to_owned(),
+                                source,
+                            })
                         })
                     })
                     .collect::<Vec<_>>();
@@ -852,16 +841,16 @@ fn parse_files<'a>(
         } {
             Ok(rf) => Some(rf),
             Err(e) => {
-                out::file_parse_err(
-                    output_state,
-                    &source_file
-                        .path
-                        .strip_prefix(cwd)
-                        .unwrap_or(&source_file.path)
-                        .display()
-                        .to_string(),
-                    e,
-                );
+                // out::file_parse_err(
+                //     output_state,
+                //     &source_file
+                //         .path
+                //         .strip_prefix(cwd)
+                //         .unwrap_or(&source_file.path)
+                //         .display()
+                //         .to_string(),
+                //     e,
+                // );
                 None
             }
         }

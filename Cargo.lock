@@ -830,6 +830,7 @@ name = "runscript"
 version = "1.0.0-beta.7"
 dependencies = [
  "cfg-if",
+ "chumsky",
  "clap",
  "exitcode",
  "glob",

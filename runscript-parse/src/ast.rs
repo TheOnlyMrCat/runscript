@@ -91,8 +91,10 @@ pub enum Word {
 /// Generic over the representation of a literals, parameters, and substitutions.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SimpleWord {
-    /// A non-special literal word, or an escaped token
+    /// A non-special literal word
     Literal(Vec<u8>),
+    /// An escaped token
+    Escaped(u8),
     /// A parameter substitution, e.g. `${param-word}`.
     Subst(ParameterSubstitution),
     /// Represents `*`, useful for handling pattern expansions.

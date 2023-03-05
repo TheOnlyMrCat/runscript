@@ -6,14 +6,12 @@ use std::path::PathBuf;
 
 use indexmap::IndexMap;
 
-use crate::parser::lexer::Lexer;
-use crate::parser::parse::Parser;
 use crate::script::*;
 
 use super::SourceFile;
 
 #[derive(Debug)]
-struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
+struct ParsingContext<T: Iterator<Item = (usize, u8)> + std::fmt::Debug> {
     iterator: std::iter::Peekable<T>,
     runfile: Runscript,
     line_indices: Vec<usize>,
@@ -23,11 +21,13 @@ struct ParsingContext<T: Iterator<Item = (usize, char)> + std::fmt::Debug> {
 
 pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
     let mut context = ParsingContext {
-        iterator: source.source.char_indices().peekable(),
+        iterator: source.source.iter().copied().enumerate().peekable(),
         line_indices: source
             .source
-            .char_indices()
-            .filter_map(|(index, ch)| if ch == '\n' { Some(index) } else { None })
+            .iter()
+            .copied()
+            .enumerate()
+            .filter_map(|(index, ch)| if ch == b'\n' { Some(index) } else { None })
             .collect(),
         runfile: Runscript {
             display_path: source
@@ -48,38 +48,38 @@ pub fn parse_runscript(source: SourceFile) -> Result<Runscript, ()> {
     }
 }
 
-fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
+fn parse_root<T: Iterator<Item = (usize, u8)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
 ) -> Result<(), ()> {
     while let Some(tk) = context.iterator.next() {
         match tk {
             // Comment
-            (_, '!') => {
+            (_, b'!') => {
                 consume_line(&mut context.iterator);
             }
             // Annotation
-            (_, '$') => {
+            (_, b'$') => {
                 // The only thing that it would be is `$opt default_positionals`. In practice, `$include`s weren't used.
                 consume_line(&mut context.iterator);
             }
             // Script
-            (i, '#') => {
+            (i, b'#') => {
                 let (name, bk) = consume_word(&mut context.iterator);
 
                 // b!, b => "build", br, r, r! => "run"
                 let (phase, bk) = match bk {
                     BreakCondition::Newline(i) => ("run", BreakCondition::Newline(i)),
                     _ => match context.iterator.next() {
-                        Some((i, '\n')) => ("run", BreakCondition::Newline(i)),
-                        Some((_, 'b')) => match context.iterator.next() {
-                            Some((_, '!')) => ("build", BreakCondition::Parse),
-                            Some((_, 'r')) => ("run", BreakCondition::Parse),
-                            Some((i, '\n')) => ("build", BreakCondition::Newline(i)),
+                        Some((i, b'\n')) => ("run", BreakCondition::Newline(i)),
+                        Some((_, b'b')) => match context.iterator.next() {
+                            Some((_, b'!')) => ("build", BreakCondition::Parse),
+                            Some((_, b'r')) => ("run", BreakCondition::Parse),
+                            Some((i, b'\n')) => ("build", BreakCondition::Newline(i)),
                             _ => ("build", BreakCondition::Parse),
                         },
-                        Some((_, 'r')) => match context.iterator.next() {
-                            Some((_, '!')) => ("run", BreakCondition::Parse),
-                            Some((i, '\n')) => ("run", BreakCondition::Newline(i)),
+                        Some((_, b'r')) => match context.iterator.next() {
+                            Some((_, b'!')) => ("run", BreakCondition::Parse),
+                            Some((i, b'\n')) => ("run", BreakCondition::Newline(i)),
                             _ => ("run", BreakCondition::Parse),
                         },
                         _ => return Err(()),
@@ -97,16 +97,14 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     .find_map(|(line, &end)| if end > i { Some(line + 1) } else { None })
                     .unwrap_or(context.line_indices.len());
                 let script = Script {
-                    commands: ScriptExecution::Internal {
-                        commands: parse_commands(context)?,
-                        options: ScriptOptions::default(),
-                    },
+                    options: Default::default(),
+                    body: parse_commands(context)?.to_vec(),
                     canonical_path: context.canonical_path.clone(),
                     working_dir: context.working_dir.clone(),
                     line,
                 };
 
-                if name == "-" {
+                if name == b"-" {
                     context
                         .runfile
                         .scripts
@@ -118,13 +116,13 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
                     context
                         .runfile
                         .scripts
-                        .entry(name.clone())
+                        .entry(String::from_utf8(name.clone()).unwrap())
                         .or_default()
                         .scripts
                         .insert(phase.to_owned(), script);
                 }
             }
-            (_, ' ') | (_, '\n') | (_, '\r') | (_, '\t') => continue,
+            (_, b' ') | (_, b'\n') | (_, b'\r') | (_, b'\t') => continue,
             _ => return Err(()),
         }
     }
@@ -132,24 +130,22 @@ fn parse_root<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
     Ok(())
 }
 
-fn parse_commands<T: Iterator<Item = (usize, char)> + std::fmt::Debug>(
+fn parse_commands<T: Iterator<Item = (usize, u8)> + std::fmt::Debug>(
     context: &mut ParsingContext<T>,
-) -> Result<Vec<ScriptCommand>, ()> {
-    let mut cmds = Vec::new();
+) -> Result<Vec<u8>, ()> {
+    let mut commands = Vec::new();
 
-    let lexer = Lexer::new((&mut context.iterator).map(|(_, ch)| ch));
-    let mut parser = Parser::<_>::new(lexer);
     loop {
-        if parser.peek_end_delimiter() {
-            break;
+        let (line, bk) = consume_line(&mut context.iterator);
+        if matches!(bk, BreakCondition::Eof) {
+            return Err(());
         }
-        cmds.push(ScriptCommand {
-            command: parser.complete_command().map_err(|_| ())?.ok_or(())?,
-            options: CommandOptions::default(),
-        });
+        if line == b"#/" {
+            return Ok(commands);
+        } else {
+            commands.extend(line.into_iter());
+        }
     }
-
-    Ok(cmds)
 }
 
 #[derive(Debug)]
@@ -160,14 +156,14 @@ enum BreakCondition {
 }
 
 fn consume_word(
-    iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug),
-) -> (String, BreakCondition) {
-    let mut buf = String::new();
+    iterator: &mut (impl Iterator<Item = (usize, u8)> + std::fmt::Debug),
+) -> (Vec<u8>, BreakCondition) {
+    let mut buf = Vec::new();
     let nl = loop {
         match iterator.next() {
-            Some((i, '\n')) => break BreakCondition::Newline(i),
-            Some((_, ' ')) | Some((_, '\t')) => break BreakCondition::Parse,
-            Some((_, '\r')) => continue,
+            Some((i, b'\n')) => break BreakCondition::Newline(i),
+            Some((_, b' ')) | Some((_, b'\t')) => break BreakCondition::Parse,
+            Some((_, b'\r')) => continue,
             Some((_, c)) => buf.push(c),
             None => break BreakCondition::Eof,
         }
@@ -176,13 +172,13 @@ fn consume_word(
 }
 
 fn consume_line(
-    iterator: &mut (impl Iterator<Item = (usize, char)> + std::fmt::Debug),
-) -> (String, BreakCondition) {
-    let mut buf = String::new();
+    iterator: &mut (impl Iterator<Item = (usize, u8)> + std::fmt::Debug),
+) -> (Vec<u8>, BreakCondition) {
+    let mut buf = Vec::new();
     let bk = loop {
         match iterator.next() {
-            Some((i, '\n')) => break BreakCondition::Newline(i),
-            Some((_, '\r')) => continue,
+            Some((i, b'\n')) => break BreakCondition::Newline(i),
+            Some((_, b'\r')) => continue,
             Some((_, c)) => buf.push(c),
             None => break BreakCondition::Eof,
         }

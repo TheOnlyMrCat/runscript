@@ -37,7 +37,7 @@ enum SubstitutionType {
     LargePrefix,
 }
 
-fn whitespace<E: chumsky::Error<u8>>() -> impl Parser<u8, Vec<u8>, Error = E> + Clone {
+pub fn whitespace<E: chumsky::Error<u8>>() -> impl Parser<u8, Vec<u8>, Error = E> + Clone {
     choice((
         just(b'\t').repeated().at_least(1),
         just(b' ').repeated().at_least(1),
@@ -45,7 +45,7 @@ fn whitespace<E: chumsky::Error<u8>>() -> impl Parser<u8, Vec<u8>, Error = E> + 
     ))
 }
 
-fn whitespace_intercommand<E: chumsky::Error<u8>>() -> impl Parser<u8, (), Error = E> + Clone {
+pub fn whitespace_intercommand<E: chumsky::Error<u8>>() -> impl Parser<u8, (), Error = E> + Clone {
     choice((
         just(b'\t').ignored(),
         just(b' ').ignored(),
@@ -54,7 +54,7 @@ fn whitespace_intercommand<E: chumsky::Error<u8>>() -> impl Parser<u8, (), Error
     ))
 }
 
-fn pad<O, E: chumsky::Error<u8>>(
+pub fn pad<O, E: chumsky::Error<u8>>(
     parser: impl Parser<u8, O, Error = E> + Clone,
 ) -> impl Parser<u8, O, Error = E> + Clone {
     whitespace().repeated().ignore_then(parser)
@@ -72,12 +72,12 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
 
         // This differs slightly from the spec, in that } are disallowed
         let literal = none_of(b"*?[#~%|&;<>()}$`\\\"' \t\n")
-            .or(just(b'\\').ignore_then(none_of(b"\n")))
             .repeated()
             .at_least(1)
             .separated_by(just(b"\\\n"))
             .at_least(1)
             .flatten();
+        let escape = just(b'\\').ignore_then(none_of(b"\n"));
         let quoted_literal = none_of(b"$`\\\"")
             .or(just(b'\\').ignore_then(one_of(b"$`\"\\")))
             .repeated()
@@ -85,6 +85,7 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
             .separated_by(just(b"\\\n"))
             .at_least(1)
             .flatten();
+        let quoted_escape = just(b'\\').ignore_then(one_of(b"$`\"\\"));
         let name = text::ident::<u8, _>()
             .separated_by(just(b"\\\n"))
             .at_least(1)
@@ -184,10 +185,12 @@ pub fn command_chain() -> impl Parser<u8, CommandChain, Error = Simple<u8>> + Cl
 
         let simple_word = choice((
             literal.map(SimpleWord::Literal),
+            escape.map(SimpleWord::Escaped),
             parameter_or_subst.clone().map(SimpleWord::Subst),
         ));
         let quoted_word = choice((
             quoted_literal.map(SimpleWord::Literal),
+            quoted_escape.map(SimpleWord::Escaped),
             parameter_or_subst.map(SimpleWord::Subst),
         ));
         let word = choice((

@@ -7,18 +7,16 @@ use std::sync::Arc;
 
 use crate::config::Theme;
 use crate::process::{
-    BuiltinCommand, CommandExecError, ProcessExit, RedirectConfig, SpawnContext, SpawnableProcess,
-    StdinRedirect, StdoutRedirect, WaitableProcess,
+    BuiltinCommand, CommandExecError, CompoundCommand, ProcessExit, RedirectConfig, SpawnContext,
+    SpawnableProcess, StdinRedirect, StdoutRedirect, WaitableProcess,
 };
 
-use crate::parser::ast::{
-    AndOr, AndOrList, AtomicTopLevelCommand, ComplexWord, CompoundCommand, CompoundCommandKind,
-    GuardBodyPair, ListableCommand, Parameter, ParameterSubstitution, PatternBodyPair,
-    PipeableCommand, Redirect, RedirectOrCmdWord, RedirectOrEnvVar, SimpleCommand, SimpleWord,
-    Word,
-};
 use crate::ptr::Unique;
 use itertools::Itertools;
+use runscript_parse::{
+    AndOr, CommandChain, CommandGroup, GuardBodyPair, Parameter, ParameterSubstitution,
+    PatternBodyPair, Pipeline, Redirect, SimpleCommand, SimpleWord, Word,
+};
 
 use crate::out::{
     self, OutputState, Printable, PrintableCommand, PrintableComplexWord, PrintableEnvRemap,
@@ -83,7 +81,7 @@ pub struct ShellContext {
     /// Exported varables
     pub env: HashMap<String, String>,
     /// Function definitions
-    pub functions: HashMap<String, Arc<CompoundCommand>>,
+    pub functions: HashMap<String, CommandGroup>,
     /// Stack of function arguments
     function_args: Vec<Vec<String>>,
     /// PID of most recent job
@@ -110,28 +108,51 @@ impl ShellContext {
 }
 
 impl ShellContext {
-    pub fn exec_command_group(&mut self, script: &[AtomicTopLevelCommand]) -> WaitableProcess {
+    pub fn exec_commands(&mut self, script: &[CommandChain]) -> WaitableProcess {
         self.exec_command_group_with_default_redirects(script, RedirectConfig::default_fg())
     }
 
     pub fn exec_command_group_with_default_redirects(
         &mut self,
-        script: &[AtomicTopLevelCommand],
+        script: &[CommandChain],
         redir: RedirectConfig,
     ) -> WaitableProcess {
-        use crate::parser::ast::Command;
-
         let mut jobs = vec![];
 
-        if script.len() > 1 {
-            for command in &script[..script.len() - 1] {
-                let (command, is_job) = match &command {
-                    Command::Job(list) => (list, true),
-                    Command::List(list) => (list, false),
-                };
+        for (i, command) in script.iter().enumerate() {
+            let mut proc = self.exec_pipeline(&command.first, redir);
+            for chain in &command.rest {
+                match chain {
+                    AndOr::And(pipeline) => {
+                        let finished = proc.wait();
+                        if finished.status.success() {
+                            proc = self.exec_pipeline(pipeline, redir);
+                        } else {
+                            proc = WaitableProcess::finished(finished);
+                            break;
+                        }
+                    }
+                    AndOr::Or(pipeline) => {
+                        let finished = proc.wait();
+                        if !finished.status.success() {
+                            proc = self.exec_pipeline(pipeline, redir);
+                        } else {
+                            proc = WaitableProcess::finished(finished);
+                            break;
+                        }
+                    }
+                }
+            }
 
-                let proc = self.exec_andor_list(command, redir);
-                if is_job {
+            if i == script.len() - 1 {
+                if command.job {
+                    jobs.push(proc);
+                    proc = WaitableProcess::empty_success();
+                }
+                proc.set_jobs(jobs);
+                return proc;
+            } else {
+                if command.job {
                     self.pid = proc.pid().unwrap_or(-1);
                     jobs.push(proc);
                 } else {
@@ -143,36 +164,21 @@ impl ShellContext {
             }
         }
 
-        if !script.is_empty() {
-            match &script.last().unwrap() {
-                Command::Job(list) => {
-                    let proc = self.exec_andor_list(list, RedirectConfig::default_bg());
-                    let mut last_proc = WaitableProcess::empty_success();
-                    jobs.push(proc);
-                    last_proc.set_jobs(jobs);
-                    last_proc
-                }
-                Command::List(list) => {
-                    let mut last_proc = self.exec_andor_list(list, redir);
-                    last_proc.set_jobs(jobs);
-                    last_proc
-                }
-            }
-        } else {
-            WaitableProcess::empty_success()
-        }
+        debug_assert!(script.is_empty());
+        WaitableProcess::empty_success()
     }
 
     pub fn exec_as_function(
         &mut self,
-        commands: Arc<CompoundCommand>,
+        command: CommandGroup,
         args: Vec<String>,
         redir: RedirectConfig,
     ) -> WaitableProcess {
-        self.function_args.push(args);
-        let process = self.exec_compound_command(&commands, redir);
-        self.function_args.pop();
-        process
+        todo!()
+        // self.function_args.push(args);
+        // let process = self.exec_compound_command(&commands, redir);
+        // self.function_args.pop();
+        // process
     }
 
     pub fn exec_compound_command(
@@ -188,45 +194,43 @@ impl ShellContext {
         command: &CompoundCommand,
         redir: RedirectConfig,
     ) -> WaitableProcess {
-        match &command.kind {
-            CompoundCommandKind::Brace(commands) => {
-                this.exec_command_group_with_default_redirects(commands, redir)
+        match command {
+            CompoundCommand::Brace(commands) => {
+                this.exec_command_group_with_default_redirects(&commands, redir)
             }
-            CompoundCommandKind::Subshell(commands) => {
-                this.exec_command_group_with_default_redirects(commands, redir)
+            CompoundCommand::Subshell(commands) => {
+                this.exec_command_group_with_default_redirects(&commands, redir)
             }
-            CompoundCommandKind::While(GuardBodyPair { guard, body }) => {
-                while this.exec_command_group(guard).wait().status.success() {
-                    this.exec_command_group(body).wait();
+            CompoundCommand::While(GuardBodyPair { guard, body }) => {
+                while this.exec_commands(&guard).wait().status.success() {
+                    this.exec_commands(&body).wait();
                 }
 
                 WaitableProcess::empty_success()
             }
-            CompoundCommandKind::Until(GuardBodyPair { guard, body }) => {
-                while !this.exec_command_group(guard).wait().status.success() {
-                    this.exec_command_group(body).wait();
+            CompoundCommand::Until(GuardBodyPair { guard, body }) => {
+                while !this.exec_commands(&guard).wait().status.success() {
+                    this.exec_commands(&body).wait();
                 }
 
                 WaitableProcess::empty_success()
             }
-            CompoundCommandKind::If {
+            CompoundCommand::If {
                 conditionals,
                 else_branch,
             } => {
                 let mut branch = None;
 
                 for GuardBodyPair { guard, body } in conditionals {
-                    if this.exec_command_group(guard).wait().status.success() {
-                        branch = Some(&**body);
+                    if this.exec_commands(&guard).wait().status.success() {
+                        branch = Some(body.as_slice());
                         break;
                     }
                 }
 
-                this.exec_command_group(
-                    branch.unwrap_or_else(|| else_branch.as_deref().unwrap_or(&[])),
-                )
+                this.exec_commands(branch.unwrap_or_else(|| else_branch.as_deref().unwrap_or(&[])))
             }
-            CompoundCommandKind::For { var, words, body } => {
+            CompoundCommand::For { var, words, body } => {
                 let mut last_proc = WaitableProcess::empty_success();
                 for word in match words
                     .as_ref()
@@ -245,14 +249,14 @@ impl ShellContext {
                     }
                 } {
                     this.vars.insert(var.clone(), word.clone());
-                    last_proc = this.exec_command_group(body);
+                    last_proc = this.exec_commands(&body);
                 }
 
                 last_proc
             }
-            CompoundCommandKind::Case { word, arms } => {
+            CompoundCommand::Case { word, arms } => {
                 let mut last_proc = WaitableProcess::empty_success();
-                let word = match this.evaluate_tl_word(word, redir) {
+                let word = match this.evaluate_tl_word(&word, redir) {
                     Ok(word) => word.0,
                     Err(status) => {
                         return WaitableProcess::empty_status(status);
@@ -273,7 +277,7 @@ impl ShellContext {
                     }
 
                     if pattern_matches {
-                        last_proc = this.exec_command_group(body);
+                        last_proc = this.exec_commands(body);
                         break;
                     }
                 }
@@ -283,58 +287,23 @@ impl ShellContext {
         }
     }
 
-    fn exec_andor_list(&mut self, command: &AndOrList, redir: RedirectConfig) -> WaitableProcess {
-        let mut previous_output = self.exec_listable_command(&command.first, redir);
-        for chain in &command.rest {
-            match chain {
-                AndOr::And(command) => {
-                    let finished = previous_output.wait();
-                    if finished.status.success() {
-                        previous_output = self.exec_listable_command(command, redir);
-                    } else {
-                        previous_output = WaitableProcess::finished(finished);
-                        break;
-                    }
-                }
-                AndOr::Or(command) => {
-                    let finished = previous_output.wait();
-                    if !finished.status.success() {
-                        previous_output = self.exec_listable_command(command, redir);
-                    } else {
-                        previous_output = WaitableProcess::finished(finished);
-                        break;
-                    }
-                }
-            }
-        }
-        previous_output
-    }
-
-    fn exec_listable_command(
-        &mut self,
-        command: &ListableCommand,
-        redir: RedirectConfig,
-    ) -> WaitableProcess {
-        let commands = match command {
-            ListableCommand::Pipe(_negate, commands) => {
-                commands
-                    .iter()
-                    .map(|command| self.eval_pipeable_command(command, redir))
-                    .collect() //TODO: negate?
-            }
-            ListableCommand::Single(command) => {
-                vec![self.eval_pipeable_command(command, redir)]
-            }
-        };
-        let last_command = commands.len() - 1;
+    fn exec_pipeline(&mut self, command: &Pipeline, redir: RedirectConfig) -> WaitableProcess {
+        let ready_commands = command
+            .command_groups
+            .iter()
+            .map(|command_group| self.eval_command_group(command_group, redir))
+            .collect::<Vec<_>>();
+        let last_command = ready_commands.len() - 1;
         if let Some(output_state) = &self.config.output_state {
             let mut lock = output_state.lock();
-            let any_printable = commands.iter().any(|p| p.is_printable());
+            let any_printable = ready_commands.iter().any(|p| p.is_printable());
             if any_printable {
                 //TODO: Proper error handling here?
                 out::command_start(&mut lock).unwrap();
-                for (i, (printable, command)) in
-                    commands.iter().map(|p| (p.is_printable(), p)).enumerate()
+                for (i, (printable, command)) in ready_commands
+                    .iter()
+                    .map(|p| (p.is_printable(), p))
+                    .enumerate()
                 {
                     if i != 0 {
                         out::command_pipe(&mut lock).unwrap();
@@ -349,7 +318,7 @@ impl ShellContext {
             }
         }
         let mut next_input = redir.stdin;
-        for (i, command) in commands.into_iter().enumerate() {
+        for (i, command) in ready_commands.into_iter().enumerate() {
             if i == last_command {
                 return command.spawn(SpawnContext::PipelineEnd {
                     context: self,
@@ -375,110 +344,143 @@ impl ShellContext {
         unreachable!()
     }
 
-    fn eval_pipeable_command<'a>(
+    fn eval_command_group<'a>(
         &self,
-        command: &'a PipeableCommand,
+        command: &'a CommandGroup,
         redir: RedirectConfig,
-    ) -> SpawnableProcess<'a> {
+    ) -> SpawnableProcess {
         match command {
-            PipeableCommand::Simple(command) => self.eval_simple_command(command, redir),
-            PipeableCommand::Compound(command) => SpawnableProcess::compound(command, redir),
-            PipeableCommand::FunctionDef(name, body) => {
-                SpawnableProcess::fn_def(name.clone(), body.clone())
+            CommandGroup::Simple(command) => self.eval_simple_command(command, redir),
+            CommandGroup::Brace {
+                commands,
+                redirects,
+            } => SpawnableProcess::compound(
+                CompoundCommand::Brace(commands.clone()),
+                RedirectConfig::default_bg(),
+            ),
+            CommandGroup::Subshell {
+                commands,
+                redirects,
+            } => SpawnableProcess::compound(
+                CompoundCommand::Subshell(commands.clone()),
+                RedirectConfig::default_bg(),
+            ),
+            CommandGroup::While { body, io } => SpawnableProcess::compound(
+                CompoundCommand::While(body.clone()),
+                RedirectConfig::default_bg(),
+            ),
+            CommandGroup::Until { body, io } => SpawnableProcess::compound(
+                CompoundCommand::Until(body.clone()),
+                RedirectConfig::default_bg(),
+            ),
+            CommandGroup::If {
+                conditionals,
+                else_branch,
+                io,
+            } => SpawnableProcess::compound(
+                CompoundCommand::If {
+                    conditionals: conditionals.clone(),
+                    else_branch: else_branch.clone(),
+                },
+                RedirectConfig::default_bg(),
+            ),
+            CommandGroup::For {
+                var,
+                words,
+                body,
+                io,
+            } => SpawnableProcess::compound(
+                CompoundCommand::For {
+                    var: var.clone(),
+                    words: words.clone(),
+                    body: body.clone(),
+                },
+                RedirectConfig::default_bg(),
+            ),
+            CommandGroup::Case { word, arms, io } => SpawnableProcess::compound(
+                CompoundCommand::Case {
+                    word: word.clone(),
+                    arms: arms.clone(),
+                },
+                RedirectConfig::default_bg(),
+            ),
+            CommandGroup::FunctionDef(name, body) => {
+                todo!();
+                // SpawnableProcess::fn_def(name.clone(), body.clone())
             }
         }
     }
 
-    fn eval_simple_command<'a>(
+    fn eval_simple_command(
         &self,
-        command: &'a SimpleCommand,
+        command: &SimpleCommand,
         mut redir: RedirectConfig,
-    ) -> SpawnableProcess<'a> {
+    ) -> SpawnableProcess {
         use std::process::Command;
 
-        let mut redirects = vec![];
-
-        let (env_remaps, printable_remaps): (Vec<_>, Vec<_>) = match command
-            .redirects_or_env_vars
+        let (words, printable_words): (Vec<_>, Vec<_>) = match command
+            .words
             .iter()
-            .filter_map(|r| match r {
-                RedirectOrEnvVar::EnvVar(key, word) => Some(
-                    word.as_ref()
-                        .map(|word| self.evaluate_tl_word(word, redir))
-                        .transpose()
-                        .map(|word| {
-                            word.map(|(words, printable)| {
-                                (
-                                    (key.clone(), words.join(" ")),
-                                    PrintableEnvRemap {
-                                        key: key.clone(),
-                                        value: printable,
-                                    },
-                                )
-                            })
-                            .unwrap_or_else(|| {
-                                (
-                                    (String::new(), String::new()),
-                                    PrintableEnvRemap {
-                                        key: String::new(),
-                                        value: PrintableComplexWord::Empty,
-                                    },
-                                )
-                            })
-                        }),
-                ),
-                RedirectOrEnvVar::Redirect(redirect) => {
-                    redirects.push(redirect);
-                    None
-                }
-            })
-            .collect::<Result<Vec<_>, _>>()
-        {
-            Ok(remaps) => remaps.into_iter().unzip(),
-            Err(status) => return SpawnableProcess::empty_status(status),
-        };
-
-        let (command_words, printable_words): (Vec<_>, Vec<_>) = match command
-            .redirects_or_cmd_words
-            .iter()
-            .filter_map(|r| match r {
-                RedirectOrCmdWord::CmdWord(w) => Some(self.evaluate_tl_word(w, redir)),
-                RedirectOrCmdWord::Redirect(redirect) => {
-                    redirects.push(redirect);
-                    None
-                }
-            })
+            .map(|word| self.evaluate_tl_word(&word, redir))
             .collect::<Result<Vec<_>, _>>()
         {
             Ok(words) => words.into_iter().unzip(),
             Err(status) => return SpawnableProcess::empty_status(status),
         };
-
-        if !command_words.is_empty() {
-            let redirects = match redirects
-                .into_iter()
-                .map(|redirect| {
-                    macro_rules! map_redirect {
-                        ($($t:ident),*) => {
-                            match redirect {
-                                $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(word, redir)?.0.join(" ")),)*
-                                Redirect::Heredoc(fd, word) => EvaluatedRedirect::Heredoc(*fd, self.evaluate_tl_word(word, redir)?.0)
-                            }
+        let redirects = match command.redirects.iter().map(|redirect| {
+                macro_rules! map_redirect {
+                    ($($t:ident),*) => {
+                        match redirect {
+                            $(Redirect::$t(fd, word) => EvaluatedRedirect::$t(*fd, self.evaluate_tl_word(&word, redir)?.0.join(" ")),)*
+                            Redirect::Heredoc(fd, word) => EvaluatedRedirect::Heredoc(*fd, self.evaluate_tl_word(&word, redir)?.0)
                         }
                     }
-                    Ok(map_redirect!(Read, Write, ReadWrite, Append, Clobber, DupRead, DupWrite))
-                })
-                .collect::<Result<Vec<_>, _>>()
-            {
-                Ok(redirects) => redirects,
-                Err(status) => return SpawnableProcess::empty_status(status),
-            };
+                }
+                Ok(map_redirect!(Read, Write, ReadWrite, Append, Clobber, DupRead, DupWrite))
+            }).collect::<Result<Vec<_>, _>>() {
+            Ok(redirects) => redirects,
+            Err(status) => return SpawnableProcess::empty_status(status),
+        };
+        let (assignments, printable_assignments) = match command
+            .assignments
+            .iter()
+            .map(|(key, word)| {
+                word.as_ref()
+                    .map(|word| self.evaluate_tl_word(word, redir))
+                    .transpose()
+                    .map(|word| {
+                        word.map(|(words, printable)| {
+                            (
+                                (String::from_utf8(key.clone()).unwrap(), words.join(" ")),
+                                PrintableEnvRemap {
+                                    key: String::from_utf8_lossy(&key).into_owned(),
+                                    value: printable,
+                                },
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            (
+                                (String::new(), String::new()),
+                                PrintableEnvRemap {
+                                    key: String::new(),
+                                    value: PrintableComplexWord::Empty,
+                                },
+                            )
+                        })
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()
+        {
+            Ok(assignments) => assignments.into_iter().unzip(),
+            Err(status) => return SpawnableProcess::empty_status(status),
+        };
 
-            let command_words = command_words.into_iter().flatten().collect::<Vec<_>>();
+        if !words.is_empty() {
+            let command_words = words.into_iter().flatten().collect::<Vec<_>>();
             let (command_name, arguments) = {
                 let mut printable_words = printable_words;
                 printable_words.remove(0);
-                // No panicking possible, because !command_words.is_empty()
+                // No panicking possible, because !words.is_empty()
                 (command_words.first().unwrap().clone(), printable_words)
             };
             let printable_command = Printable {
@@ -486,7 +488,7 @@ impl ShellContext {
                     name: command_name,
                     arguments,
                 }),
-                env_remaps: printable_remaps,
+                env_remaps: printable_assignments,
                 redirects: redirects
                     .iter()
                     .map(|redir| match redir {
@@ -706,7 +708,7 @@ impl ShellContext {
                         SpawnableProcess::builtin(
                             BuiltinCommand::Export {
                                 key: name.to_string(),
-                                value: self.vars[name].clone(),
+                                value: self.vars[name.as_str()].clone(),
                             },
                             redir,
                             printable_command,
@@ -757,108 +759,95 @@ impl ShellContext {
                 ),
                 _ => {
                     if let Some(commands) = self.functions.get(&command_words[0]).cloned() {
-                        SpawnableProcess::function(
-                            commands,
-                            command_words,
-                            redir,
-                            printable_command,
-                        )
+                        // SpawnableProcess::function(
+                        //     commands,
+                        //     command_words,
+                        //     redir,
+                        //     printable_command,
+                        // )
+                        todo!()
                     } else {
                         let mut command = Command::new(&command_words[0]);
                         command
                             .args(&command_words[1..])
                             .envs(&self.env)
-                            .envs(env_remaps)
+                            .envs(assignments)
                             .current_dir(self.working_directory.clone());
                         SpawnableProcess::process(command, redir, printable_command)
                     }
                 }
             }
         } else {
-            SpawnableProcess::remaps(env_remaps, printable_remaps)
+            SpawnableProcess::remaps(assignments, printable_assignments)
         }
     }
 
     fn evaluate_tl_word(
         &self,
-        word: &ComplexWord,
+        words: &[Word],
         redir: RedirectConfig,
     ) -> Result<(Vec<String>, PrintableComplexWord), ProcessExit> {
-        match word {
-            ComplexWord::Concat(words) => {
-                let (words, printable_words): (Vec<_>, Vec<_>) = words
-                    .iter()
-                    .map(|w| self.evaluate_word(w, redir))
-                    .collect::<Result<Vec<_>, _>>()?
-                    .into_iter()
-                    .unzip();
-                let is_glob = words.iter().any(|w| !matches!(w, GlobPart::Words(_)));
-                if is_glob {
-                    let working_dir_path = {
-                        let mut path = Pattern::escape(&self.working_directory.to_string_lossy());
-                        path.push('/');
-                        path
-                    };
-                    let stringified_glob = std::iter::once(working_dir_path.clone())
-                        .chain(words.iter().map(|w| match w {
-                            GlobPart::Words(words) => {
-                                words.iter().map(|s| Pattern::escape(s)).join(" ")
-                            }
-                            GlobPart::Star => "*".to_owned(),
-                            GlobPart::Question => "?".to_owned(),
-                            GlobPart::SquareOpen => "[".to_owned(),
-                            GlobPart::SquareClose => "]".to_owned(),
-                        }))
-                        .join("");
-                    let matches = glob_with(&stringified_glob, MatchOptions::new())
-                        .map_err(|e| {
-                            ProcessExit::ExecError(CommandExecError::InvalidGlob {
-                                glob: stringified_glob.clone(),
-                                err: e,
-                            })
-                        })?
-                        .filter_map(|path| {
-                            if let Ok(path) = path {
-                                //TODO: This is not a good way to handle paths.
-                                let owned = path.to_string_lossy().into_owned();
-                                if let Some(stripped) = owned.strip_prefix(&working_dir_path) {
-                                    Some(stripped.to_owned())
-                                } else {
-                                    Some(owned)
-                                }
-                            } else {
-                                None
-                            }
-                        })
-                        .collect::<Vec<_>>();
-                    if matches.is_empty() {
-                        Err(ProcessExit::ExecError(CommandExecError::NoGlobMatches {
-                            glob: stringified_glob,
-                        }))
+        let (words, printable_words): (Vec<_>, Vec<_>) = words
+            .iter()
+            .map(|w| self.evaluate_word(w, redir))
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .unzip();
+        let is_glob = words.iter().any(|w| !matches!(w, GlobPart::Words(_)));
+        if is_glob {
+            let working_dir_path = {
+                let mut path = Pattern::escape(&self.working_directory.to_string_lossy());
+                path.push('/');
+                path
+            };
+            let stringified_glob = std::iter::once(working_dir_path.clone())
+                .chain(words.iter().map(|w| match w {
+                    GlobPart::Words(words) => words.iter().map(|s| Pattern::escape(s)).join(" "),
+                    GlobPart::Star => "*".to_owned(),
+                    GlobPart::Question => "?".to_owned(),
+                    GlobPart::SquareOpen => "[".to_owned(),
+                    GlobPart::SquareClose => "]".to_owned(),
+                }))
+                .join("");
+            let matches = glob_with(&stringified_glob, MatchOptions::new())
+                .map_err(|e| {
+                    ProcessExit::ExecError(CommandExecError::InvalidGlob {
+                        glob: stringified_glob.clone(),
+                        err: e,
+                    })
+                })?
+                .filter_map(|path| {
+                    if let Ok(path) = path {
+                        //TODO: This is not a good way to handle paths.
+                        let owned = path.to_string_lossy().into_owned();
+                        if let Some(stripped) = owned.strip_prefix(&working_dir_path) {
+                            Some(stripped.to_owned())
+                        } else {
+                            Some(owned)
+                        }
                     } else {
-                        Ok((
-                            matches.clone(),
-                            PrintableComplexWord::GlobPattern {
-                                glob_string: printable_words,
-                                matches,
-                            },
-                        ))
+                        None
                     }
-                } else {
-                    Ok((
-                        vec![words.into_iter().flat_map(GlobPart::into_string).join("")],
-                        PrintableComplexWord::Words(printable_words),
-                    ))
-                }
-            }
-            ComplexWord::Single(word) => {
-                self.evaluate_word(word, redir).map(|(glob, printable)| {
-                    (
-                        glob.into_string(),
-                        PrintableComplexWord::Words(vec![printable]),
-                    )
                 })
+                .collect::<Vec<_>>();
+            if matches.is_empty() {
+                Err(ProcessExit::ExecError(CommandExecError::NoGlobMatches {
+                    glob: stringified_glob,
+                }))
+            } else {
+                Ok((
+                    matches.clone(),
+                    PrintableComplexWord::GlobPattern {
+                        glob_string: printable_words,
+                        matches,
+                    },
+                ))
             }
+        } else {
+            Ok((
+                vec![words.into_iter().flat_map(GlobPart::into_string).join("")],
+                PrintableComplexWord::Words(printable_words),
+            ))
         }
     }
 
@@ -869,8 +858,8 @@ impl ShellContext {
     ) -> Result<(GlobPart, PrintableWord), ProcessExit> {
         match word {
             Word::SingleQuoted(literal) => Ok((
-                vec![literal.clone()].into(),
-                PrintableWord::SingleQuoted(literal.clone()),
+                vec![String::from_utf8(literal.clone()).unwrap()].into(),
+                PrintableWord::SingleQuoted(String::from_utf8(literal.clone()).unwrap()),
             )),
             Word::DoubleQuoted(words) => {
                 let (words, printables): (Vec<_>, Vec<_>) = words
@@ -901,23 +890,13 @@ impl ShellContext {
     ) -> Result<(GlobPart, PrintableSimpleWord), ProcessExit> {
         match word {
             SimpleWord::Literal(s) => Ok((
-                vec![s.clone()].into(),
-                PrintableSimpleWord::Literal(s.clone()),
+                vec![String::from_utf8(s.clone()).unwrap()].into(),
+                PrintableSimpleWord::Literal(String::from_utf8(s.clone()).unwrap()),
             )),
             SimpleWord::Escaped(s) => Ok((
-                vec![s.clone()].into(),
-                PrintableSimpleWord::Escaped(s.clone()),
+                vec![String::from_utf8(vec![*s]).unwrap()].into(),
+                PrintableSimpleWord::Escaped(String::from_utf8(vec![*s]).unwrap()),
             )),
-            SimpleWord::Param(p) => Ok({
-                let (evaluated, original) = self.evaluate_parameter(p);
-                (
-                    evaluated.clone().into(),
-                    PrintableSimpleWord::Substitution {
-                        original,
-                        evaluated: evaluated.join(" "),
-                    },
-                )
-            }),
             SimpleWord::Subst(p) => self.evaluate_param_subst(p, redir),
             SimpleWord::Star => Ok((GlobPart::Star, PrintableSimpleWord::Literal("*".to_owned()))),
             SimpleWord::Question => Ok((
@@ -931,6 +910,14 @@ impl ShellContext {
             SimpleWord::SquareClose => Ok((
                 GlobPart::SquareClose,
                 PrintableSimpleWord::Literal("]".to_owned()),
+            )),
+            SimpleWord::BraceOpen => Ok((
+                vec!["{".to_owned()].into(),
+                PrintableSimpleWord::Literal("{".to_owned()),
+            )),
+            SimpleWord::BraceClose => Ok((
+                vec!["}".to_owned()].into(),
+                PrintableSimpleWord::Literal("}".to_owned()),
             )),
             SimpleWord::Tilde => Ok((
                 vec!["~".to_owned()].into(),
@@ -949,6 +936,16 @@ impl ShellContext {
         redir: RedirectConfig,
     ) -> Result<(GlobPart, PrintableSimpleWord), ProcessExit> {
         Ok(match param {
+            ParameterSubstitution::Parameter(parameter) => {
+                let (evaluated, original) = self.evaluate_parameter(parameter);
+                (
+                    evaluated.clone().into(),
+                    PrintableSimpleWord::Substitution {
+                        original,
+                        evaluated: evaluated.join(" "),
+                    },
+                )
+            }
             ParameterSubstitution::Command(commands) => {
                 let mut context = self.clone();
                 context.config.output_state = None;
@@ -1078,12 +1075,12 @@ impl ShellContext {
             },
             Parameter::Var(name) => (
                 self.vars
-                    .get(name)
+                    .get(std::str::from_utf8(name).unwrap())
                     .cloned()
-                    .or_else(|| std::env::var(name).ok())
+                    .or_else(|| std::env::var(std::str::from_utf8(name).unwrap()).ok())
                     .into_iter()
                     .collect(),
-                name.clone(),
+                String::from_utf8(name.clone()).unwrap(),
             ),
             Parameter::At => (
                 match self.function_args.last() {
@@ -1107,7 +1104,7 @@ impl ShellContext {
                 .collect(),
                 "*".to_owned(),
             ),
-            Parameter::Pound => (
+            Parameter::Hash => (
                 vec![format!(
                     "{}",
                     match self.function_args.last() {

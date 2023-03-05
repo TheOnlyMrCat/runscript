@@ -6,10 +6,10 @@ use std::str::Utf8Error;
 use std::sync::Arc;
 
 use glob::PatternError;
+use runscript_parse::{CommandChain, ComplexWord, GuardBodyPair, PatternBodyPair};
 
 use crate::exec::{BaseExecContext, ShellContext};
 use crate::out::{self, OutputStateLock, Printable, PrintableEnvRemap};
-use crate::parser::ast::CompoundCommand;
 use crate::parser::SourceFile;
 use crate::ptr::Ref;
 
@@ -298,16 +298,36 @@ impl From<Child> for WaitableProcess {
     }
 }
 
-pub struct SpawnableProcess<'a> {
-    ty: SpawnableProcessType<'a>,
+pub enum CompoundCommand {
+    Brace(Vec<CommandChain>),
+    Subshell(Vec<CommandChain>),
+    While(GuardBodyPair),
+    Until(GuardBodyPair),
+    If {
+        conditionals: Vec<GuardBodyPair>,
+        else_branch: Option<Vec<CommandChain>>,
+    },
+    For {
+        var: String,
+        words: Option<Vec<ComplexWord>>,
+        body: Vec<CommandChain>,
+    },
+    Case {
+        word: ComplexWord,
+        arms: Vec<PatternBodyPair>,
+    },
+}
+
+pub struct SpawnableProcess {
+    ty: SpawnableProcessType,
     redir: RedirectConfig,
     printable: Option<Printable>,
 }
 
-pub enum SpawnableProcessType<'a> {
+pub enum SpawnableProcessType {
     StdProcess(std::process::Command),
     Builtin(BuiltinCommand),
-    Compound(&'a CompoundCommand),
+    Compound(CompoundCommand),
     FnDef(String, Arc<CompoundCommand>),
     Function(Arc<CompoundCommand>, Vec<String>),
     Remaps(Vec<(String, String)>),
@@ -320,12 +340,12 @@ pub enum SpawnableProcessType<'a> {
     },
 }
 
-impl SpawnableProcess<'_> {
+impl SpawnableProcess {
     pub fn new(
-        ty: SpawnableProcessType<'_>,
+        ty: SpawnableProcessType,
         redir: RedirectConfig,
         printable: Option<Printable>,
-    ) -> SpawnableProcess<'_> {
+    ) -> SpawnableProcess {
         SpawnableProcess {
             ty,
             redir,
@@ -375,7 +395,7 @@ impl SpawnableProcess<'_> {
         )
     }
 
-    pub fn compound(compound: &CompoundCommand, redir: RedirectConfig) -> SpawnableProcess<'_> {
+    pub fn compound(compound: CompoundCommand, redir: RedirectConfig) -> Self {
         Self::new(SpawnableProcessType::Compound(compound), redir, None)
     }
 
@@ -457,18 +477,19 @@ impl SpawnableProcess<'_> {
                 }
             }
             SpawnableProcessType::FnDef(name, body) => {
-                Ref::into_unique(context.shell_context())
-                    .functions
-                    .insert(name, body);
+                // Ref::into_unique(context.shell_context())
+                //     .functions
+                //     .insert(name, body);
                 WaitableProcess::empty_success()
             }
             SpawnableProcessType::Function(command, args) => {
-                Ref::into_unique(context.shell_context())
-                    .exec_as_function(command, args, self.redir)
+                todo!()
+                // Ref::into_unique(context.shell_context())
+                //     .exec_as_function(command, args, self.redir)
             }
             SpawnableProcessType::Compound(command) => ShellContext::exec_compound_command_unique(
                 Ref::into_unique(context.shell_context()),
-                command,
+                &command,
                 self.redir,
             ),
             SpawnableProcessType::Builtin(builtin) => builtin.spawn(context),
@@ -648,7 +669,7 @@ impl BuiltinCommand {
             }
             BuiltinCommand::Source { path } => {
                 let source = SourceFile {
-                    source: match std::fs::read_to_string(&path) {
+                    source: match std::fs::read(&path) {
                         Ok(source) => source,
                         Err(err) => {
                             return WaitableProcess::empty_error(CommandExecError::CommandFailed {
@@ -661,7 +682,7 @@ impl BuiltinCommand {
                 };
 
                 let shell_file = crate::parser::parse_shell(source).unwrap_or_else(|_| todo!());
-                Ref::into_unique(context.shell_context()).exec_command_group(&shell_file)
+                Ref::into_unique(context.shell_context()).exec_commands(&shell_file)
             }
         }
     }

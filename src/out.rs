@@ -110,12 +110,6 @@ pub fn file_parse_err(output_state: &OutputState, file: &str, err: RunscriptPars
                 ),
             );
         }
-        RunscriptParseError::CommandParseError { line, error: err } => {
-            error(
-                output_state,
-                format_args!("In file {file}: Parse error: {err} on line {line}"),
-            );
-        }
         RunscriptParseError::IllegalCommandLocation { line } => {
             error(
                 output_state,

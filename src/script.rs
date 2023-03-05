@@ -2,8 +2,6 @@ use std::path::PathBuf;
 
 use indexmap::IndexMap;
 
-use crate::parser::ast::AtomicTopLevelCommand;
-
 #[derive(Clone, Debug)]
 pub struct Runscript {
     pub display_path: String,
@@ -43,33 +41,17 @@ pub struct Target {
 
 #[derive(Clone, Debug)]
 pub struct Script {
-    pub commands: ScriptExecution,
+    pub options: ScriptOptions,
+    pub body: Vec<u8>,
     pub canonical_path: PathBuf,
     pub working_dir: PathBuf,
     pub line: usize,
 }
 
-#[derive(Clone, Debug)]
-pub enum ScriptExecution {
-    Internal {
-        commands: Vec<ScriptCommand>,
-        options: ScriptOptions,
-    },
-    ExternalPosix {
-        command: Vec<String>,
-        script: String,
-    },
-}
-
-#[derive(Clone, Debug)]
-pub struct ScriptCommand {
-    pub command: AtomicTopLevelCommand,
-    pub options: CommandOptions,
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct GlobalOptions {
-    pub default_target: Overrideable<String>,
+    pub default_target: Overrideable<Vec<u8>>,
+    pub default_executor: Overrideable<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -78,7 +60,9 @@ pub struct TargetOptions {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct ScriptOptions {}
+pub struct ScriptOptions {
+    pub executor: Overrideable<Vec<u8>>,
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct CommandOptions {}
@@ -101,7 +85,9 @@ impl<T> Default for Overrideable<T> {
 impl Runscript {
     pub fn get_default_target(&self) -> Option<(&String, &Target)> {
         match self.options.default_target {
-            Set(ref name) => self.scripts.get_key_value(name),
+            Set(ref name) => self
+                .scripts
+                .get_key_value(std::str::from_utf8(name).unwrap()),
             SetNone => None,
             Unset => self.scripts.get_index(0),
         }
@@ -111,7 +97,9 @@ impl Runscript {
 impl CollatedTargets {
     pub fn get_default_target(&self) -> Option<(&String, &Target)> {
         match self.options.default_target {
-            Set(ref name) => self.scripts.get_key_value(name),
+            Set(ref name) => self
+                .scripts
+                .get_key_value(std::str::from_utf8(name).unwrap()),
             SetNone => None,
             Unset => self.scripts.get_index(0),
         }
